@@ -146,12 +146,15 @@ final class MacWindow: Window {
                 // Zoom will jump off if you do one pixel offset https://github.com/nikitabobko/AeroSpace/issues/527
                 // todo this ad hoc won't be necessary once I implement optimization suggested by Zalim
                 let onePixelOffset = macApp.rawAppBundleId == zoomAppBundleId ? .zero : CGPoint(x: 1, y: -1)
-                p = nodeMonitor.visibleRect.bottomLeftCorner + onePixelOffset + CGPoint(x: -s.width, y: 0)
+                // Park at the physical monitor corner, not visibleRect's. visibleRect excludes the Dock,
+                // so parking there leaves a Dock-height 1px strip of the window visible at the screen edge
+                p = nodeMonitor.rect.bottomLeftCorner + onePixelOffset + CGPoint(x: -s.width, y: 0)
             case .bottomRightCorner:
                 // Zoom will jump off if you do one pixel offset https://github.com/nikitabobko/AeroSpace/issues/527
                 // todo this ad hoc won't be necessary once I implement optimization suggested by Zalim
                 let onePixelOffset = macApp.rawAppBundleId == zoomAppBundleId ? .zero : CGPoint(x: 1, y: 1)
-                p = nodeMonitor.visibleRect.bottomRightCorner - onePixelOffset
+                // Park at the physical monitor corner, not visibleRect's (see bottomLeftCorner comment)
+                p = nodeMonitor.rect.bottomRightCorner - onePixelOffset
         }
         setAxFrame(p, nil)
         hiddenCorner = corner
