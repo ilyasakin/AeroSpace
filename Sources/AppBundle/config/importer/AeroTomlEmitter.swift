@@ -31,6 +31,13 @@ func emitAeroToml(builder: AeroConfigBuilder, diagnostics: [ImportDiagnostic], s
     out.append("config-version = 2")
     out.append("")
 
+    if builder.disableFlattenNormalization {
+        out.append("# i3 doesn't flatten nested containers; disabled so the imported 'split' bindings work")
+        out.append("enable-normalization-flatten-containers = false")
+        out.append("enable-normalization-opposite-orientation-for-nested-containers = false")
+        out.append("")
+    }
+
     if !builder.startupCommands.isEmpty {
         out.append("after-startup-command = [")
         for cmd in builder.startupCommands {

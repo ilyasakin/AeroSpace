@@ -106,6 +106,39 @@ final class ImportI3Test: XCTestCase {
         assertEquals(result.exitCode.rawValue, 2)
     }
 
+    /// Golden-file tests over the fixture corpus. Regenerate goldens with:
+    /// REGENERATE_IMPORT_GOLDENS=1 swift test --filter testFixtureCorpus
+    func testFixtureCorpus() throws {
+        let fixturesDir = projectRoot.appending(path: "Sources/AppBundleTests/config/importFixtures")
+        let regenerate = ProcessInfo.processInfo.environment["REGENERATE_IMPORT_GOLDENS"] == "1"
+        let fixtures = try FileManager.default.contentsOfDirectory(at: fixturesDir, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "config" }
+            .sorted { $0.path < $1.path }
+        assertTrue(!fixtures.isEmpty)
+        for fixture in fixtures {
+            let source = try String(contentsOf: fixture, encoding: .utf8)
+            let result = importI3Config(source)
+
+            // Invariant: output always parses cleanly
+            let parsed = parseConfig(result.toml)
+            assertEquals(parsed.errors.map { $0.description(.error) }, [], additionalMsg: fixture.lastPathComponent)
+
+            let goldenUrl = fixture.deletingPathExtension().appendingPathExtension("expected.toml")
+            let reportUrl = fixture.deletingPathExtension().appendingPathExtension("expected-report.txt")
+            let report = result.diagnostics.map { $0.description }.joined(separator: "\n")
+                + "\n\(result.translatedCount) of \(result.directiveCount) directives translated, \(result.skippedCount) skipped\n"
+            if regenerate {
+                try result.toml.write(to: goldenUrl, atomically: true, encoding: .utf8)
+                try report.write(to: reportUrl, atomically: true, encoding: .utf8)
+                continue
+            }
+            let expectedToml = try String(contentsOf: goldenUrl, encoding: .utf8)
+            let expectedReport = try String(contentsOf: reportUrl, encoding: .utf8)
+            assertEquals(result.toml, expectedToml, additionalMsg: fixture.lastPathComponent)
+            assertEquals(report, expectedReport, additionalMsg: fixture.lastPathComponent)
+        }
+    }
+
     func testUnknownKeysymIsSkippedNotFatal() {
         let config = """
             bindsym XF86AudioRaiseVolume exec pactl set-sink-volume 0 +5%

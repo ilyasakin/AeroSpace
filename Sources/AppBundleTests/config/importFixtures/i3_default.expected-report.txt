@@ -1,0 +1,13 @@
+line 4: [skipped] font pango:monospace 8 — window titles/fonts are drawn by macOS, not the window manager
+line 11: [skipped] bindsym XF86AudioRaiseVolume exec --no-startup-id pactl set-sink-volume @DEFAULT_SINK@ +10% && $refresh_i3status — key 'XF86AudioRaiseVolume' has no equivalent key notation
+line 12: [skipped] bindsym XF86AudioLowerVolume exec --no-startup-id pactl set-sink-volume @DEFAULT_SINK@ -10% && $refresh_i3status — key 'XF86AudioLowerVolume' has no equivalent key notation
+line 13: [skipped] bindsym XF86AudioMute exec --no-startup-id pactl set-sink-mute @DEFAULT_SINK@ toggle && $refresh_i3status — key 'XF86AudioMute' has no equivalent key notation
+line 15: [skipped] floating_modifier $mod — floating windows are dragged natively on macOS; no drag modifier needed
+line 16: [skipped] tiling_drag modifier titlebar — behavior tweak with no equivalent
+line 51: [note] bindsym $mod+space focus mode_toggle — 'focus mode_toggle': focus mode_toggle has no equivalent
+line 51: [skipped] bindsym $mod+space focus mode_toggle — none of the actions in this binding have an equivalent
+line 52: [note] bindsym $mod+a focus parent — 'focus parent': focus parent has no equivalent
+line 52: [skipped] bindsym $mod+a focus parent — none of the actions in this binding have an equivalent
+line 91: [skipped] bar { — no i3bar on macOS; see the sketchybar integration recipe in the guide
+line 0: [note] split bindings — flatten-containers normalization disabled to keep i3's split semantics
+52 of 61 directives translated, 9 skipped

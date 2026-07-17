@@ -1,0 +1,12 @@
+line 9: [skipped] smart_gaps on — smart gaps are not supported
+line 11: [skipped] default_border pixel 2 — no window borders on macOS; see the JankyBorders recipe in the guide
+line 12: [skipped] hide_edge_borders both — no window borders on macOS; see the JankyBorders recipe in the guide
+line 13: [skipped] client.focused #4c7899 #285577 #ffffff #2e9ef4 #285577 — window decoration colors are not drawn on macOS; see the JankyBorders recipe
+line 0: [note] workspace "1: www" — renamed to '1:www' (whitespace is forbidden in workspace names)
+line 18: [note] workspace $ws1 output DP-1 — 'DP-1' is a Linux connector name; macOS matches monitors by display name — replace with 'main', 'secondary', a monitor index, or a display-name regex
+line 0: [note] workspace "2: code" — renamed to '2:code' (whitespace is forbidden in workspace names)
+line 33: [note] for_window [window_role="pop-up"] floating enable — criterion 'window_role' can't be matched on macOS; dropped from the rule
+line 33: [skipped] for_window [window_role="pop-up"] floating enable — none of the criteria can be matched on macOS
+line 40: [note] workspace_layout tabbed — 'tabbed' approximated as accordion (closest analog of stacking/tabbed)
+line 41: [skipped] workspace_auto_back_and_forth yes — behavior tweak with no equivalent
+22 of 28 directives translated, 6 skipped

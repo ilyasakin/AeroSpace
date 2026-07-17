@@ -5,8 +5,23 @@ import Foundation
 func importI3Config(_ text: String, _ options: ImportOptions = ImportOptions()) -> ImportResult {
     var ctx = I3ImportContext(options: options)
     ctx.parseLines(text)
+    // i3 doesn't flatten nested containers, and AeroSpace's flatten normalization makes the
+    // 'split' command a config-level error. Preserve i3 semantics when split bindings exist
+    if ctx.builder.bindings.contains(where: { binding in binding.commands.contains { $0.hasPrefix("split ") } }) {
+        ctx.builder.disableFlattenNormalization = true
+        ctx.note(0, "split bindings", "flatten-containers normalization disabled to keep i3's split semantics")
+    }
     let toml = emitAeroToml(builder: ctx.builder, diagnostics: ctx.diagnostics, sourceKind: "i3")
     return ImportResult(toml: toml, diagnostics: ctx.diagnostics, directiveCount: ctx.directiveCount)
+}
+
+/// Quotes a command argument for the aerospace shell if it contains characters
+/// that the bare-word lexer would reject (spaces, colons, quotes, ...)
+func shellQuoteArg(_ arg: String) -> String {
+    let bareAllowed = arg.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }
+    if bareAllowed && !arg.isEmpty { return arg }
+    if !arg.contains("'") { return "'\(arg)'" }
+    return "\"\(arg.replacingOccurrences(of: "\"", with: "\\\""))\""
 }
 
 struct AeroConfigBuilder {
@@ -22,6 +37,7 @@ struct AeroConfigBuilder {
     var workspaceToMonitor: [(workspace: String, output: String)] = []
     var detectionRules: [(matchers: [String], treatAs: String)] = []
     var windowCallbacks: [(matchers: [String], run: [String])] = []
+    var disableFlattenNormalization = false
 }
 
 private struct I3ImportContext {
@@ -32,6 +48,7 @@ private struct I3ImportContext {
     var variables: [String: String] = [:]
     var usesMod1 = false
     var usesMod4 = false
+    var renamedWorkspaces: Set<String> = []
 
     var mod4Target: String {
         usesMod1 && usesMod4 ? "cmd" : options.mod4Target
@@ -270,8 +287,17 @@ private struct I3ImportContext {
 
     // MARK: Actions
 
+    /// Strips whitespace: AeroSpace forbids whitespace in workspace names
+    mutating func sanitizeWorkspace(_ name: String) -> String {
+        let sanitized = name.filter { !$0.isWhitespace }
+        if sanitized != name, renamedWorkspaces.insert(name).inserted {
+            note(0, "workspace \"\(name)\"", "renamed to '\(sanitized)' (whitespace is forbidden in workspace names)")
+        }
+        return sanitized.isEmpty ? "1" : sanitized
+    }
+
     /// Maps a (possibly `;`/`,`-chained) i3 action list. Returns mapped commands + reasons for dropped parts
-    func mapActionList(_ action: String) -> (commands: [String], dropped: [String]) {
+    mutating func mapActionList(_ action: String) -> (commands: [String], dropped: [String]) {
         var commands: [String] = []
         var dropped: [String] = []
         for part in splitActions(action) {
@@ -293,7 +319,7 @@ private struct I3ImportContext {
             .filter { !$0.isEmpty }
     }
 
-    func mapAction(_ action: String) -> Result<[String], String> {
+    mutating func mapAction(_ action: String) -> Result<[String], String> {
         let (word, rest) = action.splitFirstWord()
         let arg = rest.trimmingCharacters(in: .whitespaces)
         switch word {
@@ -321,7 +347,7 @@ private struct I3ImportContext {
                     case "next_on_output": return .success(["workspace next"])
                     case "prev_on_output": return .success(["workspace prev"])
                     case "back_and_forth": return .success(["workspace-back-and-forth"])
-                    default: return .success(["workspace \(name)"])
+                    default: return .success(["workspace \(shellQuoteArg(sanitizeWorkspace(name)))"])
                 }
             case "split":
                 switch arg {
@@ -381,7 +407,7 @@ private struct I3ImportContext {
         }
     }
 
-    func mapMoveAction(_ arg: String) -> Result<[String], String> {
+    mutating func mapMoveAction(_ arg: String) -> Result<[String], String> {
         var arg = arg.removePrefixIfPresent("--no-auto-back-and-forth").trimmingCharacters(in: .whitespaces)
         switch arg {
             case "left", "right", "up", "down": return .success(["move \(arg)"])
@@ -399,7 +425,7 @@ private struct I3ImportContext {
             switch name {
                 case "next", "prev": return .success(["move-node-to-workspace \(name)"])
                 case "back_and_forth": return .failure("moving to the previous workspace is not supported")
-                default: return .success(["move-node-to-workspace \(name)"])
+                default: return .success(["move-node-to-workspace \(shellQuoteArg(sanitizeWorkspace(name)))"])
             }
         }
         if arg.hasPrefix("to output") {
@@ -508,7 +534,7 @@ private struct I3ImportContext {
         }
         name = name.removePrefixIfPresent("workspace").trimmingCharacters(in: .whitespaces)
         name = name.removePrefixIfPresent("number").trimmingCharacters(in: .whitespaces).unquoted()
-        builder.windowCallbacks.append((matchers: matchers, run: ["move-node-to-workspace \(name)"]))
+        builder.windowCallbacks.append((matchers: matchers, run: ["move-node-to-workspace \(shellQuoteArg(sanitizeWorkspace(name)))"]))
     }
 
     mutating func handleWorkspaceDirective(_ rest: String, original: String, line: Int) {
@@ -524,7 +550,7 @@ private struct I3ImportContext {
             return
         }
         let mapped = firstOutput == "primary" ? "main" : firstOutput
-        builder.workspaceToMonitor.append((workspace: name, output: mapped))
+        builder.workspaceToMonitor.append((workspace: sanitizeWorkspace(name), output: mapped))
         if mapped != "main" {
             note(line, original, "'\(firstOutput)' is a Linux connector name; macOS matches monitors by display name — replace with 'main', 'secondary', a monitor index, or a display-name regex")
         }
