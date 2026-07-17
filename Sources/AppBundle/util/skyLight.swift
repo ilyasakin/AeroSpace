@@ -16,31 +16,18 @@ enum SkyLight {
 
     private typealias MainConnectionIDFun = @convention(c) () -> Int32
     private typealias GetWindowBoundsFun = @convention(c) (Int32, UInt32, UnsafeMutablePointer<CGRect>) -> Int32
-    // SLSOrderWindow(cid, window, order, relativeTo): order 1 = above, -1 = below, 0 = out
-    private typealias OrderWindowFun = @convention(c) (Int32, UInt32, Int32, UInt32) -> Int32
-    // SLSGetWindowLevel(cid, window, &outLevel) -> error
-    private typealias GetWindowLevelFun = @convention(c) (Int32, UInt32, UnsafeMutablePointer<Int32>) -> Int32
-    // SLSGetWindowSubLevel(cid, window) -> subLevel
-    private typealias GetWindowSubLevelFun = @convention(c) (Int32, UInt32) -> Int32
-    // SLSSetWindow{Level,SubLevel}(cid, window, level) -> error
-    private typealias SetWindowLevelFun = @convention(c) (Int32, UInt32, Int32) -> Int32
     /// WindowServer event callback: (event, data, dataLength, context). For window-modify events
-    /// (move/resize/reorder/level) `data` points to the affected window's CGWindowID (a UInt32)
+    /// (move/resize) `data` points to the affected window's CGWindowID (a UInt32)
     typealias NotifyProc = @convention(c) (UInt32, UnsafeMutableRawPointer?, Int, UnsafeMutableRawPointer?) -> Void
     // SLSRegisterNotifyProc(handler, event, context) -> error
     private typealias RegisterNotifyProcFun = @convention(c) (NotifyProc, UInt32, UnsafeMutableRawPointer?) -> Int32
 
     /// WindowServer event ids (from JankyBorders' reverse-engineered set)
-    enum WindowEvent: UInt32 { case move = 806, resize = 807, reorder = 808, level = 811 }
+    enum WindowEvent: UInt32 { case move = 806, resize = 807 }
 
     @unsafe private struct Impl {
         let connection: Int32
         let getWindowBounds: GetWindowBoundsFun
-        let orderWindow: OrderWindowFun?
-        let getWindowLevel: GetWindowLevelFun?
-        let getWindowSubLevel: GetWindowSubLevelFun?
-        let setWindowLevel: SetWindowLevelFun?
-        let setWindowSubLevel: SetWindowLevelFun?
         let registerNotifyProc: RegisterNotifyProcFun?
     }
 
@@ -51,50 +38,22 @@ enum SkyLight {
         else { return nil }
         let mainConnection = unsafe unsafeBitCast(mainConnectionSym, to: MainConnectionIDFun.self)
         let getWindowBounds = unsafe unsafeBitCast(getBoundsSym, to: GetWindowBoundsFun.self)
-        let orderWindow = unsafe dlsym(handle, "SLSOrderWindow").map { unsafe unsafeBitCast($0, to: OrderWindowFun.self) }
-        let getWindowLevel = unsafe dlsym(handle, "SLSGetWindowLevel").map { unsafe unsafeBitCast($0, to: GetWindowLevelFun.self) }
-        let getWindowSubLevel = unsafe dlsym(handle, "SLSGetWindowSubLevel").map { unsafe unsafeBitCast($0, to: GetWindowSubLevelFun.self) }
-        let setWindowLevel = unsafe dlsym(handle, "SLSSetWindowLevel").map { unsafe unsafeBitCast($0, to: SetWindowLevelFun.self) }
-        let setWindowSubLevel = unsafe dlsym(handle, "SLSSetWindowSubLevel").map { unsafe unsafeBitCast($0, to: SetWindowLevelFun.self) }
         let registerNotifyProc = unsafe dlsym(handle, "SLSRegisterNotifyProc").map { unsafe unsafeBitCast($0, to: RegisterNotifyProcFun.self) }
-        return unsafe Impl(connection: mainConnection(), getWindowBounds: getWindowBounds, orderWindow: orderWindow,
-                           getWindowLevel: getWindowLevel, getWindowSubLevel: getWindowSubLevel,
-                           setWindowLevel: setWindowLevel, setWindowSubLevel: setWindowSubLevel,
-                           registerNotifyProc: registerNotifyProc)
+        return unsafe Impl(connection: mainConnection(), getWindowBounds: getWindowBounds, registerNotifyProc: registerNotifyProc)
     }()
 
-    /// Subscribe `proc` to window move/resize/reorder/level events for every window on the system.
+    /// Subscribe `proc` to window move/resize events for every window on the system, so border masks
+    /// can track a live drag at the display's refresh rate instead of waiting for AeroSpace's refresh.
     /// The proc fires on the thread whose run loop was active at registration (the main thread here).
     /// Registered once for the app's lifetime; there is no clean unregister in this API
     @MainActor static func registerWindowEvents(_ proc: @escaping NotifyProc) {
         guard let impl = unsafe impl, let register = unsafe impl.registerNotifyProc else { return }
-        for event in [WindowEvent.move, .resize, .reorder, .level] {
+        for event in [WindowEvent.move, .resize] {
             _ = unsafe register(proc, event.rawValue, nil)
         }
     }
 
     static var isAvailable: Bool { unsafe impl != nil }
-
-    /// Places our own overlay `window` directly above `relativeTo` and glues it into that window's
-    /// stacking group by copying the target's window level AND sub-level onto the overlay. This is
-    /// how JankyBorders keeps a border above its target even when the target belongs to the *active*
-    /// application: a plain SLSOrderWindow is overridden by WindowServer's active-app-forward policy
-    /// (our overlay is always owned by a background app), but matching level+sub-level makes the
-    /// overlay ride inside the target's group so it's carried along instead of stranded below it.
-    /// SIP-free because we only ever mutate a window we own (the overlay)
-    @MainActor static func orderWindow(_ window: UInt32, above relativeTo: UInt32) {
-        guard let impl = unsafe impl, let orderWindow = unsafe impl.orderWindow else { return }
-        if let getLevel = unsafe impl.getWindowLevel, let setLevel = unsafe impl.setWindowLevel {
-            var level: Int32 = 0
-            _ = unsafe getLevel(impl.connection, relativeTo, &level)
-            _ = unsafe setLevel(impl.connection, window, level)
-        }
-        if let getSub = unsafe impl.getWindowSubLevel, let setSub = unsafe impl.setWindowSubLevel {
-            let subLevel = unsafe getSub(impl.connection, relativeTo)
-            _ = unsafe setSub(impl.connection, window, subLevel)
-        }
-        _ = unsafe orderWindow(impl.connection, window, 1, relativeTo)
-    }
 
     /// The window's frame in global top-left screen coordinates (the same space AX frames use).
     /// nil when SkyLight reads are disabled, unavailable, or the window is unknown to WindowServer
