@@ -20,6 +20,7 @@ import Foundation
 
         await bootstrapConfig_nonCancellable()
         _ = await reloadConfig_nonCancellable()
+        await offerForeignConfigImportIfNeeded()
 
         startUnixSocketServer()
         GlobalObserver.initObserver()

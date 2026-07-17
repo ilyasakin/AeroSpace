@@ -821,6 +821,40 @@ The first matching pattern will be used
 
 xref:commands.adoc#move-workspace-to-monitor[move-workspace-to-monitor] command has no effect for workspaces that have monitor assignment
 
+[#migrating-from-linux]
+== Migrating from i3 or Hyprland
+
+Bring your Linux config with you:
+
+[source,shell]
+----
+aerospace import-config i3 ~/.config/i3/config --dry-run        # preview
+aerospace import-config i3 ~/.config/i3/config                  # write
+aerospace import-config hyprland ~/.config/hypr/hyprland.conf
+----
+
+Everything mappable is translated: keybindings (including binding modes / submaps),
+`for_window`, `assign` and `windowrulev2` rules, workspace-to-output assignments, gaps,
+and startup commands. Lines that have no meaning on macOS are preserved as comments at
+the bottom of the generated config, each with an explanation, and summarized in a report.
+The generated config is guaranteed to parse.
+
+Things to know:
+
+* *`$mod` / SUPER maps to `alt` by default* (`cmd` is dangerously overloaded on macOS).
+  Use `import-config --mod cmd` if you insist. Configs that use both Mod1 and Mod4 get
+  Mod4 mapped to `cmd` automatically.
+* *Monitor names differ.* Linux connector names (`HDMI-1`, `DP-1`, `eDP-1`) don't exist on
+  macOS; monitors are matched by display name. Imported workspace-to-monitor assignments
+  keep the connector name and flag it — replace with `main`, `secondary`, a 1-based monitor
+  index, or a display-name regex.
+* *Workspace names can't contain whitespace* — `"1: www"` is imported as `1:www`.
+* *Bars and borders:* there is no i3bar/waybar; see the
+  https://github.com/FelixKratz/SketchyBar[SketchyBar] and
+  https://github.com/FelixKratz/JankyBorders[JankyBorders] projects for equivalents.
+* If AeroSpace starts with no config and finds an i3/Hyprland config, it offers the
+  import automatically.
+
 [#window-detection]
 == Window detection
 
