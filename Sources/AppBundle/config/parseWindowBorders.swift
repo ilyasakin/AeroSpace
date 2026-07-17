@@ -29,8 +29,18 @@ struct WindowBorders: ConvenienceMutable, Equatable, Sendable {
     var inactiveColor: RgbaColor = RgbaColor(r: 0x49, g: 0x4D, b: 0x64) // muted gray
     var width: Int = 4
     var cornerRadius: Int = 10
+    /// Per-app corner-radius overrides, keyed by app bundle id. macOS exposes no API to read a
+    /// window's real corner radius, so apps whose rounding doesn't match `cornerRadius` get an
+    /// explicit value here (and on recent macOS the radius even varies by window type)
+    var cornerRadiusOverrides: [String: Int] = [:]
 
     static let disabled = WindowBorders()
+
+    /// The corner radius to use for a window owned by `appId`: its override if any, else the default
+    func cornerRadius(forAppId appId: String?) -> Int {
+        if let appId, let override = cornerRadiusOverrides[appId] { return override }
+        return cornerRadius
+    }
 }
 
 private let windowBordersParser: [String: any ParserProtocol<WindowBorders>] = [
@@ -39,7 +49,23 @@ private let windowBordersParser: [String: any ParserProtocol<WindowBorders>] = [
     "inactive-color": Parser(\.inactiveColor, parseColor),
     "width": Parser(\.width, parseInt),
     "corner-radius": Parser(\.cornerRadius, parseInt),
+    "corner-radius-overrides": Parser(\.cornerRadiusOverrides, parseCornerRadiusOverrides),
 ]
+
+/// Parses a `{ "app.bundle.id" = <radius> }` table into per-app corner-radius overrides
+func parseCornerRadiusOverrides(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> [String: Int] {
+    guard let rawTable = raw.asDictOrNil else {
+        c.errors += [expectedActualTypeDiagnostic(expected: .table, actual: raw.tomlType, backtrace)]
+        return [:]
+    }
+    var result: [String: Int] = [:]
+    for (appId, rawRadius) in rawTable {
+        if let radius = parseInt(rawRadius, backtrace + .key(appId)).getOrNil(appendErrorTo: &c.errors) {
+            result[appId] = radius
+        }
+    }
+    return result
+}
 
 func parseWindowBorders(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> WindowBorders {
     parseTable(raw, .disabled, windowBordersParser, backtrace, &c)

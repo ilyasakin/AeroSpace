@@ -102,6 +102,9 @@ window-borders.active-color =   '0xffe1e3e4'
 window-borders.inactive-color = '0xff494d64'
 window-borders.width =          4
 window-borders.corner-radius =  10
+# Per-app corner-radius overrides for apps whose rounding doesn't match the
+# default above. Keyed by app bundle id (find it with: aerospace list-apps).
+# window-borders.corner-radius-overrides = { "com.apple.Terminal" = 6, "com.mitchellh.ghostty" = 12 }
 
 # 'main' binding mode declaration
 # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes

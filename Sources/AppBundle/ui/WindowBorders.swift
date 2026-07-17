@@ -77,7 +77,8 @@ final class WindowBordersManager {
                 seen.insert(window.windowId)
                 let panel = panels[window.windowId] ?? makePanel(for: window.windowId)
                 let color = window.windowId == activeId ? cfg.activeColor : cfg.inactiveColor
-                panel.update(windowAppKitFrame: rect.toAppKitFrame(), targetWindowId: window.windowId, color: color, width: cfg.width, cornerRadius: cfg.cornerRadius)
+                let cornerRadius = cfg.cornerRadius(forAppId: window.app.rawAppBundleId)
+                panel.update(windowAppKitFrame: rect.toAppKitFrame(), targetWindowId: window.windowId, color: color, width: cfg.width, cornerRadius: cornerRadius)
             }
         }
 

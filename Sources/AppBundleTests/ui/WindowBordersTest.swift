@@ -22,4 +22,16 @@ final class WindowBordersTest: XCTestCase {
         let frame = rect.toAppKitFrame()
         assertEquals(frame.origin.y, 980) // 1080 - 100
     }
+
+    func testCornerRadiusOverrideResolution() {
+        var borders = WindowBorders()
+        borders.cornerRadius = 10
+        borders.cornerRadiusOverrides = ["com.apple.Terminal": 6]
+        // App with an override gets it
+        assertEquals(borders.cornerRadius(forAppId: "com.apple.Terminal"), 6)
+        // App without an override falls back to the default
+        assertEquals(borders.cornerRadius(forAppId: "com.google.Chrome"), 10)
+        // Unknown / nil app id falls back to the default
+        assertEquals(borders.cornerRadius(forAppId: nil), 10)
+    }
 }

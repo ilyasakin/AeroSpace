@@ -56,6 +56,15 @@ window's actual corner radius (and on recent macOS the radius even varies by win
 with toolbars are more rounded), so a border can't perfectly match every app automatically.
 Standard windows are around `10`.
 
+For the odd app whose rounding doesn't match the default, set a per-app override keyed by its bundle
+id (find it with `aerospace list-apps`):
+
+[source,toml]
+----
+window-borders.corner-radius = 10
+window-borders.corner-radius-overrides = { "com.apple.Terminal" = 6, "com.mitchellh.ghostty" = 12 }
+----
+
 If you were using the external link:https://github.com/FelixKratz/JankyBorders[JankyBorders]
 tool, remove its `exec-and-forget borders ...` line so the two don't fight over the same windows.
 
