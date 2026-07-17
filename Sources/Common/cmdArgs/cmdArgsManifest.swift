@@ -20,6 +20,7 @@ public enum CmdKind: String, CaseIterable, Equatable, Sendable {
     case focusBackAndForth = "focus-back-and-forth"
     case focusMonitor = "focus-monitor"
     case fullscreen
+    case importConfig = "import-config"
     case joinWith = "join-with"
     case layout
     case listApps = "list-apps"
@@ -93,6 +94,8 @@ func initSubcommands() -> [String: any SubCommandParserProtocol] {
                 result[kind.rawValue] = SubCommandParser(parseFocusMonitorCmdArgs)
             case .fullscreen:
                 result[kind.rawValue] = SubCommandParser(parseFullscreenCmdArgs)
+            case .importConfig:
+                result[kind.rawValue] = SubCommandParser(parseImportConfigCmdArgs)
             case .joinWith:
                 result[kind.rawValue] = SubCommandParser(JoinWithCmdArgs.init)
             case .layout:

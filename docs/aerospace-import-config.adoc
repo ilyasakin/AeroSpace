@@ -1,0 +1,59 @@
+= aerospace-import-config(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-import-config
+// tag::purpose[]
+:manpurpose: Translate an i3 config into a native config + compatibility report
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace import-config [-h|--help] (i3) <path> [--output <path>] [--mod (alt|cmd)] [--dry-run]
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+Everything that has an equivalent is translated: keybindings (including binding modes),
+`for_window`/`assign` rules, workspace-to-output assignments, gaps, startup commands, and more.
+Lines that have no meaning on macOS (i3bar, borders, colors, fonts, ...) are preserved as
+comments at the bottom of the generated config, each with an explanation.
+
+The generated config is validated with the real config parser before it is written -
+the importer never produces a config that fails to load.
+
+The importer never overwrites files. If no config exists, the result is written to
+`~/.config/aerospace/aerospace.toml`; otherwise `--output` is required.
+
+i3's `$mod` (Mod4/Super) is mapped to `alt` by default, which is the safe choice on macOS
+(`cmd` conflicts with system shortcuts). Override with `--mod cmd`.
+When a config uses both Mod1 and Mod4, Mod4 maps to `cmd` automatically to keep the two distinct.
+
+Heads up! i3 output names (`HDMI-1`, `eDP-1`, ...) are Linux connector names.
+macOS identifies monitors by display name, so translated workspace-to-monitor
+assignments may need adjustment: use `main`, `secondary`, a 1-based monitor index,
+or a display-name regex.
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--output <path>:: Write the generated config to <path> instead of the default location
+
+--mod (alt|cmd):: What i3's Mod4/Super maps to. Default: alt
+
+--dry-run:: Print the generated config and report without writing anything
+
+// =========================================================== Exit Codes
+include::util/conditional-exit-code-header.adoc[]
+
+0:: Success
+1:: Something went wrong (the source can't be read, the destination exists, ...)
+
+// end::body[]

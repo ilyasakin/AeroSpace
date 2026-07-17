@@ -89,6 +89,23 @@ final class ImportI3Test: XCTestCase {
         assertTrue(result.toml.contains("alt-a = 'workspace 2'"))
     }
 
+    func testImportConfigCommandDryRun() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appending(path: "i3-import-test-\(UUID().uuidString).config")
+        try "bindsym Mod4+t workspace T\nfont pango:monospace 8".write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let result = await parseCommand("import-config i3 \(tmp.path) --dry-run").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(result.exitCode.rawValue, 0)
+        let output = result.stdout.joined(separator: "\n")
+        assertTrue(output.contains("alt-t = 'workspace T'"))
+        assertTrue(output.contains("1 of 2 directives translated, 1 skipped"))
+    }
+
+    func testImportConfigCommandRefusesUnreadableSource() async {
+        let result = await parseCommand("import-config i3 /nonexistent/i3config --dry-run").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(result.exitCode.rawValue, 2)
+    }
+
     func testUnknownKeysymIsSkippedNotFatal() {
         let config = """
             bindsym XF86AudioRaiseVolume exec pactl set-sink-volume 0 +5%
