@@ -211,16 +211,19 @@ final class MacWindow: Window {
     }
 
     override func getAxSize(_ cm: CancellationMode) async throws -> CGSize? {
-        if let bounds = SkyLight.windowBounds(windowId) { return CGSize(width: bounds.width, height: bounds.height) }
+        if !skyLightFrameMayBeStale(windowId), let bounds = SkyLight.windowBounds(windowId) {
+            return CGSize(width: bounds.width, height: bounds.height)
+        }
         return try await macApp.getAxSize(windowId, cm)
     }
 
     override func setAxFrame(_ topLeft: CGPoint?, _ size: CGSize?) {
+        markFrameWrittenThisSession(windowId) // subsequent same-session reads must bypass the lagging SkyLight
         macApp.setAxFrame(windowId, topLeft, size)
     }
 
     override func getAxRect(_ cm: CancellationMode) async throws -> Rect? {
-        if let bounds = SkyLight.windowBounds(windowId) { return bounds }
+        if !skyLightFrameMayBeStale(windowId), let bounds = SkyLight.windowBounds(windowId) { return bounds }
         return try await macApp.getAxRect(windowId, cm)
     }
 }

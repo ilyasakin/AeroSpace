@@ -32,6 +32,7 @@ func runHeavyCompleteRefreshSession(
     if !TrayMenuModel.shared.isEnabled { return }
     invalidateWindowLevelCache()
     invalidateMonitorsCache()
+    clearFramesWrittenThisSession()
     let res = await Result {
         try await $refreshSessionEvent.withValue(event) {
             let nativeFocused = try await getNativeFocusedWindow(.cancellable)
@@ -69,6 +70,7 @@ func runLightSession<T>(
     activeRefreshTask = nil
     invalidateWindowLevelCache()
     invalidateMonitorsCache()
+    clearFramesWrittenThisSession()
     return try await $refreshSessionEvent.withValue(event) {
         let nativeFocused = try await getNativeFocusedWindow(.cancellable)
         if let nativeFocused { try await debugWindowsIfRecording(nativeFocused, .cancellable) }
