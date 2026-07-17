@@ -10,6 +10,9 @@ extension RgbaColor {
 /// Drawn with a CAShapeLayer (no SwiftUI/AX overhead) so it's cheap to update every refresh
 final class WindowBordersPanel: NSPanelHud {
     private let borderLayer = CAShapeLayer()
+    // Last geometry applied, so a move/resize event can reposition without re-deriving width/radius
+    private var lastWidth = 0
+    private var lastCornerRadius = 0
 
     override init() {
         super.init()
@@ -30,6 +33,22 @@ final class WindowBordersPanel: NSPanelHud {
     /// - windowAppKitFrame: the target window's frame in AppKit (bottom-left origin) coordinates
     /// - targetWindowId: the CGWindowID this border belongs to, used to order the border above it
     func update(windowAppKitFrame: NSRect, targetWindowId: UInt32, color: RgbaColor, width: Int, cornerRadius: Int) {
+        borderLayer.strokeColor = color.nsColor.cgColor
+        applyGeometry(windowAppKitFrame, width: width, cornerRadius: cornerRadius)
+        reorderAbove(targetWindowId)
+    }
+
+    /// Cheap reposition for a WindowServer move/resize event: reuse the last color/width/radius and
+    /// only move the frame + re-glue z-order. No config or window lookup, so it's fast enough to run
+    /// per frame while a window is being dragged
+    func reposition(windowAppKitFrame: NSRect, targetWindowId: UInt32) {
+        applyGeometry(windowAppKitFrame, width: lastWidth, cornerRadius: lastCornerRadius)
+        reorderAbove(targetWindowId)
+    }
+
+    private func applyGeometry(_ windowAppKitFrame: NSRect, width: Int, cornerRadius: Int) {
+        lastWidth = width
+        lastCornerRadius = cornerRadius
         let w = CGFloat(width)
         // Panel is the window frame outset by the border width so the stroke sits around the window
         let panelFrame = windowAppKitFrame.insetBy(dx: -w, dy: -w)
@@ -43,11 +62,8 @@ final class WindowBordersPanel: NSPanelHud {
         setFrame(panelFrame, display: false)
         borderLayer.frame = CGRect(origin: .zero, size: panelFrame.size)
         borderLayer.path = CGPath(roundedRect: strokeRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-        borderLayer.strokeColor = color.nsColor.cgColor
         borderLayer.lineWidth = w
         CATransaction.commit()
-
-        reorderAbove(targetWindowId)
     }
 
     /// Re-issue only the z-order (no frame/path recompute). Used to reassert the stack after an
@@ -61,17 +77,50 @@ final class WindowBordersPanel: NSPanelHud {
 
 /// Manages one border panel per visible managed window. Driven from the refresh loop, so borders
 /// update on every focus / move / resize / layout change with no separate tracking process
+/// WindowServer event callback (runs on the thread that registered it, i.e. the main thread).
+/// `data` points to the affected window's CGWindowID. We hand it to the manager to move/re-glue
+/// just that window's border, which is how borders track a live drag at the display's refresh rate
+/// instead of waiting for AeroSpace's next refresh
+private let windowBordersEventProc: SkyLight.NotifyProc = { event, data, _, _ in
+    guard let data else { return }
+    let windowId = data.load(as: UInt32.self)
+    let isReorder = event == SkyLight.WindowEvent.reorder.rawValue || event == SkyLight.WindowEvent.level.rawValue
+    if Thread.isMainThread {
+        MainActor.assumeIsolated { WindowBordersManager.shared.handleWindowServerEvent(windowId: windowId, isReorder: isReorder) }
+    } else {
+        DispatchQueue.main.async { WindowBordersManager.shared.handleWindowServerEvent(windowId: windowId, isReorder: isReorder) }
+    }
+}
+
 @MainActor
 final class WindowBordersManager {
     static let shared = WindowBordersManager()
     private var panels: [UInt32: WindowBordersPanel] = [:]
+    private var observingWindowServer = false
     private init() {}
+
+    /// Move or re-glue a single window's border in response to a WindowServer event. Cheap and
+    /// panel-local: unknown windows (no border) are ignored, so this also filters our own overlays
+    func handleWindowServerEvent(windowId: UInt32, isReorder: Bool) {
+        guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled else { return }
+        guard let panel = panels[windowId] else { return }
+        if isReorder {
+            panel.reorderAbove(windowId)
+        } else if let rect = SkyLight.overlayBounds(windowId) {
+            panel.reposition(windowAppKitFrame: rect.toAppKitFrame(), targetWindowId: windowId)
+        }
+    }
 
     func refresh() {
         let cfg = config.windowBorders
         guard cfg.enabled, TrayMenuModel.shared.isEnabled else {
             teardownAll()
             return
+        }
+        // Subscribe lazily the first time borders are enabled; kept for the app's lifetime
+        if !observingWindowServer {
+            observingWindowServer = true
+            SkyLight.registerWindowEvents(windowBordersEventProc)
         }
         let activeId = focus.windowOrNil?.windowId
         var seen = Set<UInt32>(minimumCapacity: panels.count)

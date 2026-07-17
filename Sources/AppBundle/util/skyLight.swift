@@ -24,6 +24,14 @@ enum SkyLight {
     private typealias GetWindowSubLevelFun = @convention(c) (Int32, UInt32) -> Int32
     // SLSSetWindow{Level,SubLevel}(cid, window, level) -> error
     private typealias SetWindowLevelFun = @convention(c) (Int32, UInt32, Int32) -> Int32
+    /// WindowServer event callback: (event, data, dataLength, context). For window-modify events
+    /// (move/resize/reorder/level) `data` points to the affected window's CGWindowID (a UInt32)
+    typealias NotifyProc = @convention(c) (UInt32, UnsafeMutableRawPointer?, Int, UnsafeMutableRawPointer?) -> Void
+    // SLSRegisterNotifyProc(handler, event, context) -> error
+    private typealias RegisterNotifyProcFun = @convention(c) (NotifyProc, UInt32, UnsafeMutableRawPointer?) -> Int32
+
+    /// WindowServer event ids (from JankyBorders' reverse-engineered set)
+    enum WindowEvent: UInt32 { case move = 806, resize = 807, reorder = 808, level = 811 }
 
     @unsafe private struct Impl {
         let connection: Int32
@@ -33,6 +41,7 @@ enum SkyLight {
         let getWindowSubLevel: GetWindowSubLevelFun?
         let setWindowLevel: SetWindowLevelFun?
         let setWindowSubLevel: SetWindowLevelFun?
+        let registerNotifyProc: RegisterNotifyProcFun?
     }
 
     private static let impl: Impl? = {
@@ -47,10 +56,22 @@ enum SkyLight {
         let getWindowSubLevel = unsafe dlsym(handle, "SLSGetWindowSubLevel").map { unsafe unsafeBitCast($0, to: GetWindowSubLevelFun.self) }
         let setWindowLevel = unsafe dlsym(handle, "SLSSetWindowLevel").map { unsafe unsafeBitCast($0, to: SetWindowLevelFun.self) }
         let setWindowSubLevel = unsafe dlsym(handle, "SLSSetWindowSubLevel").map { unsafe unsafeBitCast($0, to: SetWindowLevelFun.self) }
+        let registerNotifyProc = unsafe dlsym(handle, "SLSRegisterNotifyProc").map { unsafe unsafeBitCast($0, to: RegisterNotifyProcFun.self) }
         return unsafe Impl(connection: mainConnection(), getWindowBounds: getWindowBounds, orderWindow: orderWindow,
                            getWindowLevel: getWindowLevel, getWindowSubLevel: getWindowSubLevel,
-                           setWindowLevel: setWindowLevel, setWindowSubLevel: setWindowSubLevel)
+                           setWindowLevel: setWindowLevel, setWindowSubLevel: setWindowSubLevel,
+                           registerNotifyProc: registerNotifyProc)
     }()
+
+    /// Subscribe `proc` to window move/resize/reorder/level events for every window on the system.
+    /// The proc fires on the thread whose run loop was active at registration (the main thread here).
+    /// Registered once for the app's lifetime; there is no clean unregister in this API
+    @MainActor static func registerWindowEvents(_ proc: @escaping NotifyProc) {
+        guard let impl = unsafe impl, let register = unsafe impl.registerNotifyProc else { return }
+        for event in [WindowEvent.move, .resize, .reorder, .level] {
+            _ = unsafe register(proc, event.rawValue, nil)
+        }
+    }
 
     static var isAvailable: Bool { unsafe impl != nil }
 
