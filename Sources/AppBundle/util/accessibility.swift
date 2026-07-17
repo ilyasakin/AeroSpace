@@ -368,6 +368,29 @@ extension AXUIElement: AxUiElementMock {
             : nil
     }
 
+    /// Reads position and size in a SINGLE cross-process round-trip via
+    /// AXUIElementCopyMultipleAttributeValues, instead of two separate AXUIElementCopyAttributeValue
+    /// calls. Each AX round-trip is synchronous and stalls on a busy app, so halving the count is
+    /// a direct latency win on the hot path (layout, hide/unhide, mouse drag)
+    func getFrame() -> Rect? {
+        let state = signposter.beginInterval(#function, "axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)")
+        defer { signposter.endInterval(#function, state) }
+        let attrs = [kAXPositionAttribute, kAXSizeAttribute] as CFArray
+        var raw: CFArray?
+        guard unsafe AXUIElementCopyMultipleAttributeValues(self, attrs, AXCopyMultipleAttributeOptions(), &raw) == .success,
+              let values = raw as? [AnyObject], values.count == 2
+        else { return nil }
+        var point = CGPoint.zero
+        var size = CGSize.zero
+        let posValue = values[0]
+        let sizeValue = values[1]
+        guard CFGetTypeID(posValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID(),
+              unsafe AXValueGetValue(posValue as! AXValue, .cgPoint, &point),
+              unsafe AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
+        else { return nil }
+        return Rect(topLeftX: point.x, topLeftY: point.y, width: size.width, height: size.height)
+    }
+
     func isSettable<Attr: WritableAttr>(_ attr: Attr) -> Bool? {
         var settable = DarwinBoolean(false)
         return unsafe AXUIElementIsAttributeSettable(self, attr.key as CFString, &settable) == .success

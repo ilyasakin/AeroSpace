@@ -427,10 +427,8 @@ extension [UInt32: AxWindow] {
 }
 
 private func getAxRect(window: AXUIElement, job: RunLoopJob) throws -> Rect? {
-    guard let topLeftCorner = window.get(Ax.topLeftCornerAttr) else { return nil }
     try job.checkCancellation()
-    guard let size = window.get(Ax.sizeAttr) else { return nil }
-    return Rect(topLeftX: topLeftCorner.x, topLeftY: topLeftCorner.y, width: size.width, height: size.height)
+    return window.getFrame() // position + size in one AX round-trip
 }
 
 private func setFrame(_ window: AXUIElement, _ topLeft: CGPoint?, _ size: CGSize?, _ job: RunLoopJob) throws {
