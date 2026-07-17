@@ -98,10 +98,8 @@ private func dumpWindowDebugInfo(_ window: Window, _ cm: CancellationMode) async
     result["Aero.App.nsApp.appBundlePath"] = .stringOrNull(window.macApp.nsApp.bundleURL?.description)
     result["Aero.AXApp"] = .dict(try await window.macApp.dumpAppAxInfo(cm))
 
-    let isDialog = try await window.isDialogHeuristic(windowLevel, cm)
-    let isWindow = try await window.isWindowHeuristic(windowLevel, cm)
-    result["Aero.AxUiElementWindowType"] = .string(AxUiElementWindowType.new(isWindow: isWindow, isDialog: { isDialog }).rawValue)
-    result["Aero.AxUiElementWindowType_isDialogHeuristic"] = .bool(isDialog)
+    let windowType = try await window.macApp.getAxUiElementWindowType(window.windowId, windowLevel, cm)
+    result["Aero.AxUiElementWindowType"] = .string(windowType.rawValue)
 
     var matchingCallbacks: [Json] = []
     for callback in config.onWindowDetected where await callback.matches(window) {

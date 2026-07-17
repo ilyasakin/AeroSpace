@@ -7,6 +7,7 @@ let signposter = OSSignposter(subsystem: aeroSpaceAppId, category: .pointsOfInte
 
 let myPid = NSRunningApplication.current.processIdentifier
 let lockScreenAppBundleId = "com.apple.loginwindow"
+let zoomAppBundleId = "us.zoom.xos"
 
 func interceptTermination(_ _signal: Int32) {
     signal(_signal, { (signal: Int32) in

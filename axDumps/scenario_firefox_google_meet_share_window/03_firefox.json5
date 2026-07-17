@@ -26,7 +26,6 @@
   "Aero.App.version" : "13925.6.9",
   "Aero.App.versionShort" : "139.0.4",
   "Aero.AxUiElementWindowType" : "popup",
-  "Aero.AxUiElementWindowType_isDialogHeuristic" : true,
   "Aero.axWindowId" : 13,
   "Aero.macOS.version" : "Version 15.5 (Build 24F74)",
   "Aero.on-window-detected" : [

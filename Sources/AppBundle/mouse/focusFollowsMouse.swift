@@ -25,7 +25,7 @@ import AppKit
             guard let token: RunSessionGuard = .isServerEnabled else { return }
             try checkCancellation()
             // Ignores macOS menubar dropdown, but, unfortunately, it doesn't ignore non-native menu-like fake windows.
-            // todo: It would be cool to somehow reuse isWindowHeuristic logic here
+            // todo: It would be cool to somehow reuse getWindowType logic here
             if await isAxWindowUnderMouse(location) == false { return }
             try checkCancellation()
             let workspace = location.monitorApproximation.activeWorkspace

@@ -19,18 +19,12 @@ func checkAxDumpsRecursive(_ dir: URL) throws {
         let rawJson = try JSONSerialization.jsonObject(with: Data.init(contentsOf: file), options: [.json5Allowed]) as! [String: Any]
         let json = Json.newOrDieRecursive(rawJson).asDictOrDie
         let app = json["Aero.AXApp"]!.asDictOrDie
-        let appBundleId = (rawJson["Aero.App.appBundleId"] as? String).flatMap { KnownBundleId.init(rawValue: $0) }
         let windowLevel = json["Aero.windowLevel"].map { MacOsWindowLevel.fromJson($0) ?? dieT() }
         let activationPolicy: NSApplication.ActivationPolicy = .from(string: rawJson["Aero.App.nsApp.activationPolicy"] as! String)
         assertEquals(
-            json.getWindowType(axApp: app, appBundleId, activationPolicy, windowLevel),
+            json.getWindowType(axApp: app, activationPolicy, windowLevel),
             AxUiElementWindowType(rawValue: rawJson["Aero.AxUiElementWindowType"] as? String ?? dieT()),
             additionalMsg: "\(file.path()):0:0: AxUiElementWindowType doesn't match",
-        )
-        assertEquals(
-            json.isDialogHeuristic(appBundleId, windowLevel),
-            rawJson["Aero.AxUiElementWindowType_isDialogHeuristic"] as? Bool ?? dieT(),
-            additionalMsg: "\(file.path()):0:0: AxUiElementWindowType_isDialogHeuristic doesn't match",
         )
     }
 }

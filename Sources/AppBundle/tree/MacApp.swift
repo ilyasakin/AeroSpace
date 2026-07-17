@@ -7,7 +7,6 @@ import Common
 final class MacApp: AbstractApp {
     /*conforms*/ let pid: Int32
     /*conforms*/ let rawAppBundleId: String?
-    let appId: KnownBundleId?
     let nsApp: NSRunningApplication
     private let axApp: ThreadGuardedValue<AXUIElement>
     private let appAxSubscriptions: ThreadGuardedValue<[AxSubscription]> // keep subscriptions in memory
@@ -37,7 +36,6 @@ final class MacApp: AbstractApp {
         self.axApp = .init(axApp)
         self.pid = nsApp.processIdentifier
         self.rawAppBundleId = nsApp.bundleIdentifier
-        self.appId = nsApp.bundleIdentifier.flatMap { KnownBundleId.init(rawValue: $0) }
         assert(!axSubscriptions.isEmpty)
         self.appAxSubscriptions = .init(axSubscriptions)
         self.thread = thread
@@ -194,15 +192,9 @@ final class MacApp: AbstractApp {
         }
     }
 
-    func isWindowHeuristic(_ windowId: UInt32, _ windowLevel: MacOsWindowLevel?, _ cm: CancellationMode) async throws -> Bool {
-        return try await withWindow(windowId, cm) { [nsApp, axApp, appId] window, job in
-            window.isWindowHeuristic(axApp: axApp.threadGuarded, appId, nsApp.activationPolicy, windowLevel)
-        } == true
-    }
-
     func getAxUiElementWindowType(_ windowId: UInt32, _ windowLevel: MacOsWindowLevel?, _ cm: CancellationMode) async throws -> AxUiElementWindowType {
-        return try await withWindow(windowId, cm) { [nsApp, axApp, appId] window, job in
-            window.getWindowType(axApp: axApp.threadGuarded, appId, nsApp.activationPolicy, windowLevel)
+        return try await withWindow(windowId, cm) { [nsApp, axApp] window, job in
+            window.getWindowType(axApp: axApp.threadGuarded, nsApp.activationPolicy, windowLevel)
         } ?? .window
     }
 
@@ -234,12 +226,6 @@ final class MacApp: AbstractApp {
                 isStartup: startup,
             )
         }
-    }
-
-    func isDialogHeuristic(_ windowId: UInt32, _ windowLevel: MacOsWindowLevel?, _ cm: CancellationMode) async throws -> Bool {
-        try await withWindow(windowId, cm) { [appId] window, job in
-            window.isDialogHeuristic(appId, windowLevel)
-        } == true
     }
 
     func setNativeFullscreen(_ windowId: UInt32, _ value: Bool) {
