@@ -8,6 +8,8 @@ extension CmdArgs {
                 command = FalseCommand(args: self as! FalseCmdArgs)
             case ._true:
                 command = TrueCommand(args: self as! TrueCmdArgs)
+            case .alwaysOnTop:
+                command = AlwaysOnTopCommand(args: self as! AlwaysOnTopCmdArgs)
             case .balanceSizes:
                 command = BalanceSizesCommand(args: self as! BalanceSizesCmdArgs)
             case .centerWindow:

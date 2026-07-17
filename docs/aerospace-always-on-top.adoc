@@ -1,0 +1,44 @@
+= aerospace-always-on-top(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-always-on-top
+// tag::purpose[]
+:manpurpose: Toggle whether the window stays on top of other windows (emulated via re-raising)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace always-on-top [-h|--help] [--window-id <window-id>] [--fail-if-noop] [on|off]
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+If no `on` or `off` argument is supplied, the state is toggled.
+
+If the window is tiled, it is turned into a floating window first.
+
+Heads up! macOS provides no public API to change the window level of other applications'
+windows, so always-on-top is *emulated*: AeroSpace re-raises marked windows every time the
+focus changes. A newly focused window may briefly cover an always-on-top window until the
+raise happens, and the focused window itself is never covered.
+
+The state is exposed as `%{window-is-always-on-top}` interpolation variable in
+xref:aerospace-list-windows.adoc[list-windows].
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--fail-if-noop:: Exit with non-zero exit code if the window is already in the requested state
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+// end::body[]

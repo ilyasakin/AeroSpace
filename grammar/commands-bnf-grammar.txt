@@ -10,6 +10,8 @@ aerospace -h;
 
     balance-sizes [--workspace <workspace>]
 
+    | always-on-top [--window-id <window_id>|--fail-if-noop]... [on|off]
+
     | center-window [--window-id <window_id>]
 
     | close [--quit-if-last-window|--window-id <window_id>]...

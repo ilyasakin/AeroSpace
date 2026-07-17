@@ -1,6 +1,9 @@
 // FILE IS GENERATED FROM docs/aerospace-*.adoc files
 // TO REGENERATE THE FILE RUN generate.sh
 
+let always_on_top_help_generated = """
+    USAGE: always-on-top [-h|--help] [--window-id <window-id>] [--fail-if-noop] [on|off]
+    """
 let balance_sizes_help_generated = """
     USAGE: balance-sizes [-h|--help] [--workspace <workspace>]
     """
