@@ -79,6 +79,11 @@ final class WindowBordersManager {
     /// All on-screen normal windows (excluding our overlay), front-to-back. Used to compute which
     /// windows cover a given border. Rebuilt on each full refresh; a drag only updates the moved rect
     private var stack: [(id: UInt32, rect: Rect)] = []
+    /// The focused window. Treated as the frontmost window for border purposes: its border is never
+    /// masked by another managed window and draws on top, and inactive borders are always clipped
+    /// under it. Tiling rarely restacks tiles, so the raw on-screen stack can't be trusted to put the
+    /// focused window above a neighbour that overflowed onto it
+    private var activeId: UInt32?
     private var observingWindowServer = false
     private init() {}
 
@@ -97,7 +102,7 @@ final class WindowBordersManager {
         overlay.coverAllScreens()
         overlay.orderFrontRegardless()
 
-        let activeId = focus.windowOrNil?.windowId
+        activeId = focus.windowOrNil?.windowId
         var seen = Set<UInt32>(minimumCapacity: entries.count)
         for workspace in Workspace.allUnsorted where workspace.isVisible {
             for window in workspace.allLeafWindowsRecursive {
@@ -147,6 +152,8 @@ final class WindowBordersManager {
             entry.shape.path = CGPath(roundedRect: strokeRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
             entry.shape.strokeColor = entry.color.nsColor.cgColor
             entry.shape.lineWidth = w
+            // Draw the active window's border above every inactive one where they overlap
+            entry.shape.zPosition = id == activeId ? 1 : 0
 
             // Mask out the regions covered by windows stacked above this one
             let occluders = occluders(of: id, outset: entry, indexById: indexById)
@@ -167,15 +174,30 @@ final class WindowBordersManager {
         CATransaction.commit()
     }
 
-    /// Top-left-global rects of windows stacked above `id` that overlap its (outset) border region
+    /// Top-left-global rects of windows that cover `id`'s (outset) border region. Normally these are
+    /// the windows stacked above it, but the active window is forced to be frontmost: it is never
+    /// occluded by another managed (inactive) window, and it always occludes every inactive window
     private func occluders(of id: UInt32, outset entry: BorderEntry, indexById: [UInt32: Int]) -> [Rect] {
-        guard let idx = indexById[id] else { return [] }
         let w = CGFloat(entry.width)
         let region = Rect(topLeftX: entry.rect.topLeftX - w, topLeftY: entry.rect.topLeftY - w,
                           width: entry.rect.width + 2 * w, height: entry.rect.height + 2 * w)
+        let isActive = id == activeId
         var result: [Rect] = []
-        for i in 0 ..< idx where rectsIntersect(region, stack[i].rect) {
-            result.append(stack[i].rect)
+        var included = Set<UInt32>()
+        if let idx = indexById[id] {
+            for i in 0 ..< idx where rectsIntersect(region, stack[i].rect) {
+                // The active border is never masked by another managed (inactive) window, even if the
+                // raw stack puts an overflowing neighbour above it
+                if isActive, entries[stack[i].id] != nil { continue }
+                result.append(stack[i].rect)
+                included.insert(stack[i].id)
+            }
+        }
+        // An inactive border is always clipped under the active window where they overlap
+        if !isActive, let activeId, !included.contains(activeId),
+           let active = entries[activeId], rectsIntersect(region, active.rect)
+        {
+            result.append(active.rect)
         }
         return result
     }
