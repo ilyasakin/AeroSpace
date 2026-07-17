@@ -45,6 +45,9 @@ struct Config: ConvenienceMutable {
     /// Percentage of the tile the existing window keeps when dwindle splits it (10-90).
     /// 50 = even split; 62 approximates the golden-ratio spiral
     var dwindleSplitPercent: Int = 50
+    /// Experimental: answer window frame reads from WindowServer (SkyLight) instead of the
+    /// AX API. Faster and immune to busy apps; falls back to AX when unavailable
+    var skyLightReads: Bool = false
     var startAtLogin: Bool = false
     var autoReloadConfig: Bool = false
     var automaticallyUnhideMacosHiddenApps: Bool = false

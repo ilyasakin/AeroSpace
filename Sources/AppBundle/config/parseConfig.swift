@@ -144,6 +144,7 @@ private let configParser: [String: any ParserProtocol<Config>] = [
     "tiling-policy": Parser(\.tilingPolicy, parseTilingPolicy),
     "dwindle-split-percent": Parser(\.dwindleSplitPercent, parseDwindleSplitPercent),
 
+    "skylight-reads": Parser(\.skyLightReads, parseBool),
     "start-at-login": Parser(\.startAtLogin, parseBool),
     "auto-reload-config": Parser(\.autoReloadConfig, parseBool),
     "automatically-unhide-macos-hidden-apps": Parser(\.automaticallyUnhideMacosHiddenApps, parseBool),

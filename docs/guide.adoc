@@ -939,6 +939,18 @@ on-window-detected = [
 ]
 ----
 
+[#skylight-reads]
+== Experimental: WindowServer reads
+
+By default, window frames are read through the Accessibility API, which is a synchronous
+round-trip to the target application — a busy app can stall window management for up to
+2 seconds. With `skylight-reads = true` in the config, frame reads are answered by
+WindowServer directly (~30x faster, and never blocked by a busy app). The Accessibility
+path remains the automatic fallback whenever WindowServer can't answer, and all window
+*manipulation* still goes through the Accessibility API.
+
+// =====================================================
+
 == Common pitfall: keyboard keys handling
 
 If you can't make AeroSpace handle some keys in your config, please make sure that you don't have keys conflict with other software that might listen to global keys (e.g. skhd, Karabiner-Elements, Raycast)

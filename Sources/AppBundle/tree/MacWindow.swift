@@ -211,7 +211,8 @@ final class MacWindow: Window {
     }
 
     override func getAxSize(_ cm: CancellationMode) async throws -> CGSize? {
-        try await macApp.getAxSize(windowId, cm)
+        if let bounds = SkyLight.windowBounds(windowId) { return CGSize(width: bounds.width, height: bounds.height) }
+        return try await macApp.getAxSize(windowId, cm)
     }
 
     override func setAxFrame(_ topLeft: CGPoint?, _ size: CGSize?) {
@@ -219,7 +220,8 @@ final class MacWindow: Window {
     }
 
     override func getAxRect(_ cm: CancellationMode) async throws -> Rect? {
-        try await macApp.getAxRect(windowId, cm)
+        if let bounds = SkyLight.windowBounds(windowId) { return bounds }
+        return try await macApp.getAxRect(windowId, cm)
     }
 }
 
