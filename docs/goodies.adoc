@@ -36,18 +36,28 @@ full-screen-api.transition-duration.leave = 0 0
 [#highlight-focused-windows-with-colored-borders]
 == Highlight focused windows with colored borders
 
-To highlight the focused window with colored border you can use link:https://github.com/FelixKratz/JankyBorders[JankyBorders].
-
-You can also use `after-startup-command` to start JankyBorders together with AeroSpace
+AeroSpace has built-in window borders, so you don't need an external tool. When enabled, a
+border is drawn around every visible window: the focused window uses `active-color`, all others
+use `inactive-color`. Borders are driven from AeroSpace's own layout loop (no separate tracking
+process), so they track focus, moves, resizes and workspace switches for free.
 
 [source,toml]
 ----
-after-startup-command = [
-    # JankyBorders has a built-in detection of already running process,
-    # so it won't be run twice on AeroSpace restart
-    'exec-and-forget borders active_color=0xffe1e3e4 inactive_color=0xff494d64 width=5.0'
-]
+window-borders.enabled =        true
+# Colors accept both 0xAARRGGBB (JankyBorders style) and #RRGGBB / #RRGGBBAA (CSS)
+window-borders.active-color =   '0xffe1e3e4'
+window-borders.inactive-color = '0xff494d64'
+window-borders.width =          4
+window-borders.corner-radius =  10
 ----
+
+NOTE: `corner-radius` is a single value you tune to taste. macOS provides no API to read a
+window's actual corner radius (and on recent macOS the radius even varies by window type — windows
+with toolbars are more rounded), so a border can't perfectly match every app automatically.
+Standard windows are around `10`.
+
+If you were using the external link:https://github.com/FelixKratz/JankyBorders[JankyBorders]
+tool, remove its `exec-and-forget borders ...` line so the two don't fight over the same windows.
 
 [#raycast-extension]
 == AeroSpace Raycast extension

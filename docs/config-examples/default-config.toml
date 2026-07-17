@@ -90,6 +90,19 @@ gaps.outer.bottom =     0
 gaps.outer.top =        0
 gaps.outer.right =      0
 
+# Built-in colored window borders (replaces the external JankyBorders tool).
+# Draws a border around every visible window; the focused window uses
+# 'active-color', all others use 'inactive-color'.
+# Colors accept both 0xAARRGGBB (JankyBorders style) and #RRGGBB / #RRGGBBAA (CSS).
+# corner-radius should roughly match your windows' corner radius. There is no
+# API to read a window's real radius, so tune this to taste (macOS windows are
+# ~10; windows with toolbars on newer macOS are larger).
+window-borders.enabled =        false
+window-borders.active-color =   '0xffe1e3e4'
+window-borders.inactive-color = '0xff494d64'
+window-borders.width =          4
+window-borders.corner-radius =  10
+
 # 'main' binding mode declaration
 # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes
 # 'main' binding mode must be always presented
