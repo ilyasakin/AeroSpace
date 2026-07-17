@@ -58,6 +58,7 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
                 }
             }.keyboardShortcut("E", modifiers: .command)
             getExperimentalUISettingsMenu(viewModel: viewModel)
+            SettingsButton()
             openConfigButton()
             reloadConfigButton(warningsAsErrors: false)
         } else {
@@ -87,6 +88,17 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
     }
 }
 
+struct SettingsButton: View {
+    @Environment(\.openWindow) var openWindow: OpenWindowAction
+
+    var body: some View {
+        Button("Settings…") {
+            openWindow(id: settingsWindowId)
+            NSApp.activate(ignoringOtherApps: true)
+        }.keyboardShortcut(",", modifiers: .command)
+    }
+}
+
 @MainActor @ViewBuilder
 func openConfigButton(showShortcutGroup: Bool = false) -> some View {
     let editor = getTextEditorToOpenConfig()
@@ -101,9 +113,9 @@ func openConfigButton(showShortcutGroup: Bool = false) -> some View {
             case .ambiguousConfigError:
                 fallbackConfig.open(with: editor)
         }
-    }.keyboardShortcut(",", modifiers: .command)
+    }.keyboardShortcut(",", modifiers: [.command, .shift])
     switch showShortcutGroup {
-        case true: shortcutGroup(label: Text("⌘ ,"), content: button)
+        case true: shortcutGroup(label: Text("⌘ ⇧ ,"), content: button)
         case false: button
     }
 }
