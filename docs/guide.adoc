@@ -618,6 +618,50 @@ on-window-detected = [
 ]
 ----
 
+[#window-detection-rules]
+=== 'window-detection-rules'
+
+Every detected window is classified as one of:
+
+* *tile* - a regular window, tiled by default
+* *float* - a dialog, floating by default
+* *ignore* - not a real window from the human perspective (tooltip, popup menu, Picture-in-Picture overlay). AeroSpace doesn't manage it at all
+
+The built-in classification is application-agnostic and driven purely by accessibility attributes (see <<window-detection>>).
+When it gets some window wrong, override it with `window-detection-rules` - the AeroSpace analog of i3's `for_window` rules:
+
+[source,toml]
+----
+window-detection-rules = [
+    { if.app-id = 'com.apple.systempreferences', treat-as = 'float' },
+    { if.app-id = 'com.googlecode.iterm2', if.window-level = 'always-on-top', treat-as = 'ignore' },
+]
+----
+
+`window-detection-rules` is an ordered list of rules.
+The first matching rule wins, and its `treat-as` verdict replaces the built-in classification.
+
+Unlike `on-window-detected` callbacks (which run commands after the window is already managed),
+rules apply at classification time.
+That's why `treat-as = 'tile'` and `treat-as = 'float'` can rescue windows that the built-in
+classification would ignore, and `treat-as = 'ignore'` can hide windows from AeroSpace entirely.
+
+`if` (mandatory) supports the following matchers. All specified matchers must match:
+
+* `if.app-id` - exact application bundle id
+* `if.app-name-regex-substring` - case-insensitive regex substring matched against the application name
+* `if.window-title-regex-substring` - case-insensitive regex substring matched against the window title.
+  Heads up! Some windows initialize their title after the window appears
+* `if.window-subrole` - exact accessibility subrole of the window (`AXStandardWindow`, `AXDialog`, etc.)
+* `if.window-level` - `'normal'`, `'always-on-top'`, or a raw integer macOS window level.
+  Picture-in-Picture windows, miniplayers and quick terminals live at `'always-on-top'` level
+* `if.during-aerospace-startup` - boolean
+
+`treat-as` (mandatory) is one of `'tile'`, `'float'`, `'ignore'`.
+
+Use xref:./commands.adoc#debug-windows[`aerospace debug-windows`] to inspect the accessibility
+attributes of any window and to see which rule matched it (`Aero.matchedWindowDetectionRule` in the output).
+
 [#on-focus-changed-callbacks]
 === 'on-focus-changed' callbacks
 
@@ -777,44 +821,87 @@ The first matching pattern will be used
 
 xref:commands.adoc#move-workspace-to-monitor[move-workspace-to-monitor] command has no effect for workspaces that have monitor assignment
 
-== Dialog heuristics
+[#window-detection]
+== Window detection
 
-* Apple provides accessibility API for apps to let others know which of their windows are dialogs
-* A lot of apps don't implement this API or implement it improperly
-+
-Even some Apple dialogs don't implement the API properly.
-(E.g. Finder "Copy" progress window doesn't let others know that it's a dialog)
+Unlike Linux (where X11 windows declare their type through standardized hints, and true popups never
+even reach the window manager), macOS has no protocol for apps to tell window managers "this window
+is a dialog" or "don't touch this popup".
+The closest thing macOS has is a handful of accessibility attributes, and many apps implement them
+sloppily or not at all (even some Apple dialogs get it wrong - e.g. Finder's "Copy" progress window
+doesn't declare itself as a dialog).
 
-AeroSpace uses the API to gently ask windows whether they are dialogs, but AeroSpace also applies some heuristics.
+AeroSpace classifies every window as *tile*, *float*, or *ignore* (see <<window-detection-rules>>)
+using only application-agnostic signals:
 
-For example, windows without a fullscreen button (NB! fullscreen button and maximize button are different buttons) are generally considered dialogs, excluding terminal apps (WezTerm, Alacritty, iTerm2, etc.).
+* *macOS window level.* Windows at `always-on-top` level (Picture-in-Picture, miniplayers,
+  quick terminals, screen-sharing overlays) position themselves and are ignored.
+  Windows at modal-panel and alert levels float
+* *`AXModal`.* Modal windows float
+* *Accessibility subrole.* `AXDialog`, `AXFloatingWindow` and friends float (when they show real
+  window chrome); buttonless `AXUnknown` windows are ignored as popups
+* *Resizability.* Windows that don't allow resizing are treated as dialogs
+  (fixed-size windows are not designed to be tiled)
+* *Window buttons and their enabled state.* A disabled fullscreen button marks windows
+  "not designed to be big" - they float
+* *Application activation policy.* Windows of accessory apps (no Dock icon) are panels:
+  they float or are ignored, never tiled
 
-Windows that are recognized as dialogs are floated by default.
+The classification intentionally contains *zero per-application exceptions*.
+When an app exposes misleading accessibility attributes, the classification will be wrong for that
+app by default - that's the deal.
+Fix it in your own config with a one-line <<window-detection-rules,window-detection-rule>> instead
+of waiting for a new AeroSpace release.
 
-If you find that some windows are not handled properly, you're welcome to create a PR that improves the heuristic.
-It's fine to hardcode special handling for popular applications, AeroSpace already does it.
-Please see `isDialogHeuristic` function in AeroSpace sources.
+If you believe the *generic* rules themselves can be improved, PRs are welcome
+(see `getWindowType` in AeroSpace sources; the classification is covered by the accessibility dump
+corpus in `./axDumps`, so please attach an `aerospace debug-windows` dump).
+Per-application special cases are not accepted in code - contribute a rule snippet to the docs below instead.
 
-You can also use `on-window-detected` to force tile or force float all windows of a particular application:
+=== Migration from the per-app-exceptions era
 
-. Force tile all the windows (or windows of a particular app)
-+
+Older versions hardcoded special handling for ~30 applications.
+Behavior changes and the rules to restore the old behavior, should you want it:
+
+.Windows that now tile (previously floated)
 [source,toml]
 ----
-on-window-detected = [
-    # Other callbacks...
-    { if.app-id = '...', run = 'layout tiling', },
-    # Other callbacks...
+window-detection-rules = [
+    { if.app-id = 'com.apple.systempreferences', treat-as = 'float' },  # System Settings
+    { if.app-id = 'org.videolan.vlc', treat-as = 'float' },             # VLC main window
+    { if.app-id = 'com.apple.iphonesimulator', treat-as = 'float' },    # iPhone Simulator
+    { if.app-id = 'org.mozilla.firefox', if.window-subrole = 'AXUnknown', treat-as = 'float' }, # Firefox non-native fullscreen
 ]
 ----
-. Force float all the windows (or windows of a particular app)
-+
+
+.Windows that are now ignored (previously floated). They all live at 'always-on-top' window level and position themselves; float them back if you want AeroSpace to manage their focus
+[source,toml]
+----
+window-detection-rules = [
+    { if.app-id = 'com.microsoft.edgemac', if.window-level = 'always-on-top', treat-as = 'float' },      # Edge Picture-in-Picture
+    { if.app-id = 'com.spotify.client', if.window-level = 'always-on-top', treat-as = 'float' },         # Spotify miniplayer
+    { if.app-id = 'com.1password.1password', if.window-level = 'always-on-top', treat-as = 'float' },    # 1Password mini windows
+    { if.app-id = 'com.apple.finder', if.window-subrole = 'Quick Look', treat-as = 'float' },            # Finder Quick Look
+]
+----
+
+.Windows that are now managed (previously ignored)
+[source,toml]
+----
+window-detection-rules = [
+    { if.app-id = 'com.googlecode.iterm2', if.window-title-regex-substring = 'hotkey', treat-as = 'ignore' }, # iTerm2 hotkey window (adjust the regex to your hotkey profile name)
+    { if.app-id = 'com.jetbrains.intellij', if.window-subrole = 'AXUnknown', treat-as = 'ignore' },           # IntelliJ documentation popup
+    { if.app-id = 'com.tinyspeck.slackmacgap', if.window-level = 8, treat-as = 'ignore' },                    # Slack huddle screen-share overlays
+]
+----
+
+You can also keep using `on-window-detected` to force-tile or force-float windows after detection:
+
 [source,toml]
 ----
 on-window-detected = [
-    # Other callbacks...
+    { if.app-id = '...', run = 'layout tiling', },
     { if.app-id = '...', run = 'layout floating', },
-    # Other callbacks...
 ]
 ----
 
