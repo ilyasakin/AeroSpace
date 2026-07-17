@@ -40,7 +40,7 @@ struct StickyCommand: Command {
 /// "visible on every workspace" in AeroSpace's emulated-workspaces model (no SIP tricks needed,
 /// unlike real macOS Spaces)
 @MainActor func followActiveWorkspaceForStickyWindows() {
-    for workspace in Workspace.all {
+    for workspace in Workspace.allUnsorted {
         for window in workspace.allLeafWindowsRecursive where window.isSticky {
             guard let monitor = window.nodeMonitor else { continue }
             let activeWorkspace = monitor.activeWorkspace

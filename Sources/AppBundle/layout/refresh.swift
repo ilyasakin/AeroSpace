@@ -31,6 +31,7 @@ func runHeavyCompleteRefreshSession(
     defer { signposter.endInterval(#function, state) }
     if !TrayMenuModel.shared.isEnabled { return }
     invalidateWindowLevelCache()
+    invalidateMonitorsCache()
     let res = await Result {
         try await $refreshSessionEvent.withValue(event) {
             let nativeFocused = try await getNativeFocusedWindow(.cancellable)
@@ -67,6 +68,7 @@ func runLightSession<T>(
     activeRefreshTask?.cancel() // Give priority to runSession
     activeRefreshTask = nil
     invalidateWindowLevelCache()
+    invalidateMonitorsCache()
     return try await $refreshSessionEvent.withValue(event) {
         let nativeFocused = try await getNativeFocusedWindow(.cancellable)
         if let nativeFocused { try await debugWindowsIfRecording(nativeFocused, .cancellable) }
@@ -171,7 +173,7 @@ enum OptimalHideCorner {
 @MainActor
 private func layoutWorkspaces() async throws {
     if !TrayMenuModel.shared.isEnabled {
-        for workspace in Workspace.all {
+        for workspace in Workspace.allUnsorted {
             workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() } // todo as!
             try await workspace.layoutWorkspace() // Unhide tiling windows from corner
         }
@@ -211,7 +213,7 @@ private func layoutWorkspaces() async throws {
         workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() } // todo as!
         try await workspace.layoutWorkspace()
     }
-    for workspace in Workspace.all where !workspace.isVisible {
+    for workspace in Workspace.allUnsorted where !workspace.isVisible {
         let corner = monitorToOptimalHideCorner[workspace.workspaceMonitor.rect.topLeftCorner] ?? .bottomRightCorner
         for window in workspace.allLeafWindowsRecursive {
             try await (window as! MacWindow).hideInCorner(corner) // todo as!
@@ -222,7 +224,7 @@ private func layoutWorkspaces() async throws {
 @MainActor
 private func normalizeContainers() {
     // Can't do it only for visible workspace because most of the commands support --window-id and --workspace flags
-    for workspace in Workspace.all {
+    for workspace in Workspace.allUnsorted {
         workspace.normalizeContainers()
     }
 }

@@ -21,8 +21,25 @@ extension TreeNode {
         return parent.children.firstIndex(of: self).orDie()
     }
 
-    var parents: [NonLeafTreeNodeObject] { parent.flatMap { [$0] + $0.parents } ?? [] }
-    var parentsWithSelf: [TreeNode] { parent.flatMap { [self] + $0.parentsWithSelf } ?? [self] }
+    var parents: [NonLeafTreeNodeObject] {
+        var result: [NonLeafTreeNodeObject] = []
+        var node = parent
+        while let current = node {
+            result.append(current)
+            node = current.parent
+        }
+        return result
+    }
+
+    var parentsWithSelf: [TreeNode] {
+        var result: [TreeNode] = [self]
+        var node = parent
+        while let current = node {
+            result.append(current)
+            node = current.parent
+        }
+        return result
+    }
 
     /// Also see visualWorkspace
     var nodeWorkspace: Workspace? {

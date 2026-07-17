@@ -39,7 +39,7 @@ struct AlwaysOnTopCommand: Command {
 /// whenever the focus changes
 @MainActor func raiseAlwaysOnTopWindows() {
     let focusedWindowId = focus.windowOrNil?.windowId
-    for workspace in Workspace.all where workspace.isVisible {
+    for workspace in Workspace.allUnsorted where workspace.isVisible {
         // allLeafWindowsRecursive rather than the floatingWindows accessor: the latter lazily
         // materializes an empty floatingWindowsContainer in every visible workspace
         for window in workspace.allLeafWindowsRecursive where window.isAlwaysOnTop && window.windowId != focusedWindowId {

@@ -45,8 +45,15 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
         super.init(parent: NilTreeNode.instance, adaptiveWeight: 0, index: 0)
     }
 
+    /// Sorted by name. Use for UI/CLI listing. Hot-path iterate-all callers should prefer `allUnsorted`
     @MainActor static var all: [Workspace] {
         workspaceNameToWorkspace.values.sorted()
+    }
+
+    /// Unsorted view for callers that just iterate every workspace (refresh/normalize/gc/layout).
+    /// Avoids the O(n log n) sort with the StringLogicalSegments comparator on every access
+    @MainActor static var allUnsorted: some Collection<Workspace> {
+        workspaceNameToWorkspace.values
     }
 
     @MainActor static func get(byName name: String) -> Workspace {

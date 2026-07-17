@@ -1,6 +1,6 @@
 @MainActor
 func normalizeLayoutReason() async throws {
-    for workspace in Workspace.all {
+    for workspace in Workspace.allUnsorted {
         let windows: [Window] = workspace.allLeafWindowsRecursive
         try await _normalizeLayoutReason(workspace: workspace, windows: windows)
     }

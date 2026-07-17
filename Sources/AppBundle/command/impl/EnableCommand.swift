@@ -25,7 +25,7 @@ struct EnableCommand: Command {
 
         TrayMenuModel.shared.isEnabled = newState
         if newState {
-            for workspace in Workspace.all {
+            for workspace in Workspace.allUnsorted {
                 for window in workspace.allLeafWindowsRecursive where window.isFloating {
                     window.lastFloatingSize = (try? await window.getAxSize(.nonCancellable)) ?? window.lastFloatingSize
                 }

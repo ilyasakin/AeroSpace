@@ -104,10 +104,24 @@ var mainMonitor: Monitor {
     return LazyMonitor(monitorAppKitNsScreenScreensId: screen.index + 1, isMain: true, screen.value)
 }
 
+// Guarded by Thread.isMainThread at every access (NSScreen.screens is main-thread-only anyway)
+private nonisolated(unsafe) var monitorsCache: [Monitor]? = nil
+
+/// Invalidated at the start of every refresh session and on display reconfiguration, mirroring
+/// windowLevelCache. Collapses the ~39 per-session `monitors` call sites (each a fresh
+/// NSScreen.screens rebuild + allocations) down to one rebuild per session
+@MainActor func invalidateMonitorsCache() { unsafe monitorsCache = nil }
+
 var monitors: [Monitor] {
-    isUnitTest
-        ? [testMonitor]
-        : NSScreen.screens.enumerated().map { $0.element.toMonitor(monitorAppKitNsScreenScreensId: $0.offset + 1) }
+    if isUnitTest { return [testMonitor] }
+    if Thread.isMainThread, let cached = unsafe monitorsCache {
+        return cached
+    }
+    let fresh = NSScreen.screens.enumerated().map { $0.element.toMonitor(monitorAppKitNsScreenScreensId: $0.offset + 1) }
+    if Thread.isMainThread {
+        unsafe monitorsCache = fresh
+    }
+    return fresh
 }
 
 var sortedMonitors: [Monitor] {
