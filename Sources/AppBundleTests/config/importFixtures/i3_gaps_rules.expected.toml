@@ -9,6 +9,7 @@ after-startup-command = [
 
 focus-follows-mouse.enabled = true
 default-root-container-layout = 'accordion'
+tiling-policy = 'manual'
 
 [gaps]
 inner.vertical = 10

@@ -13,6 +13,8 @@ after-startup-command = [
     'exec-and-forget nm-applet',
 ]
 
+tiling-policy = 'manual'
+
 [mode.main.binding]
 alt-enter = 'exec-and-forget i3-sensible-terminal'
 alt-shift-q = 'close'

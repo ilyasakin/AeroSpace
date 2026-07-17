@@ -4,6 +4,8 @@ import Foundation
 /// Pure: no IO except includes, which go through options.readIncludedFile
 func importI3Config(_ text: String, _ options: ImportOptions = ImportOptions()) -> ImportResult {
     var ctx = I3ImportContext(options: options)
+    // i3 is manual tiling; pin it explicitly since the shipped default policy is dwindle
+    ctx.builder.tilingPolicy = "manual"
     ctx.parseLines(text)
     // i3 doesn't flatten nested containers, and AeroSpace's flatten normalization makes the
     // 'split' command a config-level error. Preserve i3 semantics when split bindings exist

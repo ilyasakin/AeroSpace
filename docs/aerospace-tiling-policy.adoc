@@ -21,11 +21,12 @@ aerospace tiling-policy [-h|--help] [--workspace <workspace>] (manual|dwindle|de
 
 The tiling policy controls where new windows are inserted into the tiling tree:
 
+* `dwindle` (the default) - Hyprland/bspwm style dynamic tiling: every new window
+  binary-splits the focused window's tile; the split orientation follows the tile's
+  aspect ratio (wider than tall - side by side, taller than wide - stacked)
 * `manual` - the classic behavior: new windows join the most recent window's container
-  as siblings, and the tree is shaped with the split/join-with commands (i3 style)
-* `dwindle` - Hyprland/bspwm style dynamic tiling: every new window binary-splits the
-  focused window's tile; the split orientation follows the tile's aspect ratio
-  (wider than tall - side by side, taller than wide - stacked)
+  as siblings, and the tree is shaped with the split/join-with commands (i3 style).
+  Configs imported from i3 pin this policy automatically
 * `default` - drop the per-workspace override and follow the `tiling-policy` config option again
 
 The config option `tiling-policy` sets the default for all workspaces; this command

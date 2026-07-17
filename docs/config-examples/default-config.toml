@@ -34,6 +34,16 @@ default-root-container-layout = 'tiles'
 #               tall monitor (anything higher than wide) gets vertical orientation
 default-root-container-orientation = 'auto'
 
+# Possible values: dwindle|manual
+# 'dwindle' (default): every new window binary-splits the focused window's tile,
+#           orientation follows the tile's aspect ratio (Hyprland/bspwm style)
+# 'manual': new windows join the focused window's container as siblings;
+#           shape the tree with the split/join-with commands (i3 style)
+# Can be overridden per workspace at runtime with the 'tiling-policy' command.
+# 'dwindle-split-percent' (10-90, default 50) controls how much of the tile the
+# existing window keeps; 62 approximates the golden-ratio spiral
+tiling-policy = 'dwindle'
+
 # Mouse follows focus when focused monitor changes
 # Drop it from your config, if you don't like this behavior
 # See https://nikitabobko.github.io/AeroSpace/guide#on-focus-changed-callbacks
