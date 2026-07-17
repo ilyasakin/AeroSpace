@@ -10,6 +10,8 @@ extension CmdArgs {
                 command = TrueCommand(args: self as! TrueCmdArgs)
             case .balanceSizes:
                 command = BalanceSizesCommand(args: self as! BalanceSizesCmdArgs)
+            case .centerWindow:
+                command = CenterWindowCommand(args: self as! CenterWindowCmdArgs)
             case .close:
                 command = CloseCommand(args: self as! CloseCmdArgs)
             case .closeAllWindowsButCurrent:

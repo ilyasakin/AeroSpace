@@ -1,0 +1,36 @@
+= aerospace-center-window(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-center-window
+// tag::purpose[]
+:manpurpose: Center the window on its monitor (floats tiled windows first)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace center-window [-h|--help] [--window-id <window-id>]
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+The window keeps its size and is positioned in the center of the monitor's visible area
+(respecting outer gaps).
+
+If the window is tiled, it is turned into a floating window first, the same way
+xref:aerospace-layout.adoc[layout floating] does it.
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+// end::body[]
