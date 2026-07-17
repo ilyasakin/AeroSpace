@@ -4,6 +4,9 @@ import Common
 final class MacWindow: Window {
     let macApp: MacApp
     private var prevUnhiddenProportionalPositionInsideWorkspaceRect: CGPoint?
+    // The corner the window is already parked in. Skips re-hiding an already hidden window on every refresh.
+    // Reset when the window moves externally (invalidateAxFrameCaches) so an escaped window gets re-hidden
+    private var hiddenCorner: OptimalHideCorner?
 
     @MainActor
     private init(_ id: UInt32, _ actor: MacApp, lastFloatingSize: CGSize?, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {
@@ -77,6 +80,7 @@ final class MacWindow: Window {
         if MacWindow.allWindowsMap.removeValue(forKey: windowId) == nil {
             return
         }
+        invalidateMacosNativeWindowStateCache(windowId: windowId)
         if !skipClosedWindowsCache { cacheClosedWindowIfNeeded() }
         let parent = unbindFromParent().parent
         let deadWindowWorkspace = parent.nodeWorkspace
@@ -119,6 +123,7 @@ final class MacWindow: Window {
     @MainActor
     func hideInCorner(_ corner: OptimalHideCorner) async throws {
         guard let nodeMonitor else { return }
+        if hiddenCorner == corner { return } // Already parked in the requested corner
         // Don't accidentally override prevUnhiddenEmulationPosition in case of subsequent `hideInCorner` calls
         if !isHiddenInCorner {
             guard let windowRect = try await getAxRect(.cancellable) else { return }
@@ -149,6 +154,10 @@ final class MacWindow: Window {
                 p = nodeMonitor.visibleRect.bottomRightCorner - onePixelOffset
         }
         setAxFrame(p, nil)
+        hiddenCorner = corner
+        // The window is parked in the corner now. Force the next layout pass to re-apply the real
+        // frame, otherwise the frame diffing in layoutRecursive would keep the window in the corner
+        lastAppliedLayoutPhysicalRect = nil
     }
 
     @MainActor
@@ -177,6 +186,17 @@ final class MacWindow: Window {
         }
 
         self.prevUnhiddenProportionalPositionInsideWorkspaceRect = nil
+        self.hiddenCorner = nil
+    }
+
+    // Called when the window's AX frame or native state may have changed behind aerospace's back
+    // (moved/resized/miniaturized/deminiaturized AX notifications). Drops all the state that
+    // the refresh fast paths rely on, so the next refresh re-reads and re-applies everything
+    @MainActor
+    func invalidateAxFrameCaches() {
+        lastAppliedLayoutPhysicalRect = nil
+        hiddenCorner = nil
+        invalidateMacosNativeWindowStateCache(windowId: windowId)
     }
 
     override var isHiddenInCorner: Bool {

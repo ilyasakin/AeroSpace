@@ -30,6 +30,7 @@ func runHeavyCompleteRefreshSession(
     let state = signposter.beginInterval(#function, "event: \(event) axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)")
     defer { signposter.endInterval(#function, state) }
     if !TrayMenuModel.shared.isEnabled { return }
+    invalidateWindowLevelCache()
     let res = await Result {
         try await $refreshSessionEvent.withValue(event) {
             let nativeFocused = try await getNativeFocusedWindow(.cancellable)
@@ -65,6 +66,7 @@ func runLightSession<T>(
     defer { signposter.endInterval(#function, state) }
     activeRefreshTask?.cancel() // Give priority to runSession
     activeRefreshTask = nil
+    invalidateWindowLevelCache()
     return try await $refreshSessionEvent.withValue(event) {
         let nativeFocused = try await getNativeFocusedWindow(.cancellable)
         if let nativeFocused { try await debugWindowsIfRecording(nativeFocused, .cancellable) }
@@ -144,6 +146,20 @@ func refreshObs(_: AXObserver, _: AXUIElement, notif: CFString, _: UnsafeMutable
     let notif = notif as String
     Task.startUnstructured { @MainActor in
         if !TrayMenuModel.shared.isEnabled { return }
+        scheduleCancellableCompleteRefreshSession(.ax(notif))
+    }
+}
+
+/// miniaturized/deminiaturized notifications. Like refreshObs, but first drops the caches of the affected
+/// window so the next refresh re-reads its native state over AX
+func windowStateChangedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
+    let windowId = ax.containingWindowId()
+    let notif = notif as String
+    Task.startUnstructured { @MainActor in
+        if !TrayMenuModel.shared.isEnabled { return }
+        if let windowId, let window = Window.get(byId: windowId) as? MacWindow {
+            window.invalidateAxFrameCaches()
+        }
         scheduleCancellableCompleteRefreshSession(.ax(notif))
     }
 }

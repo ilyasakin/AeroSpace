@@ -3,10 +3,21 @@ import Foundation
 
 @MainActor
 private var cache: [UInt32: MacOsWindowLevel] = [:]
+// Off-screen windows (minimized, parked in a corner, on another Space) never appear in the
+// on-screen-only CGWindowList, so their lookups miss forever. Bound the full rescans to at most
+// one per refresh session instead of one per miss
+@MainActor
+private var cacheIsFreshForCurrentRefreshSession = false
+
+@MainActor
+func invalidateWindowLevelCache() {
+    cacheIsFreshForCurrentRefreshSession = false
+}
 
 @MainActor
 func getWindowLevel(for windowId: UInt32) -> MacOsWindowLevel? {
     if let existing = cache[windowId] { return existing }
+    if cacheIsFreshForCurrentRefreshSession { return nil }
 
     var result: [UInt32: MacOsWindowLevel] = [:]
     let options = CGWindowListOption(arrayLiteral: .excludeDesktopElements, .optionOnScreenOnly)
@@ -23,6 +34,7 @@ func getWindowLevel(for windowId: UInt32) -> MacOsWindowLevel? {
         result[windowId] = .new(windowLevel: windowLayer)
     }
     cache = result
+    cacheIsFreshForCurrentRefreshSession = true
     return result[windowId]
 }
 

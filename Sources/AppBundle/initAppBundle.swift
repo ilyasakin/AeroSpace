@@ -8,6 +8,10 @@ import Foundation
         unsafe _isCli = false
         initServerArgs()
         await waitForAccessibilityPermission_nonCancellable()
+        // The default AX messaging timeout is ~6 seconds. An app that is busy and doesn't service its
+        // event loop would stall every AX request (and thus every refresh session) for that long.
+        // Setting the timeout on the system-wide element changes the default for all AX requests of this process
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2.0)
         if isDebug {
             await toggleReleaseServerIfDebug(.off)
             interceptTermination(SIGINT)
