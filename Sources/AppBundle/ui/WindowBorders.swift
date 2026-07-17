@@ -47,6 +47,12 @@ final class WindowBordersPanel: NSPanelHud {
         borderLayer.lineWidth = w
         CATransaction.commit()
 
+        reorderAbove(targetWindowId)
+    }
+
+    /// Re-issue only the z-order (no frame/path recompute). Used to reassert the stack after an
+    /// async window raise, which strands this border below the window that was previously on top
+    func reorderAbove(_ targetWindowId: UInt32) {
         if windowNumber > 0 {
             SkyLight.orderWindow(UInt32(windowNumber), above: targetWindowId)
         }
@@ -85,6 +91,18 @@ final class WindowBordersManager {
         for (id, panel) in panels where !seen.contains(id) {
             panel.close()
             panels.removeValue(forKey: id)
+        }
+    }
+
+    /// Reassert every border's z-position above its own target window, without recomputing frames.
+    /// Cheap (just SLSOrderWindow calls). Call this right after AeroSpace initiates a window raise:
+    /// the raise is async in WindowServer, so the border ordering done during the focus-change
+    /// refresh runs against the pre-raise stack and leaves the focused window's border stranded
+    /// below the window that used to be on top
+    func reassertZOrder() {
+        guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled else { return }
+        for (targetId, panel) in panels {
+            panel.reorderAbove(targetId)
         }
     }
 

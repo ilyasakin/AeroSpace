@@ -141,6 +141,10 @@ final class MacApp: AbstractApp {
                 window.set(Ax.isMainAttr, true)
                 AXUIElementPerformAction(window, kAXRaiseAction as CFString)
                 nsApp.activate(options: .activateIgnoringOtherApps)
+                // The raise above lands in WindowServer asynchronously, after the focus-change
+                // refresh already ordered borders against the old stack. Reassert once it settles
+                // so the newly-raised window's border isn't stranded below the previous top window
+                Task { @MainActor in WindowBordersManager.shared.reassertZOrder() }
             }
         }
     }
@@ -150,6 +154,8 @@ final class MacApp: AbstractApp {
         if serverArgs.isReadOnly { return }
         _ = withWindowAsync(windowId, .cancellable) { window, job in
             AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            // Reassert border z-order after the async raise settles (see nativeFocus)
+            Task { @MainActor in WindowBordersManager.shared.reassertZOrder() }
         }
     }
 
