@@ -10,6 +10,8 @@ open class Window: TreeNode, Hashable {
     var layoutReason: LayoutReason = .standard
     /// Emulated: the window is re-raised on every focus change. See always-on-top command
     var isAlwaysOnTop: Bool = false
+    /// The window follows the active workspace of its monitor. See sticky command
+    var isSticky: Bool = false
 
     @MainActor
     init(id: UInt32, _ app: any AbstractApp, lastFloatingSize: CGSize?, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {

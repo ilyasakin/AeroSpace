@@ -1,0 +1,55 @@
+= aerospace-sticky(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-sticky
+// tag::purpose[]
+:manpurpose: Toggle whether the window follows the active workspace (visible on all workspaces)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace sticky [-h|--help] [--window-id <window-id>] [--fail-if-noop] [on|off]
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+If no `on` or `off` argument is supplied, the state is toggled.
+
+A sticky window is a floating window that follows the active workspace of its monitor:
+whenever you switch workspaces, the window comes along. If the window is tiled when
+sticky is enabled, it is turned into a floating window first.
+
+Moving a sticky window to a specific workspace with
+xref:aerospace-move-node-to-workspace.adoc[move-node-to-workspace] turns sticky off
+(moving to a particular workspace is an explicit statement that the window should stay there).
+
+The state is exposed as `%{window-is-sticky}` interpolation variable in
+xref:aerospace-list-windows.adoc[list-windows].
+
+To make a particular app sticky automatically, combine it with the
+`on-window-detected` callback:
+
+[source,toml]
+----
+[[on-window-detected]]
+if.app-id = 'com.apple.MobileSMS'
+run = ['layout floating', 'sticky on']
+----
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--fail-if-noop:: Exit with non-zero exit code if the window is already in the requested state
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+// end::body[]

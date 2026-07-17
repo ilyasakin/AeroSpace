@@ -37,6 +37,9 @@ func moveWindowToWorkspace(_ window: Window, _ targetWorkspace: Workspace, _ io:
                 .succ(io.err("Window '\(window.windowId)' already belongs to workspace '\(targetWorkspace.name)'. Tip: use --fail-if-noop to exit with non-zero code"))
         }
     }
+    // Moving a sticky window to a specific workspace is an explicit statement that
+    // the window should stop following the active workspace
+    window.isSticky = false
     let targetContainer: NonLeafTreeNodeObject = window.isFloating
         ? targetWorkspace.floatingWindowsContainer
         : targetWorkspace.rootTilingContainer
