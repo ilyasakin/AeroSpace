@@ -280,6 +280,17 @@ final class MacApp: AbstractApp {
         }
     }
 
+    /// Reads fullscreen + minimized in ONE thread-hop onto the app's AX thread instead of two
+    /// separate withWindow calls. Returns nil for an attribute whose AX read failed
+    func nativeFullscreenAndMinimized(_ windowId: UInt32, _ cm: CancellationMode) async throws -> (fullscreen: Bool?, minimized: Bool?)? {
+        try await withWindow(windowId, cm) { window, job in
+            let fullscreen = window.get(Ax.isFullscreenAttr)
+            // A fullscreen window is never minimized; skip the second read in that case
+            let minimized = fullscreen == true ? false : window.get(Ax.minimizedAttr)
+            return (fullscreen, minimized)
+        }
+    }
+
     @MainActor
     static func refreshAllAndGetAliveWindowIds(frontmostAppBundleId: String?) async throws -> [MacApp: [UInt32]] {
         for (_, app) in MacApp.allAppsMap { // gc dead apps

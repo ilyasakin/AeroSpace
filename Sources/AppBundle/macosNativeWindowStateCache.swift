@@ -23,12 +23,10 @@ func getMacosNativeWindowState(_ window: Window) async throws -> MacosNativeWind
         let isMinimized: Bool = if isFullscreen { false } else { try await window.isMacosMinimized(.cancellable) }
         return MacosNativeWindowState(isFullscreen: isFullscreen, isMinimized: isMinimized)
     }
-    let isFullscreen = try await macWindow.macApp.isMacosNativeFullscreen(windowId, .cancellable)
-    let isMinimized: Bool? = if isFullscreen == false {
-        try await macWindow.macApp.isMacosNativeMinimized(windowId, .cancellable)
-    } else {
-        isFullscreen.map { _ in false }
-    }
+    // Both attributes in one thread-hop onto the app's AX thread
+    let read = try await macWindow.macApp.nativeFullscreenAndMinimized(windowId, .cancellable)
+    let isFullscreen = read?.fullscreen
+    let isMinimized = read?.minimized
     let state = MacosNativeWindowState(isFullscreen: isFullscreen == true, isMinimized: isMinimized == true)
     // nil means the AX request failed (busy app, dying window) - don't cache, retry next refresh
     if isFullscreen != nil && isMinimized != nil {

@@ -330,10 +330,9 @@ extension WindowDetectedCallback {
     func matches(_ window: Window) async -> Bool {
         switch self.matcher {
             case .legacy(let matcher):
+                // Cheap in-process checks first. The window-title check needs an AX round-trip
+                // (getTitle), so it must run LAST — after appId/appName/workspace can reject
                 if let startupMatcher = matcher.duringAeroSpaceStartup, startupMatcher != isStartup {
-                    return false
-                }
-                if let regex = matcher.windowTitleRegexSubstring, (try? await window.getTitle(.nonCancellable))?.contains(caseInsensitiveRegex: regex) != true {
                     return false
                 }
                 if let appId = matcher.appId, appId != window.app.rawAppBundleId {
@@ -343,6 +342,9 @@ extension WindowDetectedCallback {
                     return false
                 }
                 if let workspace = matcher.workspace, workspace != window.nodeWorkspace?.name {
+                    return false
+                }
+                if let regex = matcher.windowTitleRegexSubstring, (try? await window.getTitle(.nonCancellable))?.contains(caseInsensitiveRegex: regex) != true {
                     return false
                 }
                 return true
