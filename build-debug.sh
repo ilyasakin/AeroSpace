@@ -11,3 +11,14 @@ swift build --target AppBundleTests "$@" # swift build doesn't build test target
 rm -rf .debug && mkdir .debug
 cp -r .build/debug/aerospace .debug
 cp -r .build/debug/AeroSpaceApp .debug
+
+# Sign with the stable self-signed identity if it exists, so the Accessibility grant survives
+# rebuilds instead of being reset every time (see ./setup-debug-codesigning.sh). No-op otherwise.
+DEBUG_SIGN_IDENTITY="AeroSpace Debug Self-Signed"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEBUG_SIGN_IDENTITY"; then
+    codesign --force --sign "$DEBUG_SIGN_IDENTITY" .debug/AeroSpaceApp
+    if [ -d .debug/AeroSpaceDebug.app ]; then
+        cp -f .debug/AeroSpaceApp .debug/AeroSpaceDebug.app/Contents/MacOS/AeroSpaceApp
+        codesign --force --sign "$DEBUG_SIGN_IDENTITY" .debug/AeroSpaceDebug.app
+    fi
+fi
