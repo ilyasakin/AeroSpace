@@ -50,6 +50,12 @@ extension [String: Json]: AxUiElementMock {
 
     private var isSynthetic: Bool { self[kAXAeroSynthetic] != nil }
 
+    public func isSettable<Attr>(_ attr: Attr) -> Bool? where Attr: WritableAttr {
+        // Old dumps don't carry writability info -> unknown
+        guard case .string(let writable)? = self["Aero.AxWritable"] else { return nil }
+        return writable.split(separator: ",").lazy.map { $0.trimmingCharacters(in: .whitespaces) }.contains(attr.key)
+    }
+
     public func containingWindowId() -> CGWindowID? { _containingWindowId() }
 
     private func _containingWindowId() -> CGWindowID {

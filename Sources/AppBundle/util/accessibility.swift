@@ -209,10 +209,10 @@ enum Ax {
         key: kAXIdentifierAttribute,
         getter: { $0 as? String },
     )
-    // static let modalAttr = ReadableAttrImpl<Bool>(
-    //     key: kAXModalAttribute,
-    //     getter: { $0 as? Bool },
-    // )
+    static let modalAttr = ReadableAttrImpl<Bool>(
+        key: kAXModalAttribute,
+        getter: { $0 as? Bool },
+    )
     static let enabledAttr = ReadableAttrImpl<Bool>(
         key: kAXEnabledAttribute,
         getter: { $0 as? Bool },
@@ -365,6 +365,13 @@ extension AXUIElement: AxUiElementMock {
         var cgWindowId = CGWindowID()
         return unsafe _AXUIElementGetWindow(self, &cgWindowId) == .success && cgWindowId != kCGNullWindowID
             ? cgWindowId
+            : nil
+    }
+
+    func isSettable<Attr: WritableAttr>(_ attr: Attr) -> Bool? {
+        var settable = DarwinBoolean(false)
+        return unsafe AXUIElementIsAttributeSettable(self, attr.key as CFString, &settable) == .success
+            ? settable.boolValue
             : nil
     }
 }
