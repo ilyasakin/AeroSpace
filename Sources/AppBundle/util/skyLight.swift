@@ -16,10 +16,13 @@ enum SkyLight {
 
     private typealias MainConnectionIDFun = @convention(c) () -> Int32
     private typealias GetWindowBoundsFun = @convention(c) (Int32, UInt32, UnsafeMutablePointer<CGRect>) -> Int32
+    // SLSOrderWindow(cid, window, order, relativeTo): order 1 = above, -1 = below, 0 = out
+    private typealias OrderWindowFun = @convention(c) (Int32, UInt32, Int32, UInt32) -> Int32
 
     @unsafe private struct Impl {
         let connection: Int32
         let getWindowBounds: GetWindowBoundsFun
+        let orderWindow: OrderWindowFun?
     }
 
     private static let impl: Impl? = {
@@ -29,15 +32,35 @@ enum SkyLight {
         else { return nil }
         let mainConnection = unsafe unsafeBitCast(mainConnectionSym, to: MainConnectionIDFun.self)
         let getWindowBounds = unsafe unsafeBitCast(getBoundsSym, to: GetWindowBoundsFun.self)
-        return unsafe Impl(connection: mainConnection(), getWindowBounds: getWindowBounds)
+        let orderWindow = unsafe dlsym(handle, "SLSOrderWindow").map { unsafe unsafeBitCast($0, to: OrderWindowFun.self) }
+        return unsafe Impl(connection: mainConnection(), getWindowBounds: getWindowBounds, orderWindow: orderWindow)
     }()
 
     static var isAvailable: Bool { unsafe impl != nil }
 
+    /// Orders our own `window` directly above `relativeTo` in the global window stack. SIP-free
+    /// because we only reorder a window we own (the border overlay), same as JankyBorders. This is
+    /// what keeps a background window's border below the window in front of it
+    @MainActor static func orderWindow(_ window: UInt32, above relativeTo: UInt32) {
+        guard let impl = unsafe impl, let orderWindow = unsafe impl.orderWindow else { return }
+        _ = unsafe orderWindow(impl.connection, window, 1, relativeTo)
+    }
+
     /// The window's frame in global top-left screen coordinates (the same space AX frames use).
     /// nil when SkyLight reads are disabled, unavailable, or the window is unknown to WindowServer
     static func windowBounds(_ windowId: UInt32) -> Rect? {
-        guard unsafe readsEnabled, let impl = unsafe impl else { return nil }
+        guard unsafe readsEnabled else { return nil }
+        return unsafe rawWindowBounds(windowId)
+    }
+
+    /// Same as windowBounds but not gated on the `skylight-reads` opt-in - used by features that
+    /// need the live on-screen frame regardless of that flag (e.g. window borders)
+    static func overlayBounds(_ windowId: UInt32) -> Rect? {
+        unsafe rawWindowBounds(windowId)
+    }
+
+    private static func rawWindowBounds(_ windowId: UInt32) -> Rect? {
+        guard let impl = unsafe impl else { return nil }
         let state = signposter.beginInterval("SkyLight.windowBounds")
         defer { signposter.endInterval("SkyLight.windowBounds", state) }
         var rect = CGRect.zero
