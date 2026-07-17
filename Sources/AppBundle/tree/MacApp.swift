@@ -206,6 +206,36 @@ final class MacApp: AbstractApp {
         } ?? .window
     }
 
+    /// The user-facing verdict: 'window-detection-rules' from the config take precedence over the heuristics
+    @MainActor
+    func resolveWindowType(_ windowId: UInt32, _ windowLevel: MacOsWindowLevel?, _ cm: CancellationMode) async throws -> AxUiElementWindowType {
+        if let rule = try await matchedWindowDetectionRule(windowId, windowLevel, cm) {
+            return rule.treatAs.windowType
+        }
+        return try await getAxUiElementWindowType(windowId, windowLevel, cm)
+    }
+
+    @MainActor
+    func matchedWindowDetectionRule(_ windowId: UInt32, _ windowLevel: MacOsWindowLevel?, _ cm: CancellationMode) async throws -> WindowDetectionRule? {
+        let rules = config.windowDetectionRules
+        if rules.isEmpty { return nil }
+        guard let signals = try await withWindow(windowId, cm, { window, job in
+            (title: window.get(Ax.titleAttr), subrole: window.get(Ax.subroleAttr))
+        }) else { return nil }
+        let appName = name
+        let startup = isStartup
+        return rules.first {
+            $0.matcher.matches(
+                appId: rawAppBundleId,
+                appName: appName,
+                windowTitle: signals.title,
+                windowSubrole: signals.subrole,
+                windowLevel: windowLevel,
+                isStartup: startup,
+            )
+        }
+    }
+
     func isDialogHeuristic(_ windowId: UInt32, _ windowLevel: MacOsWindowLevel?, _ cm: CancellationMode) async throws -> Bool {
         try await withWindow(windowId, cm) { [appId] window, job in
             window.isDialogHeuristic(appId, windowLevel)

@@ -60,6 +60,7 @@ struct Config: ConvenienceMutable {
     var workspaceToMonitorForceAssignment: [String: [MonitorDescription]] = [:]
     var modes: [String: Mode] = [:]
     var onWindowDetected: [WindowDetectedCallback] = []
+    var windowDetectionRules: [WindowDetectionRule] = []
     var onModeChanged: Shell<any Command> = .empty
 }
 

@@ -406,6 +406,65 @@ final class ConfigTest: XCTestCase {
         ])
     }
 
+    func testParseWindowDetectionRules() {
+        let result = parseConfig(
+            """
+            window-detection-rules = [
+                { # 0
+                    if.app-id = 'com.apple.systempreferences',
+                    treat-as = 'float',
+                },
+                { # 1
+                    if.app-id = 'com.googlecode.iterm2',
+                    if.window-level = 'always-on-top',
+                    treat-as = 'ignore',
+                },
+                { # 2
+                    if.window-subrole = 'AXDialog',
+                    if.window-title-regex-substring = 'settings',
+                    treat-as = 'tile',
+                },
+                { # 3
+                    if.window-level = 8,
+                    treat-as = 'float',
+                },
+                { treat-as = 'float' }, # 4 error: no matcher
+                { if.app-id = 'a.b.c' }, # 5 error: no treat-as
+                { if.app-id = 'a.b.c', treat-as = 'bogus' }, # 6 error: bad treat-as
+                { if.window-level = 'bogus', treat-as = 'tile' }, # 7 error: bad window-level
+            ]
+            """,
+        )
+        assertEquals(result.config.windowDetectionRules, [
+            WindowDetectionRule( // 0
+                matcher: WindowDetectionRuleMatcher(appId: "com.apple.systempreferences"),
+                rawTreatAs: .float,
+            ),
+            WindowDetectionRule( // 1
+                matcher: WindowDetectionRuleMatcher(appId: "com.googlecode.iterm2", windowLevel: .alwaysOnTopWindow),
+                rawTreatAs: .ignore,
+            ),
+            WindowDetectionRule( // 2
+                matcher: WindowDetectionRuleMatcher(
+                    windowTitleRegexSubstring: CaseInsensitiveRegex.new("settings").getOrDie(),
+                    windowSubrole: "AXDialog",
+                ),
+                rawTreatAs: .tile,
+            ),
+            WindowDetectionRule( // 3
+                matcher: WindowDetectionRuleMatcher(windowLevel: .unknown(windowLevel: 8)),
+                rawTreatAs: .float,
+            ),
+        ])
+
+        assertEquals(result.strErrors, [
+            "[ERROR] window-detection-rules[4]: 'if' is mandatory key. A rule that matches all windows is error prone",
+            "[ERROR] window-detection-rules[5]: 'treat-as' is mandatory key. Possible values: 'tile', 'float', 'ignore'",
+            "[ERROR] window-detection-rules[6].treat-as: 'bogus' is invalid 'treat-as' value. Possible values: 'tile', 'float', 'ignore'",
+            "[ERROR] window-detection-rules[7].if.window-level: 'bogus' is invalid 'window-level' value. Possible values: 'normal', 'always-on-top' or a raw integer window level",
+        ])
+    }
+
     func testParseOnWindowDetected2() {
         let result = parseConfig(
             """

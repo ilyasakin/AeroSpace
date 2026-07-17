@@ -109,6 +109,9 @@ private func dumpWindowDebugInfo(_ window: Window, _ cm: CancellationMode) async
     }
     result["Aero.on-window-detected"] = .array(matchingCallbacks)
 
+    let matchedRule = try await window.macApp.matchedWindowDetectionRule(window.windowId, windowLevel, cm)
+    result["Aero.matchedWindowDetectionRule"] = matchedRule?.debugJson ?? .null
+
     return JSONEncoder.aeroSpaceDefault.encodeToString(result).prettyDescription
         .prefixLines(with: "\(window.app.rawAppBundleId ?? "nil-bundle-id").\(window.windowId) ||| ")
 }
