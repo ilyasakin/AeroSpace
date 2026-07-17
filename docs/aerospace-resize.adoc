@@ -9,7 +9,7 @@ include::util/man-attributes.adoc[]
 == Synopsis
 [verse]
 // tag::synopsis[]
-aerospace resize [-h|--help] [--window-id <window-id>] (smart|smart-opposite|width|height) [+|-]<number>
+aerospace resize [-h|--help] [--window-id <window-id>] (smart|smart-opposite|width|height) [+|-]<number>[%]
 
 // end::synopsis[]
 
@@ -32,6 +32,14 @@ Second argument controls how much the size changes
 * If the `<number>` is prefixed with `+` then the dimension is increased
 * If the `<number>` is prefixed with `-` then the dimension is decreased
 * If the `<number>` is prefixed with neither `+` nor `-` then the command changes the absolute value of the dimension
+
+For tiling windows, `<number>` is expressed in arbitrary units relative to sibling windows.
+
+Floating windows are resized in pixels, or in percents of the monitor's visible frame if
+`<number>` is suffixed with `%`. `width` and `height` resize the respective axis;
+`smart` and `smart-opposite` resize both axes at once
+(`resize smart 50%` makes the window take a quarter of the monitor).
+Percent units are currently supported only for floating windows.
 
 // =========================================================== Options
 include::./util/conditional-options-header.adoc[]

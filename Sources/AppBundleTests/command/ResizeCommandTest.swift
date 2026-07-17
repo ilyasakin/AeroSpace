@@ -23,6 +23,53 @@ final class ResizeCommandTest: XCTestCase {
                    Possible values: (width|height|smart|smart-opposite)
             """, exitCode: 2)
         testParseCommandFail("resize smart foo", msg: "ERROR: <number> argument must be a number", exitCode: 2)
+
+        testParseSingleCommandSucc("resize width 50%", ResizeCmdArgs(rawArgs: [], dimension: .width, units: .setPercent(50)))
+        testParseSingleCommandSucc("resize height +10%", ResizeCmdArgs(rawArgs: [], dimension: .height, units: .addPercent(10)))
+        testParseSingleCommandSucc("resize smart -10%", ResizeCmdArgs(rawArgs: [], dimension: .smart, units: .subtractPercent(10)))
+        testParseCommandFail("resize smart %", msg: "ERROR: <number> argument must be a number", exitCode: 2)
+    }
+
+    func testResizeFloating_pxAndPercent() async {
+        let workspace = Workspace.get(byName: name)
+        var window: Window!
+        workspace.floatingWindowsContainer.apply {
+            window = TestWindow.new(id: 1, parent: $0, rect: Rect(topLeftX: 100, topLeftY: 100, width: 400, height: 300))
+        }
+        _ = window.focusWindow()
+
+        await parseCommand("resize width +100").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 500, height: 300))
+
+        await parseCommand("resize height 600").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 500, height: 600))
+
+        // Test monitor is 1920x1080
+        await parseCommand("resize width 50%").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 960, height: 600))
+
+        // smart scales both axes
+        await parseCommand("resize smart -10%").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 960 - 192, height: 600 - 108))
+
+        // clamped to monitor visible frame
+        await parseCommand("resize width +99999").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(try! await window.getAxSize(.nonCancellable)?.width, 1920)
+
+        assertEquals(window.lastFloatingSize?.width, 1920)
+    }
+
+    func testResizeTiling_percentIsRejected() async {
+        var window1: Window!
+        Workspace.get(byName: name).rootTilingContainer.apply {
+            window1 = TestWindow.new(id: 1, parent: $0, adaptiveWeight: 4)
+            TestWindow.new(id: 2, parent: $0, adaptiveWeight: 4)
+        }
+        _ = window1.focusWindow()
+
+        let result = await parseCommand("resize width 50%").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(result.exitCode.rawValue, 2)
+        assertEquals(window1.hWeight, 4)
     }
 
     func testWidthAdd_growsTargetShrinksSiblings() async {

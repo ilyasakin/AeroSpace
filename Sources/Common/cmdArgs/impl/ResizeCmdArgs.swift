@@ -9,7 +9,7 @@ public struct ResizeCmdArgs: CmdArgs {
         ],
         posArgs: [
             newMandatoryPosArgParser(\.dimension, parseDimension, placeholder: "(smart|smart-opposite|width|height)"),
-            newMandatoryPosArgParser(\.units, parseUnits, placeholder: "[+|-]<number>"),
+            newMandatoryPosArgParser(\.units, parseUnits, placeholder: "[+|-]<number>[%]"),
         ],
     )
 
@@ -35,6 +35,17 @@ public struct ResizeCmdArgs: CmdArgs {
         case set(UInt)
         case add(UInt)
         case subtract(UInt)
+        /// Percentage of the monitor's visible frame. Only supported for floating windows
+        case setPercent(UInt)
+        case addPercent(UInt)
+        case subtractPercent(UInt)
+
+        public var isPercent: Bool {
+            switch self {
+                case .set, .add, .subtract: false
+                case .setPercent, .addPercent, .subtractPercent: true
+            }
+        }
     }
 }
 
@@ -47,13 +58,15 @@ private func parseDimension(i: PosArgParserInput) -> ParsedCliArgs<ResizeCmdArgs
 }
 
 private func parseUnits(i: PosArgParserInput) -> ParsedCliArgs<ResizeCmdArgs.Units> {
-    if let number = UInt(i.arg.removePrefix("+").removePrefix("-")) {
-        switch true {
-            case i.arg.starts(with: "+"): .succ(.add(number), advanceBy: 1)
-            case i.arg.starts(with: "-"): .succ(.subtract(number), advanceBy: 1)
-            default: .succ(.set(number), advanceBy: 1)
-        }
-    } else {
-        .fail("<number> argument must be a number", advanceBy: 1)
+    let isPercent = i.arg.hasSuffix("%")
+    let raw = isPercent ? String(i.arg.dropLast()) : i.arg
+    guard let number = UInt(raw.removePrefix("+").removePrefix("-")) else {
+        return .fail("<number> argument must be a number", advanceBy: 1)
     }
+    let units: ResizeCmdArgs.Units = switch true {
+        case raw.starts(with: "+"): isPercent ? .addPercent(number) : .add(number)
+        case raw.starts(with: "-"): isPercent ? .subtractPercent(number) : .subtract(number)
+        default: isPercent ? .setPercent(number) : .set(number)
+    }
+    return .succ(units, advanceBy: 1)
 }
