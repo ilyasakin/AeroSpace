@@ -12,7 +12,7 @@ public struct ImportConfigCmdArgs: CmdArgs {
             "--dry-run": trueBoolFlag(\.dryRun),
         ],
         posArgs: [
-            newMandatoryPosArgParser(\.format, parseSourceFormat, placeholder: "(i3)"),
+            newMandatoryPosArgParser(\.format, parseSourceFormat, placeholder: "(i3|hyprland)"),
             newMandatoryPosArgParser(\.path, parsePath, placeholder: "<path>"),
         ],
     )
@@ -25,6 +25,7 @@ public struct ImportConfigCmdArgs: CmdArgs {
 
     public enum SourceFormat: String, CaseIterable, Equatable, Sendable {
         case i3
+        case hyprland
     }
 }
 

@@ -112,12 +112,12 @@ final class ImportI3Test: XCTestCase {
         let fixturesDir = projectRoot.appending(path: "Sources/AppBundleTests/config/importFixtures")
         let regenerate = ProcessInfo.processInfo.environment["REGENERATE_IMPORT_GOLDENS"] == "1"
         let fixtures = try FileManager.default.contentsOfDirectory(at: fixturesDir, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "config" }
+            .filter { $0.pathExtension == "config" || $0.pathExtension == "hyprconf" }
             .sorted { $0.path < $1.path }
         assertTrue(!fixtures.isEmpty)
         for fixture in fixtures {
             let source = try String(contentsOf: fixture, encoding: .utf8)
-            let result = importI3Config(source)
+            let result = fixture.pathExtension == "hyprconf" ? importHyprConfig(source) : importI3Config(source)
 
             // Invariant: output always parses cleanly
             let parsed = parseConfig(result.toml)

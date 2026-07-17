@@ -70,7 +70,7 @@ let fullscreen_help_generated = """
        OR: fullscreen [-h|--help] off [--window-id <window-id>] [--fail-if-noop]
     """
 let import_config_help_generated = """
-    USAGE: import-config [-h|--help] (i3) <path> [--output <path>] [--mod (alt|cmd)] [--dry-run]
+    USAGE: import-config [-h|--help] (i3|hyprland) <path> [--output <path>] [--mod (alt|cmd)] [--dry-run]
     """
 let join_with_help_generated = """
     USAGE: join-with [-h|--help] [--window-id <window-id>] (left|down|up|right)

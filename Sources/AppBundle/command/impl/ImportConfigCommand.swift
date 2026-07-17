@@ -15,6 +15,7 @@ struct ImportConfigCommand: Command {
         if let mod = args.mod4Target { options.mod4Target = mod }
         let result: ImportResult = switch args.format.val {
             case .i3: importI3Config(sourceText, options)
+            case .hyprland: importHyprConfig(sourceText, options)
         }
 
         // The importer must never produce an unparsable config
