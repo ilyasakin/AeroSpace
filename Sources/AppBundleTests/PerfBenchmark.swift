@@ -3,11 +3,17 @@ import Common
 import XCTest
 
 /// Microbenchmarks for the tree/refresh hot paths. Not a pass/fail test — it prints timings
-/// so before/after deltas can be compared. Run with:
-///   swift test --filter PerfBenchmark 2>&1 | grep BENCH
+/// so before/after deltas can be compared. Opt-in (it churns a 600-window tree and prints), so
+/// it doesn't run in normal test runs. Enable with:
+///   PERF_BENCH=1 swift test --filter PerfBenchmark 2>&1 | grep BENCH
 @MainActor
 final class PerfBenchmark: XCTestCase {
-    override func setUp() async throws { setUpWorkspacesForTests() }
+    private var benchEnabled: Bool { ProcessInfo.processInfo.environment["PERF_BENCH"] == "1" }
+
+    override func setUp() async throws {
+        try XCTSkipUnless(benchEnabled, "Set PERF_BENCH=1 to run the perf benchmark")
+        setUpWorkspacesForTests()
+    }
 
     private func buildTree(workspaces: Int, windowsPerWorkspace: Int) {
         var id: UInt32 = 1
