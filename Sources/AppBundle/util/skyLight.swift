@@ -18,11 +18,21 @@ enum SkyLight {
     private typealias GetWindowBoundsFun = @convention(c) (Int32, UInt32, UnsafeMutablePointer<CGRect>) -> Int32
     // SLSOrderWindow(cid, window, order, relativeTo): order 1 = above, -1 = below, 0 = out
     private typealias OrderWindowFun = @convention(c) (Int32, UInt32, Int32, UInt32) -> Int32
+    // SLSGetWindowLevel(cid, window, &outLevel) -> error
+    private typealias GetWindowLevelFun = @convention(c) (Int32, UInt32, UnsafeMutablePointer<Int32>) -> Int32
+    // SLSGetWindowSubLevel(cid, window) -> subLevel
+    private typealias GetWindowSubLevelFun = @convention(c) (Int32, UInt32) -> Int32
+    // SLSSetWindow{Level,SubLevel}(cid, window, level) -> error
+    private typealias SetWindowLevelFun = @convention(c) (Int32, UInt32, Int32) -> Int32
 
     @unsafe private struct Impl {
         let connection: Int32
         let getWindowBounds: GetWindowBoundsFun
         let orderWindow: OrderWindowFun?
+        let getWindowLevel: GetWindowLevelFun?
+        let getWindowSubLevel: GetWindowSubLevelFun?
+        let setWindowLevel: SetWindowLevelFun?
+        let setWindowSubLevel: SetWindowLevelFun?
     }
 
     private static let impl: Impl? = {
@@ -33,16 +43,35 @@ enum SkyLight {
         let mainConnection = unsafe unsafeBitCast(mainConnectionSym, to: MainConnectionIDFun.self)
         let getWindowBounds = unsafe unsafeBitCast(getBoundsSym, to: GetWindowBoundsFun.self)
         let orderWindow = unsafe dlsym(handle, "SLSOrderWindow").map { unsafe unsafeBitCast($0, to: OrderWindowFun.self) }
-        return unsafe Impl(connection: mainConnection(), getWindowBounds: getWindowBounds, orderWindow: orderWindow)
+        let getWindowLevel = unsafe dlsym(handle, "SLSGetWindowLevel").map { unsafe unsafeBitCast($0, to: GetWindowLevelFun.self) }
+        let getWindowSubLevel = unsafe dlsym(handle, "SLSGetWindowSubLevel").map { unsafe unsafeBitCast($0, to: GetWindowSubLevelFun.self) }
+        let setWindowLevel = unsafe dlsym(handle, "SLSSetWindowLevel").map { unsafe unsafeBitCast($0, to: SetWindowLevelFun.self) }
+        let setWindowSubLevel = unsafe dlsym(handle, "SLSSetWindowSubLevel").map { unsafe unsafeBitCast($0, to: SetWindowLevelFun.self) }
+        return unsafe Impl(connection: mainConnection(), getWindowBounds: getWindowBounds, orderWindow: orderWindow,
+                           getWindowLevel: getWindowLevel, getWindowSubLevel: getWindowSubLevel,
+                           setWindowLevel: setWindowLevel, setWindowSubLevel: setWindowSubLevel)
     }()
 
     static var isAvailable: Bool { unsafe impl != nil }
 
-    /// Orders our own `window` directly above `relativeTo` in the global window stack. SIP-free
-    /// because we only reorder a window we own (the border overlay), same as JankyBorders. This is
-    /// what keeps a background window's border below the window in front of it
+    /// Places our own overlay `window` directly above `relativeTo` and glues it into that window's
+    /// stacking group by copying the target's window level AND sub-level onto the overlay. This is
+    /// how JankyBorders keeps a border above its target even when the target belongs to the *active*
+    /// application: a plain SLSOrderWindow is overridden by WindowServer's active-app-forward policy
+    /// (our overlay is always owned by a background app), but matching level+sub-level makes the
+    /// overlay ride inside the target's group so it's carried along instead of stranded below it.
+    /// SIP-free because we only ever mutate a window we own (the overlay)
     @MainActor static func orderWindow(_ window: UInt32, above relativeTo: UInt32) {
         guard let impl = unsafe impl, let orderWindow = unsafe impl.orderWindow else { return }
+        if let getLevel = unsafe impl.getWindowLevel, let setLevel = unsafe impl.setWindowLevel {
+            var level: Int32 = 0
+            _ = unsafe getLevel(impl.connection, relativeTo, &level)
+            _ = unsafe setLevel(impl.connection, window, level)
+        }
+        if let getSub = unsafe impl.getWindowSubLevel, let setSub = unsafe impl.setWindowSubLevel {
+            let subLevel = unsafe getSub(impl.connection, relativeTo)
+            _ = unsafe setSub(impl.connection, window, subLevel)
+        }
         _ = unsafe orderWindow(impl.connection, window, 1, relativeTo)
     }
 
