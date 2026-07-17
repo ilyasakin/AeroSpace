@@ -72,5 +72,14 @@ final class PerfBenchmark: XCTestCase {
         time("parentsWithSelf (deep leaf)", iterations: 50000) {
             _ = deepLeaf.parentsWithSelf.count
         }
+
+        // nodeCases / getChildParentRelation cast-chain cost (via getWeight)
+        let tiledWindow = Workspace.get(byName: "bench-5").rootTilingContainer.allLeafWindowsRecursive.first!
+        time("getChildParentRelation (getWeight)", iterations: 500_000) {
+            _ = tiledWindow.getWeight(.h)
+        }
+        time("nodeCases", iterations: 500_000) {
+            _ = tiledWindow.nodeCases
+        }
     }
 }
