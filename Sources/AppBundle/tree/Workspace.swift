@@ -35,6 +35,8 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
     nonisolated private let nameLogicalSegments: StringLogicalSegments
     /// `assignedMonitorPoint` must be interpreted only when the workspace is invisible
     fileprivate var assignedMonitorPoint: CGPoint? = nil
+    /// Set by the tiling-policy command. nil means "follow the config"
+    var tilingPolicyOverride: TilingPolicy? = nil
 
     @MainActor
     private init(_ name: String) {

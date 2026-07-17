@@ -9,4 +9,4 @@ line 58: [skipped] bind = $mainMod, S, togglespecialworkspace, magic — special
 line 59: [skipped] bind = $mainMod, mouse_down, workspace, e+1 — key 'mouse_down' or modifiers 'SUPER' have no equivalent
 line 74: [skipped] windowrulev2 = opacity 0.9, class:^(Alacritty)$ — window rule action 'opacity 0.9' has no equivalent (visual effects don't exist on macOS)
 line 76: [note] workspace = 1, monitor:DP-1 — 'DP-1' is a compositor connector name; macOS matches monitors by display name — replace with 'main', 'secondary', a monitor index, or a display-name regex
-31 of 41 directives translated, 10 skipped
+32 of 42 directives translated, 10 skipped

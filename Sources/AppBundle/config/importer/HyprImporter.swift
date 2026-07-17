@@ -127,7 +127,14 @@ private struct HyprImportContext {
                     for side in ["left", "bottom", "top", "right"] { builder.gapsOuter[side] = v }
                 }
             case "layout" where section == "general":
-                directiveCount -= 1 // covered by the dwindle/master section diagnostics
+                switch value {
+                    case "dwindle":
+                        builder.tilingPolicy = "dwindle"
+                    case "master":
+                        skip(line, original, "master-stack layout is not supported yet; imported as manual tiling")
+                    default:
+                        skip(line, original, "unknown layout '\(value)'")
+                }
             case "monitor":
                 skip(line, original, "monitor layout is configured in macOS System Settings")
             case "env", "envd":

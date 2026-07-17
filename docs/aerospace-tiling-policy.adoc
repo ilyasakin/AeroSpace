@@ -1,0 +1,45 @@
+= aerospace-tiling-policy(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-tiling-policy
+// tag::purpose[]
+:manpurpose: Set the tiling policy of the workspace (manual|dwindle|default)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace tiling-policy [-h|--help] [--workspace <workspace>] (manual|dwindle|default)
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+The tiling policy controls where new windows are inserted into the tiling tree:
+
+* `manual` - the classic behavior: new windows join the most recent window's container
+  as siblings, and the tree is shaped with the split/join-with commands (i3 style)
+* `dwindle` - Hyprland/bspwm style dynamic tiling: every new window binary-splits the
+  focused window's tile; the split orientation follows the tile's aspect ratio
+  (wider than tall - side by side, taller than wide - stacked)
+* `default` - drop the per-workspace override and follow the `tiling-policy` config option again
+
+The config option `tiling-policy` sets the default for all workspaces; this command
+overrides it for one workspace at runtime.
+
+The `dwindle-split-percent` config option (10-90, default 50) controls how much of the
+tile the existing window keeps on each split. `62` approximates the golden-ratio spiral.
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--workspace <workspace>::
+include::./util/workspace-flag-desc.adoc[]
+
+// end::body[]

@@ -8,6 +8,8 @@ after-startup-command = [
     'exec-and-forget nm-applet',
 ]
 
+tiling-policy = 'dwindle'
+
 [gaps]
 inner.vertical = 5
 inner.horizontal = 5

@@ -97,6 +97,8 @@ aerospace -h;
 
     | summon-workspace [--fail-if-noop] <workspace> [--fail-if-noop]
 
+    | tiling-policy [--workspace <workspace>] (manual|dwindle|default)
+
     | trigger-binding <binding> --mode <mode_id>
     | trigger-binding --mode <mode_id> <binding>
 

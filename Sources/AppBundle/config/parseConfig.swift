@@ -141,6 +141,8 @@ private let configParser: [String: any ParserProtocol<Config>] = [
 
     "default-root-container-layout": Parser(\.defaultRootContainerLayout, parseLayout),
     "default-root-container-orientation": Parser(\.defaultRootContainerOrientation, parseDefaultContainerOrientation),
+    "tiling-policy": Parser(\.tilingPolicy, parseTilingPolicy),
+    "dwindle-split-percent": Parser(\.dwindleSplitPercent, parseDwindleSplitPercent),
 
     "start-at-login": Parser(\.startAtLogin, parseBool),
     "auto-reload-config": Parser(\.autoReloadConfig, parseBool),
@@ -410,6 +412,21 @@ private func parseArrayOfStrings(_ raw: OrderedJson, _ backtrace: ConfigBacktrac
                 parseString(elem, backtrace + .index(index))
             }
         }
+}
+
+private func parseTilingPolicy(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<TilingPolicy> {
+    parseString(raw, backtrace).flatMap {
+        TilingPolicy(rawValue: $0)
+            .toResult(.init(backtrace, "Can't parse tiling policy '\($0)'. Possible values: manual|dwindle"))
+    }
+}
+
+private func parseDwindleSplitPercent(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<Int> {
+    parseInt(raw, backtrace).flatMap {
+        (10 ... 90).contains($0)
+            ? .success($0)
+            : .failure(.init(backtrace, "dwindle-split-percent must be between 10 and 90"))
+    }
 }
 
 private func parseDefaultContainerOrientation(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<DefaultContainerOrientation> {

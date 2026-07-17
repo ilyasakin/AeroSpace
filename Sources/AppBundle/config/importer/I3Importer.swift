@@ -38,6 +38,7 @@ struct AeroConfigBuilder {
     var detectionRules: [(matchers: [String], treatAs: String)] = []
     var windowCallbacks: [(matchers: [String], run: [String])] = []
     var disableFlattenNormalization = false
+    var tilingPolicy: String? = nil
 }
 
 private struct I3ImportContext {

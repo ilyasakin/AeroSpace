@@ -41,6 +41,10 @@ struct Config: ConvenienceMutable {
     var _nonEmptyWorkspacesRootContainersLayoutOnStartup: Void = ()
     var defaultRootContainerLayout: Layout = .tiles
     var defaultRootContainerOrientation: DefaultContainerOrientation = .auto
+    var tilingPolicy: TilingPolicy = .manual
+    /// Percentage of the tile the existing window keeps when dwindle splits it (10-90).
+    /// 50 = even split; 62 approximates the golden-ratio spiral
+    var dwindleSplitPercent: Int = 50
     var startAtLogin: Bool = false
     var autoReloadConfig: Bool = false
     var automaticallyUnhideMacosHiddenApps: Bool = false

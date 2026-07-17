@@ -248,6 +248,36 @@ private func unbindAndGetBindingDataForNewWindow(_ windowId: UInt32, _ macApp: M
 @MainActor
 private func unbindAndGetBindingDataForNewTilingWindow(_ workspace: Workspace, window: Window?) -> BindingData {
     window?.unbindFromParent() // It's important to unbind to get correct data from below
+
+    // Dwindle splits the tile of the *focused* window. MRU is only a fallback: bind()
+    // auto-marks newly bound windows as most-recent, so MRU diverges from focus whenever
+    // a window appears without taking focus
+    let focusedTilingWindow: Window? = focus.windowOrNil?.takeIf { $0 != window && $0.nodeWorkspace == workspace && $0.parent is TilingContainer }
+    if workspace.effectiveTilingPolicy == .dwindle,
+       let target = focusedTilingWindow ?? workspace.rootTilingContainer.mostRecentWindowRecursive,
+       target != window,
+       let targetBindingParent = target.parent as? TilingContainer
+    {
+        // Binary-split the target tile. Orientation follows the tile's aspect ratio
+        // (wider -> side by side); fall back to alternating with the parent when the
+        // tile was never laid out
+        let rect = target.lastAppliedLayoutPhysicalRect
+        let splitHorizontally = rect.map { $0.width > $0.height } ?? (targetBindingParent.orientation == .v)
+        let ratio = CGFloat(config.dwindleSplitPercent) / 100
+        _ = targetBindingParent // silence unused warning if asserts are compiled out
+        let targetBinding = target.unbindFromParent()
+        let wrapper = TilingContainer(
+            parent: targetBinding.parent,
+            adaptiveWeight: targetBinding.adaptiveWeight,
+            splitHorizontally ? .h : .v,
+            .tiles,
+            index: targetBinding.index,
+        )
+        target.bind(to: wrapper, adaptiveWeight: 2 * ratio, index: 0)
+        target.markAsMostRecentChild()
+        return BindingData(parent: wrapper, adaptiveWeight: 2 * (1 - ratio), index: INDEX_BIND_LAST)
+    }
+
     let mruWindow = workspace.mostRecentWindowRecursive
     if let mruWindow, let tilingParent = mruWindow.parent as? TilingContainer {
         return BindingData(

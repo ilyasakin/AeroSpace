@@ -176,6 +176,9 @@ let test_help_generated = """
     USAGE: test [-h|--help] <lhs> = <rhs>
        OR: test [-h|--help] <lhs> ~= <rhs>
     """
+let tiling_policy_help_generated = """
+    USAGE: tiling-policy [-h|--help] [--workspace <workspace>] (manual|dwindle|default)
+    """
 let trigger_binding_help_generated = """
     USAGE: trigger-binding [-h|--help] --mode <mode-id> [--] <binding>
     """

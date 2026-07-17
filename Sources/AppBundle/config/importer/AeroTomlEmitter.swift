@@ -56,7 +56,10 @@ func emitAeroToml(builder: AeroConfigBuilder, diagnostics: [ImportDiagnostic], s
     if let orientation = builder.defaultOrientation {
         out.append("default-root-container-orientation = \(tomlString(orientation))")
     }
-    if builder.focusFollowsMouse != nil || builder.defaultLayout != nil || builder.defaultOrientation != nil {
+    if let policy = builder.tilingPolicy {
+        out.append("tiling-policy = \(tomlString(policy))")
+    }
+    if builder.focusFollowsMouse != nil || builder.defaultLayout != nil || builder.defaultOrientation != nil || builder.tilingPolicy != nil {
         out.append("")
     }
 

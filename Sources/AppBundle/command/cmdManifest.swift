@@ -94,6 +94,8 @@ extension CmdArgs {
                 command = TestCommand(args: self as! TestCmdArgs)
             case .testNot:
                 command = TestNotCommand(args: self as! TestNotCmdArgs)
+            case .tilingPolicy:
+                command = TilingPolicyCommand(args: self as! TilingPolicyCmdArgs)
             case .triggerBinding:
                 command = TriggerBindingCommand(args: self as! TriggerBindingCmdArgs)
             case .volume:
