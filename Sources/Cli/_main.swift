@@ -14,7 +14,9 @@ let usage =
 @main
 struct Main {
     static func main() async {
-        let args = CommandLine.arguments.slice(1...) ?? []
+        // Global -j/--json (M5): aerospace -j list-windows == list-windows --json.
+        // Only injects for JSON-capable subcommands; -j is never rewritten as a flag value.
+        let args = preprocessAerospaceCliArgs(Array(CommandLine.arguments.dropFirst())).slice
 
         if args.isEmpty {
             exit(EXIT_CODE_TWO, err: usage)
