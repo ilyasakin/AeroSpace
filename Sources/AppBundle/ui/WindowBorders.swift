@@ -4,6 +4,8 @@ extension RgbaColor {
     var nsColor: NSColor {
         NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
     }
+
+    var cgColor: CGColor { nsColor.cgColor }
 }
 
 /// One transparent, click-through overlay window that sits above every normal window and hosts one
@@ -15,6 +17,8 @@ extension RgbaColor {
 /// window, without any stack-ordering fight
 final class WindowBordersOverlay: NSPanelHud {
     let root = CALayer()
+    /// Last screen union applied - skip setFrame when monitors haven't moved
+    private var lastUnion = CGRect.null
 
     override init() {
         super.init()
@@ -29,7 +33,8 @@ final class WindowBordersOverlay: NSPanelHud {
     /// Cover the union of all screens so borders on any monitor land in the overlay
     func coverAllScreens() {
         let union = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
-        guard !union.isNull else { return }
+        guard !union.isNull, union != lastUnion else { return }
+        lastUnion = union
         setFrame(union, display: false)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -39,15 +44,30 @@ final class WindowBordersOverlay: NSPanelHud {
 }
 
 /// One managed window's border: a stroked rounded rect plus a mask that hides the parts covered by
-/// windows stacked above it
+/// windows stacked above it. Geometry and style writes are skipped when nothing changed so a
+/// full/dirty redraw is cheap when only a subset of borders moved.
 @MainActor
 private final class BorderEntry {
     let shape = CAShapeLayer()
     let mask = CAShapeLayer()
-    var color: RgbaColor = RgbaColor(r: 0, g: 0, b: 0)
+    var color: RgbaColor = RgbaColor(r: 0, g: 0, b: 0) {
+        didSet {
+            if color != oldValue { strokeColor = color.cgColor }
+        }
+    }
+    /// Cached so redraws don't re-allocate an NSColor/CGColor every frame
+    private(set) var strokeColor: CGColor = RgbaColor(r: 0, g: 0, b: 0).cgColor
     var width = 0
     var radius = 0
     var rect: Rect // live top-left-global frame of the target window
+
+    /// Last values applied to the layer - used to skip path/frame writes
+    private var appliedRect: Rect?
+    private var appliedWidth = -1
+    private var appliedRadius = -1
+    private var appliedStroke: CGColor?
+    private var appliedZ: CGFloat = -1
+    private var hadOccluders = false
 
     init(rect: Rect) {
         self.rect = rect
@@ -55,13 +75,63 @@ private final class BorderEntry {
         shape.lineJoin = .round
         mask.fillRule = .evenOdd
         mask.fillColor = NSColor.black.cgColor
+        strokeColor = color.cgColor
     }
 
     /// The window rect outset by the border width - the area the border actually paints
-    var region: Rect {
+    var region: Rect { WindowBordersMath.region(rect: rect, width: width) }
+
+    /// Apply stroke geometry/style. Returns the panel frame in overlay coords (always current).
+    @discardableResult
+    func applyStroke(originX: CGFloat, originY: CGFloat, zPosition: CGFloat) -> CGRect {
         let w = CGFloat(width)
-        return Rect(topLeftX: rect.topLeftX - w, topLeftY: rect.topLeftY - w,
-                    width: rect.width + 2 * w, height: rect.height + 2 * w)
+        let panel = layerRect(rect, originX, originY).insetBy(dx: -w, dy: -w)
+        let geometryChanged = appliedRect != rect || appliedWidth != width || appliedRadius != radius
+        if geometryChanged {
+            appliedRect = rect
+            appliedWidth = width
+            appliedRadius = radius
+            shape.frame = panel
+            let strokeRect = CGRect(x: w / 2, y: w / 2, width: panel.width - w, height: panel.height - w)
+            let r = CGFloat(radius) + w / 2
+            shape.path = CGPath(roundedRect: strokeRect, cornerWidth: r, cornerHeight: r, transform: nil)
+            shape.lineWidth = w
+        }
+        if appliedStroke !== strokeColor {
+            appliedStroke = strokeColor
+            shape.strokeColor = strokeColor
+        }
+        if appliedZ != zPosition {
+            appliedZ = zPosition
+            shape.zPosition = zPosition
+        }
+        // When geometry didn't change, panel is still the correct local frame
+        if !geometryChanged {
+            return shape.frame
+        }
+        return panel
+    }
+
+    func applyMask(panel: CGRect, occluders: [Rect], originX: CGFloat, originY: CGFloat) {
+        if occluders.isEmpty {
+            if hadOccluders {
+                shape.mask = nil
+                mask.path = nil
+                hadOccluders = false
+            }
+            return
+        }
+        hadOccluders = true
+        let path = CGMutablePath()
+        path.addRect(CGRect(origin: .zero, size: panel.size))
+        for occ in occluders {
+            let local = layerRect(occ, originX, originY)
+            path.addRect(CGRect(x: local.minX - panel.minX, y: local.minY - panel.minY,
+                                width: local.width, height: local.height))
+        }
+        mask.frame = CGRect(origin: .zero, size: panel.size)
+        mask.path = path // even-odd fill -> full panel minus the covered rects
+        shape.mask = mask
     }
 }
 
@@ -86,12 +156,26 @@ final class WindowBordersManager {
     /// All on-screen normal windows (excluding our overlay), front-to-back. Used to compute which
     /// windows cover a given border. Rebuilt on each full refresh; a drag only updates the moved rect
     private var stack: [(id: UInt32, rect: Rect)] = []
+    /// O(1) id -> stack index. Kept in lockstep with `stack` so move events never scan the array
+    private var stackIndex: [UInt32: Int] = [:]
     /// The focused window. Treated as the frontmost window for border purposes: its border is never
     /// masked by another managed window and draws on top, and inactive borders are always clipped
     /// under it. Tiling rarely restacks tiles, so the raw on-screen stack can't be trusted to put the
     /// focused window above a neighbour that overflowed onto it
     private var activeId: UInt32?
     private var observingWindowServer = false
+
+    // MARK: Coalesced dirty redraw (performance)
+
+    /// Border ids that need stroke and/or mask recompute. Empty + fullRedraw => redraw everything
+    private var dirtyIds: Set<UInt32> = []
+    private var fullRedrawPending = false
+    private var redrawScheduled = false
+    /// Flushes dirty borders once per run-loop turn (BeforeWaiting), so a burst of WindowServer
+    /// move events becomes one CATransaction - without the extra frame of latency that
+    /// `DispatchQueue.main.async` would add
+    private var coalesceObserver: CFRunLoopObserver?
+
     private init() {}
 
     /// Full rebuild: driven from AeroSpace's refresh loop, so it runs on every focus / move / resize /
@@ -127,95 +211,146 @@ final class WindowBordersManager {
             entries.removeValue(forKey: id)
         }
 
-        stack = onScreenStack()
-        redraw()
+        rebuildStack(onScreenStack())
+        // Config / membership / stack order may have changed - full recompute once, immediately
+        // (refresh is already session-batched; no need to coalesce further)
+        flushRedraw(full: true, dirty: [])
     }
 
     /// A window moved/resized (WindowServer event). This callback fires for EVERY window on the
-    /// system, so we redraw only when the move actually affects a border: either the mover is bordered,
-    /// or it overlaps a bordered window (as an occluder) at its old or new position. Everything else -
-    /// an unrelated app animating a window - updates the cached rect and returns without touching the GPU
+    /// system. Cost model (must stay sub-millisecond on modest hardware):
+    /// 1. O(1) rect update via stackIndex
+    /// 2. Early-out if the move can't affect any border (unrelated animation)
+    /// 3. Mark only the borders whose stroke/mask can change
+    /// 4. Coalesce all events in this run-loop turn into ONE Core Animation transaction
     func handleWindowMoved(windowId: UInt32) {
         guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
         guard let rect = SkyLight.overlayBounds(windowId) else { return }
-        let oldRect = stack.first(where: { $0.id == windowId })?.rect
-        if let i = stack.firstIndex(where: { $0.id == windowId }) { stack[i].rect = rect }
+
+        let oldRect: Rect?
+        if let i = stackIndex[windowId] {
+            oldRect = stack[i].rect
+            // Skip no-op events (WindowServer sometimes re-notifies the same frame)
+            if oldRect == rect {
+                entries[windowId]?.rect = rect
+                return
+            }
+            stack[i].rect = rect
+        } else {
+            oldRect = nil
+            stackIndex[windowId] = stack.count
+            stack.append((windowId, rect))
+        }
         entries[windowId]?.rect = rect
 
-        let affectsBorder = entries[windowId] != nil
-            || overlapsAnyBorder(rect)
-            || (oldRect.map(overlapsAnyBorder) ?? false)
-        guard affectsBorder else { return }
-        redraw()
+        let moverIsBordered = entries[windowId] != nil
+        // Early-out without allocating: walk entries in place. Unrelated animations hit this path
+        // on every WS event, so it must stay allocation-free
+        if !moverIsBordered {
+            let hitsNew = overlapsAnyBorderInPlace(rect)
+            let hitsOld = oldRect.map(overlapsAnyBorderInPlace) ?? false
+            guard hitsNew || hitsOld else { return }
+        }
+
+        scheduleRedraw(dirty: WindowBordersMath.affectedBorderIds(
+            mover: windowId,
+            moverIsBordered: moverIsBordered,
+            borderRegions: borderRegionsSnapshot(),
+            oldRect: oldRect,
+            newRect: rect,
+        ))
     }
 
-    private func overlapsAnyBorder(_ rect: Rect) -> Bool {
-        entries.contains { rectsIntersect($0.value.region, rect) }
+    // MARK: Dirty set + coalesce
+
+    /// Allocation-free overlap test against live entries (hot path for unrelated window animations)
+    private func overlapsAnyBorderInPlace(_ rect: Rect) -> Bool {
+        for (_, entry) in entries {
+            if WindowBordersMath.rectsIntersect(entry.region, rect) { return true }
+        }
+        return false
     }
 
-    /// Rebuild every border's stroke path + occlusion mask from the current rects and stack
-    private func redraw() {
+    /// Snapshot of painted regions for pure-math dirty set computation
+    private func borderRegionsSnapshot() -> [(id: UInt32, region: Rect)] {
+        var regions: [(id: UInt32, region: Rect)] = []
+        regions.reserveCapacity(entries.count)
+        for (id, entry) in entries {
+            regions.append((id, entry.region))
+        }
+        return regions
+    }
+
+    private func scheduleRedraw(dirty: Set<UInt32>) {
+        dirtyIds.formUnion(dirty)
+        guard !redrawScheduled else { return }
+        redrawScheduled = true
+        // Coalesce every WindowServer event that arrives before the run loop would sleep into a
+        // single CATransaction. Zero added frames vs immediate paint; one paint per turn under load
+        let observer = CFRunLoopObserverCreateWithHandler(
+            kCFAllocatorDefault,
+            CFRunLoopActivity.beforeWaiting.rawValue,
+            false, // one-shot
+            0,
+        ) { [self] _, _ in
+            MainActor.assumeIsolated {
+                self.redrawScheduled = false
+                self.coalesceObserver = nil
+                let full = self.fullRedrawPending
+                self.fullRedrawPending = false
+                let dirty = self.dirtyIds
+                self.dirtyIds.removeAll(keepingCapacity: true)
+                self.flushRedraw(full: full, dirty: dirty)
+            }
+        }
+        coalesceObserver = observer
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+    }
+
+    private func flushRedraw(full: Bool, dirty: Set<UInt32>) {
         let originX = overlay.frame.origin.x
         let originY = overlay.frame.origin.y
-        let indexById: [UInt32: Int] = Dictionary(stack.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // Shared across all paints in this flush - avoid re-allocating per border
+        let managedIds = Set(entries.keys)
+        let activeRect = activeId.flatMap { entries[$0]?.rect }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for (id, entry) in entries {
-            let w = CGFloat(entry.width)
-            let panel = layerRect(entry.rect, originX, originY).insetBy(dx: -w, dy: -w)
-            entry.shape.frame = panel
-            let strokeRect = CGRect(x: w / 2, y: w / 2, width: panel.width - w, height: panel.height - w)
-            let radius = CGFloat(entry.radius) + w / 2
-            entry.shape.path = CGPath(roundedRect: strokeRect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-            entry.shape.strokeColor = entry.color.nsColor.cgColor
-            entry.shape.lineWidth = w
-            // Draw the active window's border above every inactive one where they overlap
-            entry.shape.zPosition = id == activeId ? 1 : 0
-
-            // Mask out the regions covered by windows stacked above this one
-            let occluders = occluders(of: id, outset: entry, indexById: indexById)
-            if occluders.isEmpty {
-                entry.shape.mask = nil
-            } else {
-                let path = CGMutablePath()
-                path.addRect(CGRect(origin: .zero, size: panel.size))
-                for occ in occluders {
-                    let local = layerRect(occ, originX, originY)
-                    path.addRect(CGRect(x: local.minX - panel.minX, y: local.minY - panel.minY, width: local.width, height: local.height))
-                }
-                entry.mask.frame = CGRect(origin: .zero, size: panel.size)
-                entry.mask.path = path // even-odd fill -> full panel minus the covered rects
-                entry.shape.mask = entry.mask
+        if full {
+            for (id, entry) in entries {
+                paint(id: id, entry: entry, originX: originX, originY: originY,
+                      managedIds: managedIds, activeRect: activeRect)
+            }
+        } else {
+            for id in dirty {
+                guard let entry = entries[id] else { continue }
+                paint(id: id, entry: entry, originX: originX, originY: originY,
+                      managedIds: managedIds, activeRect: activeRect)
             }
         }
         CATransaction.commit()
     }
 
-    /// Top-left-global rects of windows that cover `id`'s (outset) border region. Normally these are
-    /// the windows stacked above it, but the active window is forced to be frontmost: it is never
-    /// occluded by another managed (inactive) window, and it always occludes every inactive window
-    private func occluders(of id: UInt32, outset entry: BorderEntry, indexById: [UInt32: Int]) -> [Rect] {
-        let region = entry.region
-        let isActive = id == activeId
-        var result: [Rect] = []
-        var included = Set<UInt32>()
-        if let idx = indexById[id] {
-            for i in 0 ..< idx where rectsIntersect(region, stack[i].rect) {
-                // The active border is never masked by another managed (inactive) window, even if the
-                // raw stack puts an overflowing neighbour above it
-                if isActive, entries[stack[i].id] != nil { continue }
-                result.append(stack[i].rect)
-                included.insert(stack[i].id)
-            }
-        }
-        // An inactive border is always clipped under the active window where they overlap
-        if !isActive, let activeId, !included.contains(activeId),
-           let active = entries[activeId], rectsIntersect(region, active.rect)
-        {
-            result.append(active.rect)
-        }
-        return result
+    private func paint(
+        id: UInt32,
+        entry: BorderEntry,
+        originX: CGFloat,
+        originY: CGFloat,
+        managedIds: Set<UInt32>,
+        activeRect: Rect?,
+    ) {
+        let panel = entry.applyStroke(originX: originX, originY: originY, zPosition: id == activeId ? 1 : 0)
+        let occluders = WindowBordersMath.occluders(
+            id: id,
+            region: entry.region,
+            isActive: id == activeId,
+            activeId: activeId,
+            activeRect: activeRect,
+            stack: stack,
+            stackIndex: stackIndex[id],
+            managedIds: managedIds,
+        )
+        entry.applyMask(panel: panel, occluders: occluders, originX: originX, originY: originY)
     }
 
     private func makeEntry(_ id: UInt32, rect: Rect) -> BorderEntry {
@@ -226,10 +361,27 @@ final class WindowBordersManager {
     }
 
     private func teardownAll() {
+        if let observer = coalesceObserver {
+            CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
+            coalesceObserver = nil
+        }
+        redrawScheduled = false
+        fullRedrawPending = false
+        dirtyIds.removeAll()
         for (_, entry) in entries { entry.shape.removeFromSuperlayer() }
         entries.removeAll()
         stack.removeAll()
+        stackIndex.removeAll()
         overlay.orderOut(nil)
+    }
+
+    private func rebuildStack(_ newStack: [(id: UInt32, rect: Rect)]) {
+        stack = newStack
+        stackIndex.removeAll(keepingCapacity: true)
+        stackIndex.reserveCapacity(newStack.count)
+        for (i, item) in newStack.enumerated() {
+            stackIndex[item.id] = i
+        }
     }
 
     /// All on-screen normal (layer 0) windows except our own, front-to-back
@@ -249,17 +401,13 @@ final class WindowBordersManager {
         }
         return result
     }
-
-    /// A top-left-global Rect converted to overlay-layer coordinates (bottom-left, overlay-relative)
-    private func layerRect(_ r: Rect, _ originX: CGFloat, _ originY: CGFloat) -> CGRect {
-        let ak = r.toAppKitFrame()
-        return CGRect(x: ak.origin.x - originX, y: ak.origin.y - originY, width: ak.width, height: ak.height)
-    }
 }
 
-private func rectsIntersect(_ a: Rect, _ b: Rect) -> Bool {
-    a.topLeftX < b.topLeftX + b.width && b.topLeftX < a.topLeftX + a.width &&
-        a.topLeftY < b.topLeftY + b.height && b.topLeftY < a.topLeftY + a.height
+/// A top-left-global Rect converted to overlay-layer coordinates (bottom-left, overlay-relative)
+@MainActor
+private func layerRect(_ r: Rect, _ originX: CGFloat, _ originY: CGFloat) -> CGRect {
+    let ak = r.toAppKitFrame()
+    return CGRect(x: ak.origin.x - originX, y: ak.origin.y - originY, width: ak.width, height: ak.height)
 }
 
 extension Rect {

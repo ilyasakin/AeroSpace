@@ -38,8 +38,9 @@ full-screen-api.transition-duration.leave = 0 0
 
 AeroSpace has built-in window borders, so you don't need an external tool. When enabled, a
 border is drawn around every visible window: the focused window uses `active-color`, all others
-use `inactive-color`. Borders are driven from AeroSpace's own layout loop (no separate tracking
-process), so they track focus, moves, resizes and workspace switches for free.
+use `inactive-color`. Borders track focus/layout from AeroSpace's refresh loop, and track live
+drags from WindowServer move/resize events (no separate process). Updates are coalesced and
+incremental so only borders affected by a move are repainted.
 
 [source,toml]
 ----
