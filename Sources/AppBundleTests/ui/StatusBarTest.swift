@@ -135,12 +135,23 @@ final class StatusBarNativeModulesTest: XCTestCase {
         assertTrue(abs(loads[1] - 0.10) < 0.001)
     }
 
-    func testHistoryGraphLayoutWidth() {
-        let layout = defaultHistoryGraphLayout(sampleCount: 30, coreCount: 8)
-        assertTrue(layout.totalWidth > 40)
-        let cell = layout.cellFrame(sampleIndex: 0, coreIndex: 0, load: 0.5, viewHeight: 28)
-        assertTrue(cell.height > 0)
-        assertTrue(cell.height <= 28)
+    func testSparklineLayoutWidthIndependentOfCoreCount() {
+        let layout = defaultSparklineLayout(sampleCount: 30, trailingWidth: sparklinePercentTrailingWidth())
+        assertTrue(layout.totalWidth > 80)
+        // Full load uses most of the track height
+        let bar = layout.barFrame(sampleIndex: 0, load: 0.5, viewHeight: 28)
+        assertTrue(bar.height > 5)
+        assertTrue(bar.height <= 28)
+        // Width does not grow with "core count" — average sparkline is fixed capacity.
+        let layout2 = defaultSparklineLayout(sampleCount: 30, trailingWidth: sparklinePercentTrailingWidth())
+        assertEquals(layout.totalWidth, layout2.totalWidth)
+    }
+
+    func testCpuSampleAverageAndPeak() {
+        assertEquals(cpuSampleAverage([0.2, 0.4, 0.6, 0.8]), 0.5)
+        assertEquals(cpuSamplePeak([0.2, 0.4, 0.6, 0.8]), 0.8)
+        assertEquals(cpuSampleAverage([]), 0)
+        assertEquals(cpuSamplePeak([]), 0)
     }
 
     func testAppendHistorySampleRingBuffer() {

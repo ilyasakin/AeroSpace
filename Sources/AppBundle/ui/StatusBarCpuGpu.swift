@@ -227,68 +227,79 @@ func readGpuLoad() -> GpuLoad? {
     return best
 }
 
-// MARK: - History graph geometry (pure, testable)
+// MARK: - Sparkline geometry (pure, testable)
 
-/// Layout for a multi-core *time-history* chart: X = time, each row = one core.
-struct HistoryGraphLayout: Equatable {
+/// Mean load across cores for one sample instant (0...1).
+func cpuSampleAverage(_ cores: [Double]) -> Double {
+    guard !cores.isEmpty else { return 0 }
+    return cores.reduce(0, +) / Double(cores.count)
+}
+
+/// Peak core load for one sample instant (0...1).
+func cpuSamplePeak(_ cores: [Double]) -> Double {
+    cores.max() ?? 0
+}
+
+/// Single-series sparkline: X = time (oldest → newest), bar height = utilization.
+/// Designed for a ~28pt status strip — not a per-core heatmap.
+struct SparklineLayout: Equatable {
     var sampleCount: Int
-    var coreCount: Int
     var columnWidth: CGFloat
-    var rowGap: CGFloat
     var paddingX: CGFloat
     var paddingY: CGFloat
-    var labelWidth: CGFloat
+    /// Trailing text (e.g. "42%") after the chart.
+    var trailingWidth: CGFloat
+
+    var chartWidth: CGFloat {
+        CGFloat(max(1, sampleCount)) * columnWidth
+    }
 
     var totalWidth: CGFloat {
-        let cols = max(1, sampleCount)
-        return paddingX * 2 + labelWidth + CGFloat(cols) * columnWidth
+        paddingX * 2 + chartWidth + (trailingWidth > 0 ? 4 + trailingWidth : 0)
     }
 
-    /// Rectangle for one sample column on one core row (AppKit coords, origin bottom-left).
-    /// `load` fills from the bottom of the row upward.
-    func cellFrame(
-        sampleIndex: Int,
-        coreIndex: Int,
-        load: Double,
-        viewHeight: CGFloat,
-    ) -> CGRect {
-        let cores = max(1, coreCount)
-        let usableH = max(1, viewHeight - paddingY * 2)
-        let rowH = (usableH - CGFloat(cores - 1) * rowGap) / CGFloat(cores)
-        // Core 0 at top of the chart (Activity Monitor style)
-        let rowFromTop = CGFloat(coreIndex)
-        let rowBottom = paddingY + (CGFloat(cores - 1) - rowFromTop) * (rowH + rowGap)
-        let x = paddingX + labelWidth + CGFloat(sampleIndex) * columnWidth
-        let h = max(0.5, rowH * CGFloat(min(1, max(0, load))))
-        return CGRect(x: x, y: rowBottom, width: max(1, columnWidth - 0.5), height: h)
+    func trackFrame(viewHeight: CGFloat) -> CGRect {
+        let h = max(1, viewHeight - paddingY * 2)
+        return CGRect(x: paddingX, y: paddingY, width: chartWidth, height: h)
     }
 
-    /// Full row track background.
-    func rowTrackFrame(coreIndex: Int, viewHeight: CGFloat) -> CGRect {
-        let cores = max(1, coreCount)
-        let usableH = max(1, viewHeight - paddingY * 2)
-        let rowH = (usableH - CGFloat(cores - 1) * rowGap) / CGFloat(cores)
-        let rowFromTop = CGFloat(coreIndex)
-        let rowBottom = paddingY + (CGFloat(cores - 1) - rowFromTop) * (rowH + rowGap)
-        let x = paddingX + labelWidth
-        let w = CGFloat(max(1, sampleCount)) * columnWidth
-        return CGRect(x: x, y: rowBottom, width: w, height: rowH)
+    /// Vertical bar for one sample, growing upward from the track bottom.
+    func barFrame(sampleIndex: Int, load: Double, viewHeight: CGFloat) -> CGRect {
+        let track = trackFrame(viewHeight: viewHeight)
+        let clamped = min(1, max(0, load))
+        let gap: CGFloat = 0.6
+        let barW = max(1, columnWidth - gap)
+        let x = track.minX + CGFloat(sampleIndex) * columnWidth + (columnWidth - barW) / 2
+        let h: CGFloat = {
+            if clamped <= 0 { return 0 }
+            return max(1.5, track.height * CGFloat(clamped))
+        }()
+        return CGRect(x: x, y: track.minY, width: barW, height: h)
+    }
+
+    func trailingLabelFrame(viewHeight: CGFloat) -> CGRect {
+        guard trailingWidth > 0 else { return .zero }
+        let x = paddingX + chartWidth + 4
+        return CGRect(x: x, y: 0, width: trailingWidth, height: viewHeight)
     }
 }
 
-func defaultHistoryGraphLayout(
+func defaultSparklineLayout(
     sampleCount: Int,
-    coreCount: Int,
-    columnWidth: CGFloat = 2.5,
-    labelWidth: CGFloat = 0,
-) -> HistoryGraphLayout {
-    HistoryGraphLayout(
+    columnWidth: CGFloat = 3,
+    trailingWidth: CGFloat = 0,
+) -> SparklineLayout {
+    SparklineLayout(
         sampleCount: max(1, sampleCount),
-        coreCount: max(1, coreCount),
         columnWidth: columnWidth,
-        rowGap: coreCount > 12 ? 0.5 : 1,
         paddingX: 3,
-        paddingY: 2,
-        labelWidth: labelWidth,
+        paddingY: 3,
+        trailingWidth: trailingWidth,
     )
+}
+
+/// Fixed width for "100%" / "  0%" monospaced-ish trailing label in the sparkline.
+func sparklinePercentTrailingWidth(fontSize: CGFloat = 11) -> CGFloat {
+    // Digits + % ; slightly generous so 100% doesn't clip.
+    max(28, fontSize * 2.6)
 }
