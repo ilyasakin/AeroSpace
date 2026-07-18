@@ -5,7 +5,10 @@ import Foundation
 private var cache: [UInt32: MacOsWindowLevel] = [:]
 // Off-screen windows (minimized, parked in a corner, on another Space) never appear in the
 // on-screen-only CGWindowList, so their lookups miss forever. Bound the full rescans to at most
-// one per refresh session instead of one per miss
+// one per refresh session instead of one per miss.
+// When the session is not fresh, the next lookup rescans (replacing the whole map) — do NOT
+// return entries from a previous session, or a window that changed level (e.g. became always-on-top)
+// would stay stale until process restart.
 @MainActor
 private var cacheIsFreshForCurrentRefreshSession = false
 
@@ -16,12 +19,17 @@ func invalidateWindowLevelCache() {
 
 @MainActor
 func getWindowLevel(for windowId: UInt32) -> MacOsWindowLevel? {
-    if let existing = cache[windowId] { return existing }
-    if cacheIsFreshForCurrentRefreshSession { return nil }
+    if cacheIsFreshForCurrentRefreshSession {
+        return cache[windowId]
+    }
 
     var result: [UInt32: MacOsWindowLevel] = [:]
     let options = CGWindowListOption(arrayLiteral: .excludeDesktopElements, .optionOnScreenOnly)
-    guard let cfArray = CGWindowListCopyWindowInfo(options, CGWindowID(0)) as? [CFDictionary] else { return nil }
+    guard let cfArray = CGWindowListCopyWindowInfo(options, CGWindowID(0)) as? [CFDictionary] else {
+        // Failed to read — don't mark fresh so the next call can retry
+        return nil
+    }
+    result.reserveCapacity(cfArray.count)
     for elem in cfArray {
         let dict = elem as NSDictionary
 

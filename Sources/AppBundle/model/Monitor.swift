@@ -94,23 +94,39 @@ private let testMonitor = MonitorImpl(
     isMain: true,
 )
 
+// Guarded by Thread.isMainThread at every access (NSScreen.screens is main-thread-only anyway)
+private nonisolated(unsafe) var monitorsCache: [Monitor]? = nil
+private nonisolated(unsafe) var mainMonitorCache: Monitor? = nil
+
+/// Invalidated at the start of every refresh session and on display reconfiguration, mirroring
+/// windowLevelCache. Collapses the ~39 per-session `monitors` call sites (each a fresh
+/// NSScreen.screens rebuild + allocations) down to one rebuild per session. Also drops
+/// mainMonitorCache so coordinate flips (monitorFrameNormalized / toAppKitFrame) pick up
+/// the new main screen height after reconfig
+@MainActor func invalidateMonitorsCache() {
+    unsafe monitorsCache = nil
+    unsafe mainMonitorCache = nil
+}
+
+/// Main screen in AeroSpace's coordinate system. Cached per refresh session (with monitors).
+/// Must NOT go through `monitors` when building — MonitorImpl.rect normalizes via mainMonitor.height
+/// (would recurse). Built as LazyMonitor from NSScreen.screens only.
 var mainMonitor: Monitor {
     if isUnitTest { return testMonitor }
+    if Thread.isMainThread, let cached = unsafe mainMonitorCache {
+        return cached
+    }
     let screens = NSScreen.screens
     // Fallback: If main screen can't be found (e.g., during display reconfiguration),
     // return screens.first or testMonitor to avoid crash
     let screen = screens.withIndex.singleOrNil(where: \.value.isMainScreen) ?? screens.first.map { (0, $0) }
     guard let screen else { return testMonitor }
-    return LazyMonitor(monitorAppKitNsScreenScreensId: screen.index + 1, isMain: true, screen.value)
+    let built = LazyMonitor(monitorAppKitNsScreenScreensId: screen.index + 1, isMain: true, screen.value)
+    if Thread.isMainThread {
+        unsafe mainMonitorCache = built
+    }
+    return built
 }
-
-// Guarded by Thread.isMainThread at every access (NSScreen.screens is main-thread-only anyway)
-private nonisolated(unsafe) var monitorsCache: [Monitor]? = nil
-
-/// Invalidated at the start of every refresh session and on display reconfiguration, mirroring
-/// windowLevelCache. Collapses the ~39 per-session `monitors` call sites (each a fresh
-/// NSScreen.screens rebuild + allocations) down to one rebuild per session
-@MainActor func invalidateMonitorsCache() { unsafe monitorsCache = nil }
 
 var monitors: [Monitor] {
     if isUnitTest { return [testMonitor] }

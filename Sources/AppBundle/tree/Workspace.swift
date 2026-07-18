@@ -19,7 +19,7 @@ private func getStubWorkspace(forPoint point: CGPoint) -> Workspace {
     {
         return prev
     }
-    if let candidate = Workspace.all
+    if let candidate = Workspace.allUnsorted
         .first(where: { !$0.isVisible && $0.workspaceMonitor.rect.topLeftCorner == point })
     {
         return candidate

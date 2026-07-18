@@ -23,51 +23,76 @@ enum AxPermissionStatus: Equatable {
     case waitingWithPrompt
 }
 
+/// Rebuild tray label + menu models from the tree. Called from every light/heavy session, so it
+/// must stay cheap: one leaf walk per workspace (not three), and skip @Published writes when
+/// nothing changed (avoids SwiftUI view invalidation on no-op focus/AX refreshes).
 @MainActor func updateTrayText() {
     let sortedMonitors = sortedMonitors
     let focus = focus
-    TrayMenuModel.shared.trayText = (activeMode?.takeIf { $0 != mainModeId }?.first.map { "(\($0.uppercased())) " } ?? "") +
-        sortedMonitors
-        .map {
-            let hasFullscreenWindows = $0.activeWorkspace.allLeafWindowsRecursive.contains { $0.isFullscreen }
-            let activeWorkspaceName = hasFullscreenWindows ? "[\($0.activeWorkspace.name)]" : $0.activeWorkspace.name
-            return ($0.activeWorkspace == focus.workspace && sortedMonitors.count > 1 ? "*" : "") + activeWorkspaceName
+    let multiMonitor = sortedMonitors.count > 1
+
+    // Single pass over sorted workspaces (menu order). Collect apps + fullscreen in one walk
+    var workspaceModels: [WorkspaceViewModel] = []
+    var fullscreenByName: [String: Bool] = [:]
+    let allWorkspaces = Workspace.all
+    workspaceModels.reserveCapacity(allWorkspaces.count)
+    fullscreenByName.reserveCapacity(allWorkspaces.count)
+    for workspace in allWorkspaces {
+        var apps = Set<String>()
+        var hasFullscreen = false
+        for window in workspace.allLeafWindowsRecursive {
+            if window.isFullscreen { hasFullscreen = true }
+            if let name = window.app.name?.takeIf({ !$0.isEmpty }) {
+                apps.insert(name)
+            }
         }
-        .joined(separator: " │ ")
-    TrayMenuModel.shared.workspaces = Workspace.all.map {
-        let apps = $0.allLeafWindowsRecursive.map { $0.app.name?.takeIf { !$0.isEmpty } }.filterNotNil().toSet()
+        fullscreenByName[workspace.name] = hasFullscreen
         let dash = " - "
         let suffix = switch true {
             case !apps.isEmpty: dash + apps.sorted().joinTruncating(separator: ", ", length: 25)
-            case $0.isVisible: dash + $0.workspaceMonitor.name
+            case workspace.isVisible: dash + workspace.workspaceMonitor.name
             default: ""
         }
-        let hasFullscreenWindows = $0.allLeafWindowsRecursive.contains { $0.isFullscreen }
-        return WorkspaceViewModel(
-            name: $0.name,
+        workspaceModels.append(WorkspaceViewModel(
+            name: workspace.name,
             suffix: suffix,
-            isFocused: focus.workspace == $0,
-            isEffectivelyEmpty: $0.isEffectivelyEmpty,
-            isVisible: $0.isVisible,
-            hasFullscreenWindows: hasFullscreenWindows,
-        )
+            isFocused: focus.workspace == workspace,
+            isEffectivelyEmpty: workspace.isEffectivelyEmpty,
+            isVisible: workspace.isVisible,
+            hasFullscreenWindows: hasFullscreen,
+        ))
     }
+
+    let trayText = (activeMode?.takeIf { $0 != mainModeId }?.first.map { "(\($0.uppercased())) " } ?? "") +
+        sortedMonitors
+        .map {
+            let name = $0.activeWorkspace.name
+            let hasFullscreen = fullscreenByName[name] ?? false
+            let activeWorkspaceName = hasFullscreen ? "[\(name)]" : name
+            return (multiMonitor && $0.activeWorkspace == focus.workspace ? "*" : "") + activeWorkspaceName
+        }
+        .joined(separator: " │ ")
+
     var items = sortedMonitors.map {
-        let hasFullscreenWindows = $0.activeWorkspace.allLeafWindowsRecursive.contains { $0.isFullscreen }
-        return TrayItem(
+        TrayItem(
             type: .workspace,
             name: $0.activeWorkspace.name,
             isActive: $0.activeWorkspace == focus.workspace,
-            hasFullscreenWindows: hasFullscreenWindows,
+            hasFullscreenWindows: fullscreenByName[$0.activeWorkspace.name] ?? false,
         )
     }
-    let mode = activeMode?.takeIf { $0 != mainModeId }?.first.map {
-        TrayItem(type: .mode, name: $0.uppercased(), isActive: true, hasFullscreenWindows: false)
+    if let modeName = activeMode?.takeIf({ $0 != mainModeId })?.first {
+        items.insert(
+            TrayItem(type: .mode, name: modeName.uppercased(), isActive: true, hasFullscreenWindows: false),
+            at: 0,
+        )
     }
-    if let mode {
-        items.insert(mode, at: 0)
-    }
-    TrayMenuModel.shared.trayItems = items
+
+    let model = TrayMenuModel.shared
+    // Only publish diffs — menu bar re-renders are visible jank on busy desktops
+    if model.trayText != trayText { model.trayText = trayText }
+    if model.workspaces != workspaceModels { model.workspaces = workspaceModels }
+    if model.trayItems != items { model.trayItems = items }
 }
 
 struct WorkspaceViewModel: Hashable {
