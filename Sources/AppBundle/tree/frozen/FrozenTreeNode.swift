@@ -1,34 +1,48 @@
 import AppKit
 import Common
 
+/// Frozen tiling snapshot storage is the immutable `PersistentTilingNode` (issue #1215).
+/// These types remain as the closed-windows-cache API surface and wrap capture/restore.
+
 enum FrozenTreeNode: Sendable {
     case container(FrozenContainer)
     case window(FrozenWindow)
 }
 
 struct FrozenContainer: Sendable {
-    let children: [FrozenTreeNode]
-    let layout: Layout
-    let orientation: Orientation
-    let weight: CGFloat
+    /// Immutable structural spine (path-copying persistent tree).
+    let node: PersistentTilingNode
 
-    @MainActor init(_ container: TilingContainer) {
-        children = container.children.map {
-            switch $0.nodeCases {
-                case .window(let w): .window(FrozenWindow(w))
-                case .tilingContainer(let c): .container(FrozenContainer(c))
-                case .workspace,
-                     .floatingWindowsContainer,
-                     .macosMinimizedWindowsContainer,
-                     .macosHiddenAppsWindowsContainer,
-                     .macosFullscreenWindowsContainer,
-                     .macosPopupWindowsContainer:
-                    illegalChildParentRelation(child: $0, parent: container)
+    var orientation: Orientation {
+        if case .container(let o, _, _, _) = node { return o }
+        die("FrozenContainer.node must be a container")
+    }
+
+    var layout: Layout {
+        if case .container(_, let l, _, _) = node { return l }
+        die("FrozenContainer.node must be a container")
+    }
+
+    var weight: CGFloat { node.weight }
+
+    var children: [FrozenTreeNode] {
+        guard case .container(_, _, _, let children) = node else {
+            die("FrozenContainer.node must be a container")
+        }
+        return children.map { child in
+            switch child {
+                case .window(let id, let w): .window(FrozenWindow(id: id, weight: w))
+                case .container: .container(FrozenContainer(node: child))
             }
         }
-        layout = container.layout
-        orientation = container.orientation
-        weight = getWeightOrNil(container) ?? 1
+    }
+
+    @MainActor init(_ container: TilingContainer) {
+        node = PersistentTilingNode.capture(container)
+    }
+
+    init(node: PersistentTilingNode) {
+        self.node = node
     }
 }
 
@@ -38,10 +52,11 @@ struct FrozenWindow: Sendable {
 
     @MainActor init(_ window: Window) {
         id = window.windowId
-        weight = getWeightOrNil(window) ?? 1
+        weight = ((window.parent as? TilingContainer)?.orientation).map { window.getWeight($0) } ?? 1
     }
-}
 
-@MainActor private func getWeightOrNil(_ node: TreeNode) -> CGFloat? {
-    ((node.parent as? TilingContainer)?.orientation).map { node.getWeight($0) }
+    init(id: UInt32, weight: CGFloat) {
+        self.id = id
+        self.weight = weight
+    }
 }

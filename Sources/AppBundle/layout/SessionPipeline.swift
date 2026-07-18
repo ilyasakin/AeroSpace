@@ -102,6 +102,8 @@ enum SessionPipeline {
 
                 if plan.normalizeNativeState { try await phaseNormalizeNativeState() }
                 if plan.layout { try await phaseLayout() }
+                // Immutable structural snapshot after layout (lock-screen / #1215 history)
+                TreeHistory.recordLive()
                 phaseSideUiBorders()
             }
         }
@@ -142,7 +144,11 @@ enum SessionPipeline {
             let focusAfter = focus.windowOrNil
 
             phaseSideUiTrayAndSecureInput()
-            if plan.layout { try await phaseLayout() }
+            if plan.layout {
+                try await phaseLayout()
+                TreeHistory.recordLive()
+            }
+
             phaseSideUiBorders()
 
             if focusBefore != focusAfter {

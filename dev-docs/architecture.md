@@ -115,6 +115,21 @@ Frame and on-screen-list **reads** go through `WindowServerReadPort`
 `TestWindow` implements frame, title, focus, and `isHiddenInCorner` so unit tests never hit
 `Window.die` on those operations.
 
+### Persistent tiling tree (#1215)
+
+Immutable, single-linked (downward) path-copying spine for tiling structure:
+
+- `Sources/AppBundle/tree/persistent/PersistentTilingNode.swift` — value-type nodes + path ops
+- `LiveTreeBridge.swift` — capture live `TilingContainer` ↔ restore into live tree
+- `TreeHistory.swift` — ring buffer of `PersistentWorldSnapshot` after layout sessions
+- Closed-windows freeze (`FrozenContainer`) stores `PersistentTilingNode` and restores via it
+
+Live `TreeNode` remains the AX/identity handle layer (windows still bind for layout/focus).
+Structural history and freeze/restore use the persistent spine. Full elimination of mutable
+parent/child dual links on `TreeNode` is a further cutover; the data model and ops for that
+cutover are in place and tested.
+
 ### Follow-up work (not done yet)
 
-- Immutable/persistent tree (upstream issue #1215) — stability, not OOP for its own sake
+- Full cutover: make live layout/focus read structure only from `PersistentTilingNode` generations
+  (drop dual-link `_parent`/`_children` mutation as source of truth)

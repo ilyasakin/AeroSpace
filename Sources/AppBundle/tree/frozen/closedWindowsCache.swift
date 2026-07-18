@@ -88,26 +88,8 @@ struct FrozenWorkspace: Sendable {
 @discardableResult
 @MainActor
 private func restoreTreeRecursive(frozenContainer: FrozenContainer, parent: NonLeafTreeNodeObject, index: Int) -> Bool {
-    let container = TilingContainer(
-        parent: parent,
-        adaptiveWeight: frozenContainer.weight,
-        frozenContainer.orientation,
-        frozenContainer.layout,
-        index: index,
-    )
-
-    for (index, child) in frozenContainer.children.enumerated() {
-        switch child {
-            case .window(let w):
-                // Stop the loop if can't find the window, because otherwise all the subsequent windows will have incorrect index
-                guard let window = MacWindow.get(byId: w.id) else { return false }
-                window.bind(to: container, adaptiveWeight: w.weight, index: index)
-            case .container(let c):
-                // There is no reason to continue
-                if !restoreTreeRecursive(frozenContainer: c, parent: container, index: index) { return false }
-        }
-    }
-    return true
+    // Persistent spine materializes via path-copying model (#1215)
+    frozenContainer.node.restore(parent: parent, index: index)
 }
 
 // Consider the following case:
