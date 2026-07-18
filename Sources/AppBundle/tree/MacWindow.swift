@@ -244,7 +244,21 @@ final class MacWindow: Window {
 
     override func setAxFrame(_ topLeft: CGPoint?, _ size: CGSize?) {
         markFrameWrittenThisSession(windowId) // subsequent same-session reads must bypass the lagging SkyLight
-        macApp.setAxFrame(windowId, topLeft, size)
+        // Merge partial writes into lastApplied so chained commands (resize → center) see the
+        // intended size/position, and so we always submit a full frame to MacApp (which cancels
+        // the previous AX job per window — size-only then position-only would drop the size).
+        if let merged = mergeFrameWrite(previous: lastAppliedLayoutPhysicalRect, topLeft: topLeft, size: size) {
+            lastAppliedLayoutPhysicalRect = merged
+            if let size { lastFloatingSize = size }
+            macApp.setAxFrame(
+                windowId,
+                merged.topLeftCorner,
+                CGSize(width: merged.width, height: merged.height),
+            )
+        } else {
+            if let size { lastFloatingSize = size }
+            macApp.setAxFrame(windowId, topLeft, size)
+        }
     }
 
     override func getAxRect(_ cm: CancellationMode) async throws -> Rect? {

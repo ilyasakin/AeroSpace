@@ -80,6 +80,36 @@ final class WindowServerReadsTest: XCTestCase {
         XCTAssertEqual(r, .needAx)
     }
 
+    // MARK: mergeFrameWrite (resize → center command chains)
+
+    func testMergeFrameWriteSizeOnlyThenPositionOnly() {
+        let tile = Rect(topLeftX: 0, topLeftY: 0, width: 960, height: 1080)
+        // resize smart 60% of 1920x1080 → 1152×648
+        let afterResize = mergeFrameWrite(
+            previous: tile,
+            topLeft: nil,
+            size: CGSize(width: 1152, height: 648),
+        )
+        XCTAssertEqual(afterResize, Rect(topLeftX: 0, topLeftY: 0, width: 1152, height: 648))
+        // center-window only passes origin
+        let afterCenter = mergeFrameWrite(
+            previous: afterResize,
+            topLeft: CGPoint(x: (1920 - 1152) / 2, y: (1080 - 648) / 2),
+            size: nil,
+        )
+        XCTAssertEqual(afterCenter?.width, 1152)
+        XCTAssertEqual(afterCenter?.height, 648)
+        XCTAssertEqual(afterCenter?.topLeftX, (1920 - 1152) / 2)
+        XCTAssertEqual(afterCenter?.topLeftY, (1080 - 648) / 2)
+    }
+
+    func testMergeFrameWritePartialWithoutPrevious() {
+        XCTAssertNil(mergeFrameWrite(previous: nil, topLeft: nil, size: CGSize(width: 10, height: 10)))
+        XCTAssertNil(mergeFrameWrite(previous: nil, topLeft: .zero, size: nil))
+        let both = mergeFrameWrite(previous: nil, topLeft: CGPoint(x: 1, y: 2), size: CGSize(width: 3, height: 4))
+        XCTAssertEqual(both, Rect(topLeftX: 1, topLeftY: 2, width: 3, height: 4))
+    }
+
     // MARK: Injectable port (real WindowServerReads entry point)
 
     func testInstallFakeBoundsUsedByCurrentPort() {

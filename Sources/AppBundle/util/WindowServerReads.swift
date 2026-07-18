@@ -79,3 +79,17 @@ func resolveFrameRead(
     if let bounds = serverBounds(windowId) { return .windowServer(bounds) }
     return .needAx
 }
+
+/// Merge a partial frame write into the last applied rect.
+/// Command chains like `resize` then `center-window` issue size-only then position-only writes;
+/// without merging, the second call cancels the first AX job and leaves the tiled size.
+func mergeFrameWrite(
+    previous: Rect?,
+    topLeft: CGPoint?,
+    size: CGSize?,
+) -> Rect? {
+    let origin = topLeft ?? previous?.topLeftCorner
+    let sz = size ?? previous.map { CGSize(width: $0.width, height: $0.height) }
+    guard let origin, let sz else { return previous }
+    return Rect(topLeftX: origin.x, topLeftY: origin.y, width: sz.width, height: sz.height)
+}

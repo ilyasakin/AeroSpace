@@ -81,8 +81,14 @@ struct LayoutCommand: Command {
             case .floating:
                 guard let window = target.windowOrNil else { return .fail(io.err(noWindowIsFocused)) }
                 let workspace = target.workspace
+                // Keep lastApplied as the current tile frame so a following resize/center in the
+                // same session can merge size+position (see MacWindow.setAxFrame / mergeFrameWrite).
+                // Prefer the previous floating size when we have one; otherwise keep the tile size
+                // until an explicit resize runs.
                 window.bindAsFloatingWindow(to: workspace)
-                if let size = window.lastFloatingSize { window.setAxFrame(nil, size) }
+                if let size = window.lastFloatingSize {
+                    window.setAxFrame(nil, size)
+                }
                 return .succ
         }
     }
