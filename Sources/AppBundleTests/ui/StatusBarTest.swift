@@ -171,6 +171,7 @@ final class StatusBarConfigTest: XCTestCase {
             height = 32
             modules-left = ['workspaces', 'mode']
             modules-right = ['clock', 'battery']
+            hide-empty-workspaces = true
             status-command = ['/bin/echo', 'noop']
             """
         let result = parseConfig(toml)
@@ -179,11 +180,24 @@ final class StatusBarConfigTest: XCTestCase {
         assertEquals(result.config.statusBar.height, 32)
         assertEquals(result.config.statusBar.modulesLeft, ["workspaces", "mode"])
         assertEquals(result.config.statusBar.modulesRight, ["clock", "battery"])
+        assertTrue(result.config.statusBar.hideEmptyWorkspaces)
         assertEquals(result.config.statusBar.statusCommand, ["/bin/echo", "noop"])
     }
 
     func testBarDisabledByDefault() {
         let result = parseConfig("start-at-login = false\n")
         assertFalse(result.config.statusBar.enabled)
+        assertFalse(result.config.statusBar.hideEmptyWorkspaces)
+    }
+
+    func testHideEmptyWorkspacesFilter() {
+        // Default: show everything
+        assertTrue(statusBarShouldShowWorkspace(isEmpty: true, isFocused: false, hideEmpty: false))
+        assertTrue(statusBarShouldShowWorkspace(isEmpty: false, isFocused: false, hideEmpty: false))
+        // Hide empty, keep focused even when empty
+        assertFalse(statusBarShouldShowWorkspace(isEmpty: true, isFocused: false, hideEmpty: true))
+        assertTrue(statusBarShouldShowWorkspace(isEmpty: true, isFocused: true, hideEmpty: true))
+        assertTrue(statusBarShouldShowWorkspace(isEmpty: false, isFocused: false, hideEmpty: true))
+        assertTrue(statusBarShouldShowWorkspace(isEmpty: false, isFocused: true, hideEmpty: true))
     }
 }

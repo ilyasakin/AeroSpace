@@ -166,6 +166,16 @@ struct BarSettingsTab: View {
                         }
                     }
 
+                    SettingsSection(title: "Workspaces module") {
+                        Toggle(
+                            "Hide unoccupied workspaces",
+                            isOn: model.boolBinding(["bar"], "hide-empty-workspaces", get: \.statusBar.hideEmptyWorkspaces),
+                        )
+                        Text("When on, only workspaces with windows are listed (the focused workspace always stays visible).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     SettingsSection(title: "Left modules") {
                         Text("Toggle to show on the bar. Drag the grip on “On bar” rows to reorder (left → right).")
                             .font(.caption)

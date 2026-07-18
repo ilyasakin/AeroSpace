@@ -40,11 +40,12 @@ Opt-in TOML (same keys the Settings GUI writes):
 enabled = true
 modules-left = ['workspaces', 'mode', 'focused']
 modules-right = ['clock', 'battery']
+# hide-empty-workspaces = true  # omit unoccupied spaces (focused always shown)
 # status-command = ['/path/to/i3bar-protocol-emitter']
 ```
 
 - Per-monitor strip **below** the system menu bar (no menu-bar replacement).
-- Built-ins: workspaces (click → focus), mode, focused app, clock, battery, cpu, memory.
+- Built-ins: workspaces (click → focus; optional hide-empty), mode, focused app, clock, battery, cpu, memory.
 - i3bar protocol input + click_events → module stdin.
 - Hit-test passthrough on empty regions.
 

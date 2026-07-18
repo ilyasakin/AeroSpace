@@ -46,6 +46,14 @@ enum StatusBarBuiltinModule: String, CaseIterable, Sendable {
     static var allIds: [String] { allCases.map(\.rawValue) }
 }
 
+/// Whether the workspaces module should list a workspace. Pure for unit tests.
+/// Focused workspace is always shown so the bar still reflects the current space when empty.
+func statusBarShouldShowWorkspace(isEmpty: Bool, isFocused: Bool, hideEmpty: Bool) -> Bool {
+    if !hideEmpty { return true }
+    if isFocused { return true }
+    return !isEmpty
+}
+
 // MARK: - Pure module text builders (unit-testable)
 
 enum StatusBarClock {

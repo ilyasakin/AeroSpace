@@ -9,6 +9,8 @@ struct StatusBarConfig: ConvenienceMutable, Equatable, Sendable {
     /// Built-in module ids, left-to-right. Known: workspaces, mode, focused, clock, battery, cpu, memory, volume, network
     var modulesLeft: [String] = ["workspaces", "mode", "focused"]
     var modulesRight: [String] = ["clock", "battery"]
+    /// When true, the workspaces module omits empty (unoccupied) workspaces — except the focused one.
+    var hideEmptyWorkspaces: Bool = false
     /// Optional external process that speaks the i3bar protocol on stdout.
     var statusCommand: [String] = []
     var background: String = "#1e1e2e"
@@ -25,6 +27,7 @@ private let statusBarParser: [String: any ParserProtocol<StatusBarConfig>] = [
     "height": Parser(\.height, parseInt),
     "modules-left": Parser(\.modulesLeft, parseArrayOfStrings),
     "modules-right": Parser(\.modulesRight, parseArrayOfStrings),
+    "hide-empty-workspaces": Parser(\.hideEmptyWorkspaces, parseBool),
     "status-command": Parser(\.statusCommand, parseArrayOfStrings),
     "background": Parser(\.background, parseString),
     "foreground": Parser(\.foreground, parseString),

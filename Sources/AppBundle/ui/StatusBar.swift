@@ -389,6 +389,13 @@ private final class StatusBarContentView: NSView {
                     case "workspaces":
                         for ws in Workspace.all {
                             let active = ws.name == focus.workspace.name
+                            if !statusBarShouldShowWorkspace(
+                                isEmpty: ws.isEffectivelyEmpty,
+                                isFocused: active,
+                                hideEmpty: config.hideEmptyWorkspaces,
+                            ) {
+                                continue
+                            }
                             let visibleHere = ws.isVisible
                                 && ws.workspaceMonitor.rect.topLeftCorner == monitor.rect.topLeftCorner
                             out.append(.text(
