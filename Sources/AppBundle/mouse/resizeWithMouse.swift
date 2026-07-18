@@ -2,7 +2,10 @@ import AppKit
 import Common
 
 @MainActor
-private var resizeWithMouseTask: Task<(), any Error>? = nil
+var resizeWithMouseTask: Task<(), any Error>? = nil
+
+/// Noise floor for edge diffs / size-change detection (floating precision + layout vs WS lag).
+let mouseResizeNoiseThreshold: CGFloat = 5
 
 func resizedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
     let notif = notif as String
@@ -30,6 +33,8 @@ func resizedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutabl
         // compared against the live AX/WS frame to compute weight diffs. Invalidating it here
         // made every drag tick early-return (diff baseline was always nil).
         currentlyManipulatedWithMouseWindowId = window.windowId
+        // Edge resize often also fires AXMoved; cancel a racing move task that would wipe the baseline.
+        moveWithMouseTask?.cancel()
         resizeWithMouseTask?.cancel()
         resizeWithMouseTask = Task.startUnstructured {
             try checkCancellation()
@@ -59,8 +64,33 @@ func resizeWithMouseCanApplyDiffs(lastApplied: Rect?, live: Rect?) -> Bool {
     lastApplied != nil && live != nil
 }
 
+/// True when the live frame's size differs from the layout baseline — user is resizing, not
+/// title-bar reordering. AX often emits both Moved and Resized for edge/corner drags; the move
+/// path must not clear lastApplied or swap tiles in that case.
+func isMouseResizeLikeDrag(lastApplied: Rect?, live: Rect?, threshold: CGFloat = mouseResizeNoiseThreshold) -> Bool {
+    guard let lastApplied, let live else { return false }
+    return abs(lastApplied.width - live.width) > threshold
+        || abs(lastApplied.height - live.height) > threshold
+}
+
+/// Live on-screen frame for mouse-resize weight diffs.
+/// Never returns `lastApplied` — that rect is the *baseline* compared against the live frame.
+/// Prefers WindowServer overlay bounds (not gated on `skylight-reads`); falls back to AX.
 @MainActor
-private func resizeWithMouse(_ window: Window) async throws { // todo cover with tests
+func liveRectForMouseResize(_ window: Window) async throws -> Rect? {
+    if let bounds = WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true) {
+        return bounds
+    }
+    if let mac = window as? MacWindow {
+        // Bypass MacWindow.getAxRect's resolveFrameRead path, which prefers lastApplied when
+        // framesWrittenThisSession is set (write-lag guard). That would make live == baseline.
+        return try await mac.macApp.getAxRect(mac.windowId, .cancellable)
+    }
+    return try await window.getAxRect(.cancellable)
+}
+
+@MainActor
+func resizeWithMouse(_ window: Window) async throws {
     resetClosedWindowsCache()
     switch window.windowParentCases {
         case .unbound: return
@@ -69,8 +99,8 @@ private func resizeWithMouse(_ window: Window) async throws { // todo cover with
             return // Nothing to do for floating, or unconventional windows
         case .tilingContainer:
             // Live frame (WS/AX). Baseline must remain lastApplied from layout — do not invalidate it
-            // on the mouse-drag path (see resizedObs).
-            guard let rect = try await window.getAxRect(.cancellable) else { return }
+            // on the mouse-drag path (see resizedObs / moveTilingWindow guards).
+            guard let rect = try await liveRectForMouseResize(window) else { return }
             guard let lastAppliedLayoutRect = window.lastAppliedLayoutPhysicalRect else { return }
             assert(
                 resizeWithMouseCanApplyDiffs(lastApplied: lastAppliedLayoutRect, live: rect),
@@ -87,7 +117,9 @@ private func resizeWithMouse(_ window: Window) async throws { // todo cover with
                 (rect.maxX - lastAppliedLayoutRect.maxX, rParent, rOwnIndex.map { $0 + 1 }, rParent?.children.count), // Horizontal, to the right of the window
             ]
             for (diff, parent, startIndex, pastTheEndIndex) in table {
-                if let parent, let startIndex, let pastTheEndIndex, pastTheEndIndex - startIndex > 0 && abs(diff) > 5 { // 5 pixels should be enough to fight with accumulated floating precision error
+                if let parent, let startIndex, let pastTheEndIndex, pastTheEndIndex - startIndex > 0
+                    && abs(diff) > mouseResizeNoiseThreshold
+                {
                     let siblingDiff = diff.div(pastTheEndIndex - startIndex).orDie()
                     let orientation = parent.orientation
 

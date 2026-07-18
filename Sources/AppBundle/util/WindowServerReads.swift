@@ -80,6 +80,24 @@ func resolveFrameRead(
     return .needAx
 }
 
+/// Pure decision for **border overlay** frames during `refresh()`.
+///
+/// Unlike layout frame reads, borders must track the live on-screen window during a user drag.
+/// Preferring `lastApplied` unconditionally freezes the border on the layout tile while the
+/// window moves under the mouse. Only prefer lastApplied when *we* just wrote the frame
+/// (`mayBeStale`) and SkyLight may still report the pre-write bounds.
+func resolveBorderRect(
+    lastApplied: Rect?,
+    mayBeStale: Bool,
+    liveBounds: Rect?,
+    stackRect: Rect?,
+) -> Rect? {
+    if mayBeStale, let lastApplied { return lastApplied }
+    if let liveBounds { return liveBounds }
+    if let stackRect { return stackRect }
+    return lastApplied
+}
+
 /// Merge a partial frame write into the last applied rect.
 /// Command chains like `resize` then `center-window` issue size-only then position-only writes;
 /// without merging, the second call cancels the first AX job and leaves the tiled size.

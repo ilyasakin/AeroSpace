@@ -48,16 +48,29 @@ struct WindowBorders: ConvenienceMutable, Equatable, Sendable {
     var width: Int = 4
     var cornerRadius: Int = 10
     /// Per-app corner-radius overrides, keyed by app bundle id. macOS exposes no API to read a
-    /// window's real corner radius, so apps whose rounding doesn't match `cornerRadius` get an
-    /// explicit value here (and on recent macOS the radius even varies by window type)
+    /// window's real corner radius, so apps whose rounding doesn't match get an explicit value
+    /// here (on recent macOS the radius even varies by window chrome). Overrides always win
+    /// over `detectCornerRadius`.
     var cornerRadiusOverrides: [String: Int] = [:]
+    /// When true, match system corner radius via own-process `NSThemeFrame` probes (plain vs
+    /// toolbar chrome) — no Screen Recording. Per-app overrides still win. When false, use
+    /// fixed `cornerRadius`.
+    var detectCornerRadius: Bool = false
 
     static let disabled = WindowBorders()
 
-    /// The corner radius to use for a window owned by `appId`: its override if any, else the default
-    func cornerRadius(forAppId appId: String?) -> Int {
+    /// Radius for a window owned by `appId` with optional chrome class (toolbar → larger on Tahoe).
+    @MainActor
+    func cornerRadius(forAppId appId: String?, chrome: WindowCornerRadius.Chrome = .plain) -> Int {
         if let appId, let override = cornerRadiusOverrides[appId] { return override }
+        if detectCornerRadius { return WindowCornerRadius.radius(for: chrome) }
         return cornerRadius
+    }
+
+    /// Whether this app has an explicit override.
+    func hasCornerRadiusOverride(forAppId appId: String?) -> Bool {
+        guard let appId else { return false }
+        return cornerRadiusOverrides[appId] != nil
     }
 
     func resolvedActiveStyle() -> BorderStyle { activeStyle ?? .solid(activeColor) }
@@ -71,6 +84,7 @@ private let windowBordersParser: [String: any ParserProtocol<WindowBorders>] = [
     "width": Parser(\.width, parseInt),
     "corner-radius": Parser(\.cornerRadius, parseInt),
     "corner-radius-overrides": Parser(\.cornerRadiusOverrides, parseCornerRadiusOverrides),
+    "detect-corner-radius": Parser(\.detectCornerRadius, parseBool),
 ]
 
 /// Parse solid / gradient / glow into activeColor + activeStyle

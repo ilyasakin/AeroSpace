@@ -52,6 +52,9 @@ final class WindowBordersOverlay: NSPanelHud {
 /// windows stacked above it. Geometry and style writes are skipped when nothing changed so a
 /// full/dirty redraw is cheap when only a subset of borders moved.
 ///
+/// Pure translation (same size) only moves `host.frame` — no CGPath rebuild (JankyBorders move parity
+/// within the overlay model).
+///
 /// All paint layers (solid stroke, gradient, glow) live under `host` so the occlusion mask applies
 /// to every style. `removeFromOverlay()` drops the entire host tree (no orphan gradient/glow layers).
 @MainActor
@@ -86,6 +89,9 @@ private final class BorderEntry {
     var radius = 0
     var rect: Rect // live top-left-global frame of the target window
     private var styleDirty = true
+
+    /// Dirty-epoch membership: equal to manager's epoch means this id is already in dirtyList
+    var dirtyEpoch: UInt32 = 0
 
     /// Last values applied to the layer - used to skip path/frame writes. Includes overlay origin so
     /// a multi-monitor reconfig (coverAllScreens moves the overlay) still forces a rewrite even when
@@ -123,13 +129,21 @@ private final class BorderEntry {
     var region: Rect { WindowBordersMath.region(rect: rect, width: width) }
 
     /// Apply stroke geometry/style. Returns the panel frame in overlay coords (always current).
+    /// Pure position change (same size/radius/width/overlay origin) only moves `host.frame` —
+    /// path stays valid because stroke geometry is host-local.
     @discardableResult
     func applyStroke(originX: CGFloat, originY: CGFloat, zPosition: CGFloat) -> CGRect {
         let w = CGFloat(width)
         let panel = layerRect(rect, originX, originY).insetBy(dx: -w, dy: -w)
-        let geometryChanged = appliedRect != rect || appliedWidth != width || appliedRadius != radius
+
+        let sizeOrStyleChanged = appliedWidth != width || appliedRadius != radius
+            || appliedRect?.width != rect.width || appliedRect?.height != rect.height
             || appliedOriginX != originX || appliedOriginY != originY
-        if geometryChanged {
+        let positionChanged = appliedRect?.topLeftX != rect.topLeftX
+            || appliedRect?.topLeftY != rect.topLeftY
+            || sizeOrStyleChanged
+
+        if sizeOrStyleChanged {
             appliedRect = rect
             appliedWidth = width
             appliedRadius = radius
@@ -144,8 +158,13 @@ private final class BorderEntry {
             shape.path = path
             shape.lineWidth = w
             styleDirty = true
+        } else if positionChanged {
+            // Translate only: same local path; move host in overlay space
+            appliedRect = rect
+            host.frame = panel
         }
-        if styleDirty || geometryChanged {
+
+        if styleDirty || sizeOrStyleChanged {
             styleDirty = false
             applyStylePaint(w: w)
         }
@@ -202,7 +221,8 @@ private final class BorderEntry {
         }
     }
 
-    func applyMask(panel: CGRect, occluders: [Rect], originX: CGFloat, originY: CGFloat) {
+    /// Apply occlusion mask from a reusable buffer (no intermediate Array copy).
+    func applyMask(panel: CGRect, occluders: ContiguousArray<Rect>, originX: CGFloat, originY: CGFloat) {
         if occluders.isEmpty {
             if hadOccluders {
                 host.mask = nil
@@ -256,24 +276,30 @@ final class WindowBordersManager {
     private var stack: [(id: UInt32, rect: Rect)] = []
     /// O(1) id -> stack index. Kept in lockstep with `stack` so move events never scan the array
     private var stackIndex: [UInt32: Int] = [:]
+    /// Membership set for occlusion "managed" skips. Rebuilt only when entries gain/lose ids.
+    private var managedIds: Set<UInt32> = []
     /// The focused window. Treated as the frontmost window for border purposes: its border is never
     /// masked by another managed window and draws on top, and inactive borders are always clipped
     /// under it. Tiling rarely restacks tiles, so the raw on-screen stack can't be trusted to put the
     /// focused window above a neighbour that overflowed onto it
     private var activeId: UInt32?
     private var observingWindowServer = false
+    /// Per-window chrome class for corner-radius probes (plain vs toolbar). Filled async once.
+    private var chromeCache: [UInt32: WindowCornerRadius.Chrome] = [:]
 
-    // MARK: Coalesced dirty redraw (performance)
+    // MARK: Coalesced dirty redraw (zero-heap on the mark path)
 
-    /// Border ids that need stroke and/or mask recompute. Full redraws go through refresh() only
-    private var dirtyIds: Set<UInt32> = []
-    private var redrawScheduled = false
-    /// Flushes dirty borders once per run-loop turn (BeforeWaiting), so a burst of WindowServer
-    /// move events becomes one CATransaction - without the extra frame of latency that
-    /// `DispatchQueue.main.async` would add
-    private var coalesceObserver: CFRunLoopObserver?
+    /// Border ids that need stroke and/or mask recompute. ContiguousArray + epoch — no Set hashing.
+    private var dirtyList: ContiguousArray<UInt32> = []
+    /// Bumped after each flush. Entry is dirty iff `entry.dirtyEpoch == dirtyEpoch`.
+    private var dirtyEpoch: UInt32 = 1
+    /// Reused every paint so occluder collection never reallocates under steady load.
+    private var occluderScratch = ContiguousArray<Rect>()
 
-    private init() {}
+    private init() {
+        dirtyList.reserveCapacity(16)
+        occluderScratch.reserveCapacity(8)
+    }
 
     /// Full rebuild: driven from AeroSpace's refresh loop, so it runs on every focus / move / resize /
     /// layout / workspace change. Establishes which windows are bordered, their colors, and the stack
@@ -296,44 +322,106 @@ final class WindowBordersManager {
 
         activeId = focus.windowOrNil?.windowId
         var seen = Set<UInt32>(minimumCapacity: entries.count)
+        var membershipChanged = false
         for workspace in Workspace.allUnsorted where workspace.isVisible {
             for window in workspace.allLeafWindowsRecursive {
                 guard let rect = resolvedBorderRect(for: window) else { continue }
                 seen.insert(window.windowId)
+                if entries[window.windowId] == nil { membershipChanged = true }
                 let entry = entries[window.windowId] ?? makeEntry(window.windowId, rect: rect)
                 entry.rect = rect
                 entry.style = window.windowId == activeId ? cfg.resolvedActiveStyle() : cfg.resolvedInactiveStyle()
                 entry.color = entry.style.primaryColor
                 entry.width = cfg.width
-                entry.radius = cfg.cornerRadius(forAppId: window.app.rawAppBundleId)
+                let chrome = chromeCache[window.windowId] ?? .plain
+                entry.radius = cfg.cornerRadius(forAppId: window.app.rawAppBundleId, chrome: chrome)
+                if cfg.detectCornerRadius, chromeCache[window.windowId] == nil {
+                    scheduleChromeProbe(window)
+                }
             }
         }
         for (id, entry) in entries where !seen.contains(id) {
             entry.removeFromOverlay()
             entries.removeValue(forKey: id)
+            chromeCache.removeValue(forKey: id)
+            membershipChanged = true
         }
+        if membershipChanged {
+            managedIds = Set(entries.keys)
+        }
+        // Continuous drag-rate move/resize delivery requires an explicit window id list
+        // (SLSRegisterNotifyProc alone is not enough — JankyBorders does this every rebuild)
+        requestWindowServerNotifications()
 
         // Config / membership / stack order may have changed - full recompute once, immediately
         // (refresh is already session-batched; no need to coalesce further)
         flushAll()
     }
 
-    /// Pick the best frame for a bordered window without a needless SLS round-trip:
-    /// 1. lastApplied — what layout commanded (also covers SkyLight lag after AX writes)
-    /// 2. CGWindowList stack rect already paid for by onScreenWindowSnapshot
-    /// 3. Live SLS bounds (overlay path; not gated on skylight-reads)
-    private func resolvedBorderRect(for window: Window) -> Rect? {
-        if let applied = window.lastAppliedLayoutPhysicalRect { return applied }
+    /// Classify window chrome (toolbar vs plain) once so radius can track Tahoe's split.
+    private func scheduleChromeProbe(_ window: Window) {
         let id = window.windowId
-        if let i = stackIndex[id] { return stack[i].rect }
-        return WindowServerReads.current.windowBounds(windowId: id, forOverlay: true)
+        let appId = window.app.rawAppBundleId
+        Task { @MainActor in
+            let chrome = await detectWindowChrome(window)
+            let prev = chromeCache[id]
+            chromeCache[id] = chrome
+            guard prev != chrome, let entry = entries[id] else { return }
+            let cfg = config.windowBorders
+            entry.radius = cfg.cornerRadius(forAppId: appId, chrome: chrome)
+            markDirty(id)
+            flushDirtyList()
+        }
+    }
+
+    private func detectWindowChrome(_ window: Window) async -> WindowCornerRadius.Chrome {
+        guard let mac = window as? MacWindow else { return .plain }
+        do {
+            if try await mac.macApp.windowHasAxToolbar(mac.windowId, .cancellable) {
+                return .toolbar
+            }
+        } catch {
+            // AX flake → plain probe radius
+        }
+        return .plain
+    }
+
+    /// Prefer live on-screen bounds so a user drag is not frozen to lastApplied. Only use
+    /// lastApplied when we just wrote the frame and SkyLight may lag (see `resolveBorderRect`).
+    private func resolvedBorderRect(for window: Window) -> Rect? {
+        let id = window.windowId
+        let applied = window.lastAppliedLayoutPhysicalRect
+        let mayBeStale = skyLightFrameMayBeStale(id)
+        // Skip SLS when we just wrote this frame — lastApplied is authoritative until lag clears
+        if mayBeStale, applied != nil {
+            return resolveBorderRect(lastApplied: applied, mayBeStale: true, liveBounds: nil, stackRect: nil)
+        }
+        let live = WindowServerReads.current.windowBounds(windowId: id, forOverlay: true)
+        let stackRect = stackIndex[id].map { stack[$0].rect }
+        return resolveBorderRect(
+            lastApplied: applied,
+            mayBeStale: false,
+            liveBounds: live,
+            stackRect: stackRect,
+        )
+    }
+
+    /// Tell WindowServer which windows we care about for move/resize notify delivery.
+    private func requestWindowServerNotifications() {
+        var ids: [UInt32] = []
+        ids.reserveCapacity(entries.count + stack.count)
+        ids.append(contentsOf: entries.keys)
+        for item in stack where entries[item.id] == nil {
+            ids.append(item.id)
+        }
+        SkyLight.requestNotifications(for: ids)
     }
 
     /// A window moved/resized (WindowServer event). This callback fires for EVERY window on the
-    /// system. Cost model (must stay sub-millisecond on modest hardware):
+    /// system. Cost model for the pure-math part (must stay **nanoseconds** on modest hardware):
     /// 1. O(1) rect update via stackIndex
-    /// 2. Early-out if the move can't affect any border (unrelated animation)
-    /// 3. Mark only the borders whose stroke/mask can change
+    /// 2. Early-out if the move can't affect any border (unrelated animation) — no heap
+    /// 3. Mark dirty via epoch + ContiguousArray append — no Set, no region snapshot array
     /// 4. Coalesce all events in this run-loop turn into ONE Core Animation transaction
     func handleWindowMoved(windowId: UInt32) {
         guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
@@ -364,16 +452,13 @@ final class WindowBordersManager {
             guard hitsNew || hitsOld else { return }
         }
 
-        scheduleRedraw(dirty: WindowBordersMath.affectedBorderIds(
-            mover: windowId,
-            moverIsBordered: moverIsBordered,
-            borderRegions: borderRegionsSnapshot(),
-            oldRect: oldRect,
-            newRect: rect,
-        ))
+        markAffectedBorders(mover: windowId, moverIsBordered: moverIsBordered, oldRect: oldRect, newRect: rect)
+        // Paint immediately so the border tracks the window on this event. Coalescing only via
+        // BeforeWaiting left borders stranded when AX/layout kept the run loop busy during drag.
+        flushDirtyList()
     }
 
-    // MARK: Dirty set + coalesce
+    // MARK: Dirty set
 
     /// Allocation-free overlap test against live entries (hot path for unrelated window animations)
     private func overlapsAnyBorderInPlace(_ rect: Rect) -> Bool {
@@ -383,38 +468,27 @@ final class WindowBordersManager {
         return false
     }
 
-    /// Snapshot of painted regions for pure-math dirty set computation
-    private func borderRegionsSnapshot() -> [(id: UInt32, region: Rect)] {
-        var regions: [(id: UInt32, region: Rect)] = []
-        regions.reserveCapacity(entries.count)
+    /// Mark borders whose stroke/mask can change. Zero heap (epoch de-dupe + ContiguousArray).
+    private func markAffectedBorders(mover: UInt32, moverIsBordered: Bool, oldRect: Rect?, newRect: Rect) {
+        if moverIsBordered { markDirty(mover) }
         for (id, entry) in entries {
-            regions.append((id, entry.region))
-        }
-        return regions
-    }
-
-    private func scheduleRedraw(dirty: Set<UInt32>) {
-        dirtyIds.formUnion(dirty)
-        guard !redrawScheduled else { return }
-        redrawScheduled = true
-        // Coalesce every WindowServer event that arrives before the run loop would sleep into a
-        // single CATransaction. Zero added frames vs immediate paint; one paint per turn under load
-        let observer = CFRunLoopObserverCreateWithHandler(
-            kCFAllocatorDefault,
-            CFRunLoopActivity.beforeWaiting.rawValue,
-            false, // one-shot
-            0,
-        ) { [self] _, _ in
-            MainActor.assumeIsolated {
-                self.redrawScheduled = false
-                self.coalesceObserver = nil
-                let dirty = self.dirtyIds
-                self.dirtyIds.removeAll(keepingCapacity: true)
-                self.flushDirty(dirty)
+            if id == mover { continue }
+            let region = entry.region
+            if let old = oldRect, WindowBordersMath.rectsIntersect(region, old) {
+                markDirty(id)
+                continue
+            }
+            if WindowBordersMath.rectsIntersect(region, newRect) {
+                markDirty(id)
             }
         }
-        coalesceObserver = observer
-        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+    }
+
+    @inline(__always)
+    private func markDirty(_ id: UInt32) {
+        guard let entry = entries[id], entry.dirtyEpoch != dirtyEpoch else { return }
+        entry.dirtyEpoch = dirtyEpoch
+        dirtyList.append(id)
     }
 
     private func flushAll() {
@@ -423,27 +497,41 @@ final class WindowBordersManager {
                 paint(id, entry)
             }
         }
+        // Drop any pending partial dirties — full paint just ran
+        dirtyList.removeAll(keepingCapacity: true)
+        bumpDirtyEpoch()
     }
 
-    private func flushDirty(_ dirty: Set<UInt32>) {
+    private func flushDirtyList() {
+        guard !dirtyList.isEmpty else { return }
+        // Paint from dirtyList in place (no CoW copy), then clear + bump epoch
         flush { paint in
-            for id in dirty {
+            for id in dirtyList {
                 guard let entry = entries[id] else { continue }
                 paint(id, entry)
             }
+        }
+        dirtyList.removeAll(keepingCapacity: true)
+        bumpDirtyEpoch()
+    }
+
+    private func bumpDirtyEpoch() {
+        dirtyEpoch &+= 1
+        if dirtyEpoch == 0 {
+            // Wrap: clear per-entry markers so epoch 1 is unambiguous
+            dirtyEpoch = 1
+            for (_, entry) in entries { entry.dirtyEpoch = 0 }
         }
     }
 
     private func flush(_ body: (_ paint: (UInt32, BorderEntry) -> Void) -> Void) {
         let originX = overlay.frame.origin.x
         let originY = overlay.frame.origin.y
-        let managedIds = Set(entries.keys)
         let activeRect = activeId.flatMap { entries[$0]?.rect }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         body { id, entry in
-            paint(id: id, entry: entry, originX: originX, originY: originY,
-                  managedIds: managedIds, activeRect: activeRect)
+            paint(id: id, entry: entry, originX: originX, originY: originY, activeRect: activeRect)
         }
         CATransaction.commit()
     }
@@ -453,11 +541,10 @@ final class WindowBordersManager {
         entry: BorderEntry,
         originX: CGFloat,
         originY: CGFloat,
-        managedIds: Set<UInt32>,
         activeRect: Rect?,
     ) {
         let panel = entry.applyStroke(originX: originX, originY: originY, zPosition: id == activeId ? 1 : 0)
-        let occluders = WindowBordersMath.occluders(
+        WindowBordersMath.collectOccluders(
             id: id,
             region: entry.region,
             isActive: id == activeId,
@@ -466,26 +553,26 @@ final class WindowBordersManager {
             stack: stack,
             stackIndex: stackIndex[id],
             managedIds: managedIds,
+            into: &occluderScratch,
         )
-        entry.applyMask(panel: panel, occluders: occluders, originX: originX, originY: originY)
+        entry.applyMask(panel: panel, occluders: occluderScratch, originX: originX, originY: originY)
     }
 
     private func makeEntry(_ id: UInt32, rect: Rect) -> BorderEntry {
         let entry = BorderEntry(rect: rect)
         overlay.root.addSublayer(entry.host)
         entries[id] = entry
+        managedIds.insert(id)
         return entry
     }
 
     private func teardownAll() {
-        if let observer = coalesceObserver {
-            CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes)
-            coalesceObserver = nil
-        }
-        redrawScheduled = false
-        dirtyIds.removeAll()
+        dirtyList.removeAll(keepingCapacity: true)
+        bumpDirtyEpoch()
         for (_, entry) in entries { entry.removeFromOverlay() }
         entries.removeAll()
+        managedIds.removeAll()
+        chromeCache.removeAll()
         stack.removeAll()
         stackIndex.removeAll()
         overlay.orderOut(nil)

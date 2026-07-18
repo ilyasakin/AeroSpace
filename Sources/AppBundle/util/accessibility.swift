@@ -301,6 +301,15 @@ enum Ax {
         key: kAXMinimizeButtonAttribute,
         getter: castToAxUiElementMock,
     )
+    /// Titlebar "toolbar" button (not always present). Presence alone does not mean a toolbar is shown.
+    static let toolbarButtonAttr = ReadableAttrImpl<any AxUiElementMock>(
+        key: kAXToolbarButtonAttribute,
+        getter: castToAxUiElementMock,
+    )
+    static let childrenAttr = ReadableAttrImpl<[any AxUiElementMock]>(
+        key: kAXChildrenAttribute,
+        getter: { ($0 as? NSArray)?.compactMap { castToAxUiElementMock($0 as AnyObject) } ?? [] },
+    )
     //static let growAreaAttr = ReadableAttrImpl<AXUIElement>(
     //    key: kAXGrowAreaAttribute,
     //    getter: { ($0 as! AXUIElement) }

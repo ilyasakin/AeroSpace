@@ -80,6 +80,46 @@ final class WindowServerReadsTest: XCTestCase {
         XCTAssertEqual(r, .needAx)
     }
 
+    // MARK: resolveBorderRect (must track live drag)
+
+    func testBorderFreshPrefersLiveOverLastApplied() {
+        // Regression: unconditional lastApplied froze borders on the layout tile during drag
+        let applied = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400)
+        let live = Rect(topLeftX: 50, topLeftY: 60, width: 400, height: 400)
+        let r = resolveBorderRect(
+            lastApplied: applied,
+            mayBeStale: false,
+            liveBounds: live,
+            stackRect: applied,
+        )
+        XCTAssertEqual(r, live)
+    }
+
+    func testBorderStalePrefersLastApplied() {
+        let applied = Rect(topLeftX: 10, topLeftY: 20, width: 300, height: 400)
+        let live = Rect(topLeftX: 0, topLeftY: 0, width: 300, height: 400) // lagging WS
+        let r = resolveBorderRect(
+            lastApplied: applied,
+            mayBeStale: true,
+            liveBounds: live,
+            stackRect: nil,
+        )
+        XCTAssertEqual(r, applied)
+    }
+
+    func testBorderFallsBackStackThenLastApplied() {
+        let applied = Rect(topLeftX: 1, topLeftY: 2, width: 3, height: 4)
+        let stack = Rect(topLeftX: 5, topLeftY: 6, width: 7, height: 8)
+        XCTAssertEqual(
+            resolveBorderRect(lastApplied: applied, mayBeStale: false, liveBounds: nil, stackRect: stack),
+            stack,
+        )
+        XCTAssertEqual(
+            resolveBorderRect(lastApplied: applied, mayBeStale: false, liveBounds: nil, stackRect: nil),
+            applied,
+        )
+    }
+
     // MARK: mergeFrameWrite (resize → center command chains)
 
     func testMergeFrameWriteSizeOnlyThenPositionOnly() {

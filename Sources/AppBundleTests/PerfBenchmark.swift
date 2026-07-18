@@ -37,8 +37,9 @@ final class PerfBenchmark: XCTestCase {
         let start = DispatchTime.now()
         for _ in 0 ..< iterations { body() }
         let nanos = unsafe DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
-        let usPerIter = Double(nanos) / Double(iterations) / 1000
-        print("BENCH \(label): \(String(format: "%.1f", usPerIter)) µs/iter")
+        let nsPerIter = Double(nanos) / Double(iterations)
+        let usPerIter = nsPerIter / 1000
+        print("BENCH \(label): \(String(format: "%.0f", nsPerIter)) ns/iter (\(String(format: "%.2f", usPerIter)) µs)")
     }
 
     func testTreeHotPaths() {
@@ -92,8 +93,9 @@ final class PerfBenchmark: XCTestCase {
     /// Microbenchmarks for the window-border dirty/occlusion hot path.
     /// Models a busy desktop: 20 bordered tiles + 80 non-bordered on-screen windows, and the
     /// three common WS-event shapes (unrelated move, bordered drag, occluder slide).
-    /// Acceptance intent: each path stays well under 100 µs/iter on modest hardware so a 120 Hz
-    /// drag burst cannot eat the main thread.
+    ///
+    /// Live path uses zero-heap APIs (`appendAffectedBorderIds` / `collectOccluders` into warm
+    /// buffers). Target: **nanoseconds** per event for pure math (not µs from Set/Array alloc).
     func testWindowBordersHotPaths() {
         let borderCount = 20
         let stackExtra = 80
@@ -128,36 +130,47 @@ final class PerfBenchmark: XCTestCase {
         let dragNew = Rect(topLeftX: dragOld.topLeftX + 12, topLeftY: dragOld.topLeftY + 8,
                            width: dragOld.width, height: dragOld.height)
 
-        time("borders.overlapsAny (miss, 20 borders)", iterations: 200_000) {
+        // Warm reusable buffers (mirrors WindowBordersManager)
+        var dirtyScratch = ContiguousArray<UInt32>()
+        dirtyScratch.reserveCapacity(16)
+        var occScratch = ContiguousArray<Rect>()
+        occScratch.reserveCapacity(8)
+
+        time("borders.overlapsAny (miss, 20 borders)", iterations: 1_000_000) {
             _ = WindowBordersMath.overlapsAnyBorder(regions: borderRegions, rect: farNew)
         }
 
-        time("borders.affectedIds (unrelated miss)", iterations: 100_000) {
-            _ = WindowBordersMath.affectedBorderIds(
+        // Zero-heap live path (what handleWindowMoved uses after warm-up)
+        time("borders.appendAffected (unrelated miss, zero-heap)", iterations: 1_000_000) {
+            dirtyScratch.removeAll(keepingCapacity: true)
+            WindowBordersMath.appendAffectedBorderIds(
                 mover: 9999,
                 moverIsBordered: false,
                 borderRegions: borderRegions,
                 oldRect: farOld,
                 newRect: farNew,
+                into: &dirtyScratch,
             )
         }
 
-        time("borders.affectedIds (bordered drag)", iterations: 100_000) {
-            _ = WindowBordersMath.affectedBorderIds(
+        time("borders.appendAffected (bordered drag, zero-heap)", iterations: 1_000_000) {
+            dirtyScratch.removeAll(keepingCapacity: true)
+            WindowBordersMath.appendAffectedBorderIds(
                 mover: dragId,
                 moverIsBordered: true,
                 borderRegions: borderRegions,
                 oldRect: dragOld,
                 newRect: dragNew,
+                into: &dirtyScratch,
             )
         }
 
         // Full occlusion pass for every bordered window (worst-case full redraw math)
-        time("borders.occluders (all 20, stack=100)", iterations: 20_000) {
+        time("borders.collectOccluders (all 20, stack=100, zero-heap)", iterations: 100_000) {
             var n = 0
             for i in 0 ..< borderCount {
                 let id = UInt32(i)
-                let occ = WindowBordersMath.occluders(
+                WindowBordersMath.collectOccluders(
                     id: id,
                     region: borderRegions[i].region,
                     isActive: id == 0,
@@ -166,25 +179,28 @@ final class PerfBenchmark: XCTestCase {
                     stack: stack,
                     stackIndex: stackIndex[id],
                     managedIds: managedIds,
+                    into: &occScratch,
                 )
-                n += occ.count
+                n += occScratch.count
             }
             XCTAssertGreaterThanOrEqual(n, 0)
         }
 
         // Incremental: only dirty set from a drag (typical live path after coalesce)
-        time("borders.occluders (dirty≈3 after drag)", iterations: 100_000) {
-            let dirty = WindowBordersMath.affectedBorderIds(
+        time("borders.dirty+occluders (drag≈few borders, zero-heap)", iterations: 500_000) {
+            dirtyScratch.removeAll(keepingCapacity: true)
+            WindowBordersMath.appendAffectedBorderIds(
                 mover: dragId,
                 moverIsBordered: true,
                 borderRegions: borderRegions,
                 oldRect: dragOld,
                 newRect: dragNew,
+                into: &dirtyScratch,
             )
             var n = 0
-            for id in dirty {
+            for id in dirtyScratch {
                 let idx = Int(id)
-                let occ = WindowBordersMath.occluders(
+                WindowBordersMath.collectOccluders(
                     id: id,
                     region: borderRegions[idx].region,
                     isActive: id == 0,
@@ -193,8 +209,9 @@ final class PerfBenchmark: XCTestCase {
                     stack: stack,
                     stackIndex: stackIndex[id],
                     managedIds: managedIds,
+                    into: &occScratch,
                 )
-                n += occ.count
+                n += occScratch.count
             }
             XCTAssertGreaterThanOrEqual(n, 0)
         }

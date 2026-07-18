@@ -21,6 +21,9 @@ enum SkyLight {
     typealias NotifyProc = @convention(c) (UInt32, UnsafeMutableRawPointer?, Int, UnsafeMutableRawPointer?) -> Void
     // SLSRegisterNotifyProc(handler, event, context) -> error
     private typealias RegisterNotifyProcFun = @convention(c) (NotifyProc, UInt32, UnsafeMutableRawPointer?) -> Int32
+    // SLSRequestNotificationsForWindows(cid, window_list, window_count) -> error
+    // Required for continuous move/resize delivery (JankyBorders/yabai); register alone is not enough.
+    private typealias RequestNotificationsFun = @convention(c) (Int32, UnsafeMutablePointer<UInt32>, Int32) -> Int32
 
     /// WindowServer event ids (from JankyBorders' reverse-engineered set)
     enum WindowEvent: UInt32 { case move = 806, resize = 807 }
@@ -29,6 +32,7 @@ enum SkyLight {
         let connection: Int32
         let getWindowBounds: GetWindowBoundsFun
         let registerNotifyProc: RegisterNotifyProcFun?
+        let requestNotifications: RequestNotificationsFun?
     }
 
     private static let impl: Impl? = {
@@ -39,17 +43,38 @@ enum SkyLight {
         let mainConnection = unsafe unsafeBitCast(mainConnectionSym, to: MainConnectionIDFun.self)
         let getWindowBounds = unsafe unsafeBitCast(getBoundsSym, to: GetWindowBoundsFun.self)
         let registerNotifyProc = unsafe dlsym(handle, "SLSRegisterNotifyProc").map { unsafe unsafeBitCast($0, to: RegisterNotifyProcFun.self) }
-        return unsafe Impl(connection: mainConnection(), getWindowBounds: getWindowBounds, registerNotifyProc: registerNotifyProc)
+        let requestNotifications = unsafe dlsym(handle, "SLSRequestNotificationsForWindows").map {
+            unsafe unsafeBitCast($0, to: RequestNotificationsFun.self)
+        }
+        return unsafe Impl(
+            connection: mainConnection(),
+            getWindowBounds: getWindowBounds,
+            registerNotifyProc: registerNotifyProc,
+            requestNotifications: requestNotifications,
+        )
     }()
 
-    /// Subscribe `proc` to window move/resize events for every window on the system, so border masks
-    /// can track a live drag at the display's refresh rate instead of waiting for AeroSpace's refresh.
+    /// Subscribe `proc` to window move/resize events. Pair with `requestNotifications(for:)` so
+    /// WindowServer actually delivers continuous move/resize for the tracked window ids
+    /// (register alone does not guarantee drag-rate events — see JankyBorders).
     /// The proc fires on the thread whose run loop was active at registration (the main thread here).
     /// Registered once for the app's lifetime; there is no clean unregister in this API
     @MainActor static func registerWindowEvents(_ proc: @escaping NotifyProc) {
         guard let impl = unsafe impl, let register = unsafe impl.registerNotifyProc else { return }
         for event in [WindowEvent.move, .resize] {
             _ = unsafe register(proc, event.rawValue, nil)
+        }
+    }
+
+    /// Ask WindowServer to deliver modify events for these window ids to our connection.
+    /// Call whenever the bordered / on-screen set changes. Empty list is a no-op.
+    @MainActor static func requestNotifications(for windowIds: [UInt32]) {
+        guard let impl = unsafe impl, let request = unsafe impl.requestNotifications else { return }
+        guard !windowIds.isEmpty else { return }
+        var ids = windowIds
+        ids.withUnsafeMutableBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            _ = unsafe request(impl.connection, base, Int32(buf.count))
         }
     }
 

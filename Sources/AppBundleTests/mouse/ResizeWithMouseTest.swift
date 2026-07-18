@@ -4,7 +4,11 @@ import XCTest
 
 /// Mouse-resize weight diffs need a layout baseline (`lastApplied`) vs a live frame.
 /// Invalidating lastApplied on every AX resized event made every drag tick a no-op.
+/// Edge resize also fires AXMoved; the move path must not wipe that baseline or tile-swap.
+@MainActor
 final class ResizeWithMouseTest: XCTestCase {
+    override func setUp() async throws { setUpWorkspacesForTests() }
+
     func testResizeDiffRequiresLastAppliedBaseline() {
         let live = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 400)
         let baseline = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400)
@@ -22,10 +26,131 @@ final class ResizeWithMouseTest: XCTestCase {
         window.lastApplied = nil // same effect as MacWindow.invalidateAxFrameCaches()
         XCTAssertFalse(resizeWithMouseCanApplyDiffs(lastApplied: window.lastApplied, live: window.live))
     }
+
+    func testResizeLikeDragWhenSizeChanges() {
+        let baseline = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400)
+        // Pure translation (title-bar move): not resize-like
+        let moved = Rect(topLeftX: 50, topLeftY: 20, width: 400, height: 400)
+        XCTAssertFalse(isMouseResizeLikeDrag(lastApplied: baseline, live: moved))
+        // Right-edge grow
+        let wider = Rect(topLeftX: 0, topLeftY: 0, width: 520, height: 400)
+        XCTAssertTrue(isMouseResizeLikeDrag(lastApplied: baseline, live: wider))
+        // Left-edge grow (origin + size)
+        let leftGrow = Rect(topLeftX: -40, topLeftY: 0, width: 440, height: 400)
+        XCTAssertTrue(isMouseResizeLikeDrag(lastApplied: baseline, live: leftGrow))
+        // Noise within threshold
+        let noise = Rect(topLeftX: 0, topLeftY: 0, width: 403, height: 400)
+        XCTAssertFalse(isMouseResizeLikeDrag(lastApplied: baseline, live: noise))
+        XCTAssertFalse(isMouseResizeLikeDrag(lastApplied: nil, live: wider))
+        XCTAssertFalse(isMouseResizeLikeDrag(lastApplied: baseline, live: nil))
+    }
+
+    func testRightEdgeResizeGrowsWeightAndShrinksSibling() async throws {
+        var left: Window!
+        var right: Window!
+        Workspace.get(byName: name).rootTilingContainer.apply {
+            left = TestWindow.new(
+                id: 1,
+                parent: $0,
+                adaptiveWeight: 500,
+                rect: Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000),
+            )
+            right = TestWindow.new(
+                id: 2,
+                parent: $0,
+                adaptiveWeight: 500,
+                rect: Rect(topLeftX: 500, topLeftY: 0, width: 500, height: 1000),
+            )
+        }
+        // Simulate a prior layout pass: physical baseline + virtual weight dimensions.
+        left.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
+        left.lastAppliedLayoutVirtualRect = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
+        right.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 500, topLeftY: 0, width: 500, height: 1000)
+        right.lastAppliedLayoutVirtualRect = Rect(topLeftX: 500, topLeftY: 0, width: 500, height: 1000)
+
+        // User dragged the left window's right edge +100 px (live frame only; baseline stays).
+        left.setAxFrame(CGPoint(x: 0, y: 0), CGSize(width: 600, height: 1000))
+
+        currentlyManipulatedWithMouseWindowId = left.windowId
+        try await resizeWithMouse(left)
+
+        // Weight-before is virtual width 500; +100 physical growth → 600 / 400.
+        XCTAssertEqual(left.hWeight, 600, accuracy: 0.1)
+        XCTAssertEqual(right.hWeight, 400, accuracy: 0.1)
+        // Baseline must survive the resize tick (move path used to clear it).
+        XCTAssertNotNil(left.lastAppliedLayoutPhysicalRect)
+        XCTAssertEqual(left.lastAppliedLayoutPhysicalRect?.width, 500)
+    }
+
+    func testResizeLikeMovedPathDoesNotClearBaselineOrSwap() async throws {
+        var left: Window!
+        var right: Window!
+        Workspace.get(byName: name).rootTilingContainer.apply {
+            left = TestWindow.new(
+                id: 1,
+                parent: $0,
+                adaptiveWeight: 500,
+                rect: Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000),
+            )
+            right = TestWindow.new(
+                id: 2,
+                parent: $0,
+                adaptiveWeight: 500,
+                rect: Rect(topLeftX: 500, topLeftY: 0, width: 500, height: 1000),
+            )
+        }
+        left.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
+        left.lastAppliedLayoutVirtualRect = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
+        right.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 500, topLeftY: 0, width: 500, height: 1000)
+        right.lastAppliedLayoutVirtualRect = Rect(topLeftX: 500, topLeftY: 0, width: 500, height: 1000)
+
+        // Live size change (edge resize). If the move path ran, it would nil lastApplied.
+        left.setAxFrame(CGPoint(x: 0, y: 0), CGSize(width: 650, height: 1000))
+        let live = try await liveRectForMouseResize(left)
+        XCTAssertTrue(isMouseResizeLikeDrag(lastApplied: left.lastAppliedLayoutPhysicalRect, live: live))
+
+        currentlyManipulatedWithMouseWindowId = left.windowId
+        try await resizeWithMouse(left)
+
+        XCTAssertNotNil(left.lastAppliedLayoutPhysicalRect, "resize must keep layout baseline")
+        // Still left-of-right in tiling order (no accidental swap from move path).
+        XCTAssertEqual(left.ownIndex, 0)
+        XCTAssertEqual(right.ownIndex, 1)
+        XCTAssertGreaterThan(left.hWeight, right.hWeight)
+    }
+
+    func testLiveRectPrefersWindowServerOverLastApplied() async throws {
+        let fake = FakeWSPort()
+        fake.boundsById[1] = Rect(topLeftX: 0, topLeftY: 0, width: 700, height: 400)
+        WindowServerReads.install(fake)
+        defer { WindowServerReads.install(nil) }
+
+        let workspace = Workspace.get(byName: name)
+        let window = TestWindow.new(
+            id: 1,
+            parent: workspace.rootTilingContainer,
+            adaptiveWeight: 1,
+            // AX / test rect differs from WS — live path must prefer WS
+            rect: Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400),
+        )
+        window.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400)
+
+        let live = try await liveRectForMouseResize(window)
+        XCTAssertEqual(live?.width, 700)
+        XCTAssertNotEqual(live?.width, window.lastAppliedLayoutPhysicalRect?.width)
+    }
 }
 
-/// Minimal stand-in so the test does not need a full workspace tree.
+/// Minimal stand-in so the pure helper tests do not need a full workspace tree.
 private final class TestWindowHarness {
     var lastApplied: Rect?
     var live: Rect? = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 400)
+}
+
+private final class FakeWSPort: WindowServerReadPort {
+    var boundsById: [UInt32: Rect] = [:]
+    func windowBounds(windowId: UInt32, forOverlay: Bool) -> Rect? { boundsById[windowId] }
+    func onScreenSnapshot() -> OnScreenWindowSnapshot {
+        OnScreenWindowSnapshot(levels: [:], normalStack: [])
+    }
 }

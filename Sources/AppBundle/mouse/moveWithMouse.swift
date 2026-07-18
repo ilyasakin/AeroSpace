@@ -2,7 +2,7 @@ import AppKit
 import Common
 
 @MainActor
-private var moveWithMouseTask: Task<(), any Error>? = nil
+var moveWithMouseTask: Task<(), any Error>? = nil
 
 func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
     let windowId = ax.containingWindowId()
@@ -27,6 +27,9 @@ func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableR
 
         // Stamp before light plan so session skips side-UI rebuild + follow-up heavy.
         currentlyManipulatedWithMouseWindowId = window.windowId
+        // Edge/corner resize also fires AXMoved. Route those to resize so we never wipe the
+        // layout baseline or tile-swap mid-resize (see isMouseResizeLikeDrag).
+        resizeWithMouseTask?.cancel()
         moveWithMouseTask?.cancel()
         moveWithMouseTask = Task.startUnstructured {
             try checkCancellation()
@@ -46,6 +49,13 @@ private func moveWithMouse(_ window: Window) async throws { // todo cover with t
         case .macosFullscreenWindowsContainer, .macosMinimizedWindowsContainer, .macosPopupWindowsContainer, .macosHiddenAppsWindowsContainer:
             return // Unconventional windows can't be moved with mouse
         case .tilingContainer:
+            // Edge resize changes size and origin; AX emits Moved + Resized. Do not clear
+            // lastApplied or swap tiles — that is resize-with-mouse's job.
+            let live = try await liveRectForMouseResize(window)
+            if isMouseResizeLikeDrag(lastApplied: window.lastAppliedLayoutPhysicalRect, live: live) {
+                try await resizeWithMouse(window)
+                return
+            }
             moveTilingWindow(window)
         case .unbound: return
     }
@@ -63,6 +73,8 @@ private func moveFloatingWindow(_ window: Window) async throws {
 @MainActor
 private func moveTilingWindow(_ window: Window) {
     currentlyManipulatedWithMouseWindowId = window.windowId
+    // Title-bar drag only: free the layout baseline so layout does not fight the drag visual.
+    // Must not run for resize-like drags (caller routes those to resizeWithMouse).
     window.lastAppliedLayoutPhysicalRect = nil
     let mouseLocation = mouseLocation
     let targetWorkspace = mouseLocation.monitorApproximation.activeWorkspace

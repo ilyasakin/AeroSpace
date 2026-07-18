@@ -268,6 +268,24 @@ final class MacApp: AbstractApp {
         }
     }
 
+    /// True if the AX tree has an `AXToolbar` (shallow: window children + one level).
+    /// Used to pick Tahoe's larger toolbar corner radius without Screen Recording.
+    func windowHasAxToolbar(_ windowId: UInt32, _ cm: CancellationMode) async throws -> Bool {
+        try await withWindow(windowId, cm) { window, job in
+            Self.axSubtreeHasToolbar(window, depth: 0)
+        } ?? false
+    }
+
+    private static let axToolbarRole = "AXToolbar"
+    private static func axSubtreeHasToolbar(_ el: any AxUiElementMock, depth: Int) -> Bool {
+        if el.get(Ax.roleAttr) == axToolbarRole { return true }
+        guard depth < 2, let kids = el.get(Ax.childrenAttr) else { return false }
+        for child in kids {
+            if axSubtreeHasToolbar(child, depth: depth + 1) { return true }
+        }
+        return false
+    }
+
     func isMacosNativeFullscreen(_ windowId: UInt32, _ cm: CancellationMode) async throws -> Bool? {
         try await withWindow(windowId, cm) { window, job in
             window.get(Ax.isFullscreenAttr)
