@@ -113,6 +113,29 @@ public enum RefreshSessionEvent: Sendable, CustomStringConvertible {
         return false
     }
 
+    /// AX observer notif (moved/resized/created/…). Light path is only for mouse-manipulate;
+    /// non-drag AX goes straight to heavy via `scheduleCancellableCompleteRefreshSession`.
+    public var isAx: Bool {
+        if case .ax = self { return true } else { return false }
+    }
+
+    /// Whether a *light* session should schedule follow-up heavy discovery.
+    ///
+    /// Pure focus / tiling / workspace-switch lights do **not** rediscover. Create/destroy/app/
+    /// space/activate still discover via **direct heavy** scheduling (GlobalObserver / AX create).
+    /// Config reload and mouse-up settle keep a discover follow-up / heavy because membership
+    /// or rules may have changed.
+    public var needsDiscoveryFollowUp: Bool {
+        if isQueryOnly || isFocusFollowsMouse { return false }
+        switch self {
+            case .startup, .configAutoReload, .resetManipulatedWithMouse:
+                return true
+            case .hotkeyBinding, .menuBarButton, .socketServer, .globalObserver,
+                 .globalObserverLeftMouseUp, .ax, .focusFollowsMouse:
+                return false
+        }
+    }
+
     public var description: String {
         switch self {
             case .ax(let str): "ax(\(str))"

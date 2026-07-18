@@ -15,6 +15,8 @@ func resizedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutabl
             scheduleCancellableCompleteRefreshSession(.ax(notif))
             return
         }
+        // Stamp before light plan so session skips side-UI rebuild + follow-up heavy.
+        currentlyManipulatedWithMouseWindowId = window.windowId
         resizeWithMouseTask?.cancel()
         resizeWithMouseTask = Task.startUnstructured {
             try checkCancellation()

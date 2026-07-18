@@ -23,13 +23,44 @@ enum AxPermissionStatus: Equatable {
     case waitingWithPrompt
 }
 
+/// Cheap tray identity: what the menu-bar label actually depends on for hover focus.
+/// (Per-window focus within the same workspace does not change the tray strip.)
+struct TrayVisibleFingerprint: Equatable {
+    var focusWorkspace: String
+    var mode: String?
+    var monitorActiveWorkspaces: [String]
+}
+
+/// Pure policy: FFM may skip the full leaf walk when visible tray state is unchanged.
+func trayUpdateCanSkip(
+    fullLeafWalk: Bool,
+    previous: TrayVisibleFingerprint?,
+    next: TrayVisibleFingerprint,
+) -> Bool {
+    !fullLeafWalk && previous == next
+}
+
+@MainActor private var lastTrayVisibleFingerprint: TrayVisibleFingerprint?
+
 /// Rebuild tray label + menu models from the tree. Called from every light/heavy session, so it
 /// must stay cheap: one leaf walk per workspace (not three), and skip @Published writes when
 /// nothing changed (avoids SwiftUI view invalidation on no-op focus/AX refreshes).
-@MainActor func updateTrayText() {
+///
+/// - Parameter fullLeafWalk: When false (FFM), skip the full leaf walk unless the visible
+///   workspace/mode fingerprint changed — hover within a workspace is a no-op for the tray.
+@MainActor func updateTrayText(fullLeafWalk: Bool = true) {
     let sortedMonitors = sortedMonitors
     let focus = focus
     let multiMonitor = sortedMonitors.count > 1
+    let fingerprint = TrayVisibleFingerprint(
+        focusWorkspace: focus.workspace.name,
+        mode: activeMode?.takeIf { $0 != mainModeId },
+        monitorActiveWorkspaces: sortedMonitors.map(\.activeWorkspace.name),
+    )
+    if trayUpdateCanSkip(fullLeafWalk: fullLeafWalk, previous: lastTrayVisibleFingerprint, next: fingerprint) {
+        return
+    }
+    lastTrayVisibleFingerprint = fingerprint
 
     // Single pass over sorted workspaces (menu order). Collect apps + fullscreen in one walk
     var workspaceModels: [WorkspaceViewModel] = []

@@ -15,6 +15,8 @@ func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableR
             scheduleCancellableCompleteRefreshSession(.ax(notif))
             return
         }
+        // Stamp before light plan so session skips side-UI rebuild + follow-up heavy.
+        currentlyManipulatedWithMouseWindowId = window.windowId
         moveWithMouseTask?.cancel()
         moveWithMouseTask = Task.startUnstructured {
             try checkCancellation()

@@ -43,9 +43,12 @@ func runLightSession<T>(
     _: RunSessionGuard,
     body: @MainActor () async throws -> T,
 ) async throws -> T {
-    try await SessionPipeline.runLight(
+    // Drag sessions are marked by currentlyManipulatedWithMouseWindowId (set before light entry
+    // on move/resize). Plan skips borders/status rebuild and follow-up heavy for those.
+    let mouseManipulate = event.isAx && currentlyManipulatedWithMouseWindowId != nil
+    return try await SessionPipeline.runLight(
         event,
-        plan: SessionPipeline.planLight(event: event),
+        plan: SessionPipeline.planLight(event: event, mouseManipulate: mouseManipulate),
         body: body,
     )
 }

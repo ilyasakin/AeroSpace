@@ -19,9 +19,13 @@ import Common
 /// 9. **End** — sync focus to macOS if needed; schedule follow-up heavy discovery
 ///
 /// ## Session kinds
-/// - **Light**: command path. Fast. Does not discover new windows. May schedule heavy after.
+/// - **Light**: command path. Fast. Does not discover new windows. May schedule heavy after
+///   only when `event.needsDiscoveryFollowUp` (startup/config/mouse-up settle) — not every hotkey.
 /// - **Heavy**: discovery + normalize + layout. Does not clear frames-written (protects light→heavy lag).
 /// - **Query-only light**: list/echo/test — skip layout and follow-up heavy.
+/// - **FFM light**: no layout, no borders/status, no heavy cancel; tray only if tray fingerprint changes.
+/// - **Mouse-manipulate light**: layout only (live tiling); no side-UI rebuild, no follow-up heavy
+///   (borders track via WindowServer; mouse-up runs one complete heavy).
 @MainActor
 enum SessionPipeline {
     /// Policy knobs for one session. Built from the event; not free-form at call sites.
@@ -40,10 +44,12 @@ enum SessionPipeline {
         var scheduleFollowUpHeavy: Bool
         /// optimisticallyPreLayoutWorkspaces flag for the follow-up heavy task
         var followUpOptimisticLayout: Bool
-        /// Redraw borders / group tabs / status bar (expensive; skip for high-frequency FFM)
+        /// Redraw borders / group tabs / status bar (expensive; skip FFM + mouse-drag)
         var sideUiBorders: Bool = true
         /// Update tray text / secure input
         var sideUiTray: Bool = true
+        /// Tray leaf-walk only when needed (FFM uses cheap fingerprint gate)
+        var trayFullLeafWalk: Bool = true
     }
 
     // MARK: - Plan
@@ -62,24 +68,32 @@ enum SessionPipeline {
             followUpOptimisticLayout: false,
             sideUiBorders: true,
             sideUiTray: true,
+            trayFullLeafWalk: true,
         )
     }
 
-    static func planLight(event: RefreshSessionEvent) -> Plan {
-        let queryOrFfm = event.isQueryOnly || event.isFocusFollowsMouse
+    /// Build light-session policy.
+    /// - `mouseManipulate`: continuous drag move/resize (button down + known manipulated window).
+    static func planLight(event: RefreshSessionEvent, mouseManipulate: Bool = false) -> Plan {
         let isFfm = event.isFocusFollowsMouse
+        let queryOrFfm = event.isQueryOnly || isFfm
+        let drag = mouseManipulate && event.isAx
         return Plan(
             clearFramesWritten: !isFfm, // FFM is high-frequency; skip cache churn
             optimisticLayout: false,
             discoverWindows: false,
             normalizeNativeState: false,
-            layout: !queryOrFfm,
-            scheduleFollowUpHeavy: !queryOrFfm,
+            layout: !queryOrFfm, // drag still layouts for live tiling
+            // Pure focus/geometry lights: no rediscovery. Create/destroy use direct heavy.
+            // Drag: no follow-up (mouse-up schedules one complete heavy).
+            scheduleFollowUpHeavy: !queryOrFfm && !drag && event.needsDiscoveryFollowUp,
             followUpOptimisticLayout: false,
-            // Hover focus must not redraw borders/status bar/CPU graph every move — that pegs a core
-            // and makes the CPU history chart look "crazy". Tray still updates (cheap).
-            sideUiBorders: !isFfm,
-            sideUiTray: true,
+            // Hover + drag must not rebuild borders/status/group tabs every tick.
+            // Live drag geometry is WindowServer → WindowBordersManager.handleWindowMoved.
+            sideUiBorders: !isFfm && !drag,
+            // Drag: tray idle until mouse-up. FFM: tray only if focus/workspace fingerprint changes.
+            sideUiTray: !drag,
+            trayFullLeafWalk: !isFfm,
         )
     }
 
@@ -110,7 +124,7 @@ enum SessionPipeline {
 
                 // Tray can update early (focus/workspace names); borders wait until after layout
                 if plan.sideUiTray {
-                    phaseSideUiTrayAndSecureInput()
+                    phaseSideUiTrayAndSecureInput(fullLeafWalk: plan.trayFullLeafWalk)
                 }
 
                 if plan.normalizeNativeState { try await phaseNormalizeNativeState() }
@@ -171,11 +185,14 @@ enum SessionPipeline {
             let focusAfter = focus.windowOrNil
 
             if plan.sideUiTray {
-                phaseSideUiTrayAndSecureInput()
+                phaseSideUiTrayAndSecureInput(fullLeafWalk: plan.trayFullLeafWalk)
             }
             if plan.layout {
                 try await phaseLayout()
-                TreeHistory.recordLive()
+                // Skip history capture on high-frequency mouse-drag (mouse-up heavy will capture).
+                if plan.sideUiBorders || !event.isAx {
+                    TreeHistory.recordLive()
+                }
             }
 
             if plan.sideUiBorders {
@@ -234,8 +251,8 @@ enum SessionPipeline {
     }
 
     /// Phase 8a — tray / secure input (safe before or after layout)
-    private static func phaseSideUiTrayAndSecureInput() {
-        updateTrayText()
+    private static func phaseSideUiTrayAndSecureInput(fullLeafWalk: Bool = true) {
+        updateTrayText(fullLeafWalk: fullLeafWalk)
         SecureInputPanel.shared.refresh()
     }
 
