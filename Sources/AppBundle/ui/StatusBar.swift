@@ -317,9 +317,9 @@ private final class StatusBarContentView: NSView {
         var leftX: CGFloat = 8
         let height = bounds.height > 0 ? bounds.height : CGFloat(config.height)
 
-        // Sample once per rebuild so left+right share the same history snapshot.
-        let cpuHistory = StatusBarCpuSampler.shared.sample()
-        let gpuHistory = StatusBarGpuSampler.shared.sample()
+        // Use last timer sample — do not Mach-sample on every redraw (FFM used to spam refresh()).
+        let cpuHistory = StatusBarCpuSampler.shared.currentHistory
+        let gpuHistory = StatusBarGpuSampler.shared.currentHistory
 
         enum Placeable {
             case text(String, bg: NSColor?, fg: NSColor, action: (() -> Void)?)

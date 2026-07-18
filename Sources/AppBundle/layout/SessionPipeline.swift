@@ -40,6 +40,10 @@ enum SessionPipeline {
         var scheduleFollowUpHeavy: Bool
         /// optimisticallyPreLayoutWorkspaces flag for the follow-up heavy task
         var followUpOptimisticLayout: Bool
+        /// Redraw borders / group tabs / status bar (expensive; skip for high-frequency FFM)
+        var sideUiBorders: Bool = true
+        /// Update tray text / secure input
+        var sideUiTray: Bool = true
     }
 
     // MARK: - Plan
@@ -56,19 +60,26 @@ enum SessionPipeline {
             layout: layout,
             scheduleFollowUpHeavy: false,
             followUpOptimisticLayout: false,
+            sideUiBorders: true,
+            sideUiTray: true,
         )
     }
 
     static func planLight(event: RefreshSessionEvent) -> Plan {
         let queryOrFfm = event.isQueryOnly || event.isFocusFollowsMouse
+        let isFfm = event.isFocusFollowsMouse
         return Plan(
-            clearFramesWritten: true,
+            clearFramesWritten: !isFfm, // FFM is high-frequency; skip cache churn
             optimisticLayout: false,
             discoverWindows: false,
             normalizeNativeState: false,
             layout: !queryOrFfm,
             scheduleFollowUpHeavy: !queryOrFfm,
             followUpOptimisticLayout: false,
+            // Hover focus must not redraw borders/status bar/CPU graph every move — that pegs a core
+            // and makes the CPU history chart look "crazy". Tray still updates (cheap).
+            sideUiBorders: !isFfm,
+            sideUiTray: true,
         )
     }
 
@@ -98,13 +109,17 @@ enum SessionPipeline {
                 gcMonitors()
 
                 // Tray can update early (focus/workspace names); borders wait until after layout
-                phaseSideUiTrayAndSecureInput()
+                if plan.sideUiTray {
+                    phaseSideUiTrayAndSecureInput()
+                }
 
                 if plan.normalizeNativeState { try await phaseNormalizeNativeState() }
                 if plan.layout { try await phaseLayout() }
                 // Immutable structural snapshot after layout (lock-screen / #1215 history)
                 TreeHistory.recordLive()
-                phaseSideUiBorders()
+                if plan.sideUiBorders {
+                    phaseSideUiBorders()
+                }
             }
         }
         switch res {
@@ -145,19 +160,27 @@ enum SessionPipeline {
             }
             let focusBefore = focus.windowOrNil
 
-            await phaseModelHygiene()
+            // FFM: single hygiene pass after body (focus already set in body). Full light sessions
+            // still bookend body so callbacks see before/after.
+            if !event.isFocusFollowsMouse {
+                await phaseModelHygiene()
+            }
             let result = try await body()
             await phaseModelHygiene()
 
             let focusAfter = focus.windowOrNil
 
-            phaseSideUiTrayAndSecureInput()
+            if plan.sideUiTray {
+                phaseSideUiTrayAndSecureInput()
+            }
             if plan.layout {
                 try await phaseLayout()
                 TreeHistory.recordLive()
             }
 
-            phaseSideUiBorders()
+            if plan.sideUiBorders {
+                phaseSideUiBorders()
+            }
 
             if focusBefore != focusAfter {
                 focusAfter?.nativeFocus() // syncFocusToMacOs

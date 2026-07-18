@@ -65,16 +65,27 @@ final class StatusBarCpuSampler {
     static let shared = StatusBarCpuSampler()
     /// ~30s of history at 1 Hz.
     static let historyCapacity = 30
+    /// Don't sample faster than this even if refresh() is called spammed (e.g. old FFM path).
+    static let minSampleInterval: TimeInterval = 0.9
 
     private var previousTicks: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)] = []
     private(set) var lastLoads: [Double] = []
     /// Oldest → newest samples.
     private(set) var history: [[Double]] = []
+    private var lastSampleAt: TimeInterval = 0
 
     private init() {}
 
+    /// Latest history without taking a new Mach sample (for redraws that must not burn CPU).
+    var currentHistory: CpuHistory { CpuHistory(samples: history) }
+
     @discardableResult
-    func sample() -> CpuHistory {
+    func sample(force: Bool = false) -> CpuHistory {
+        let now = ProcessInfo.processInfo.systemUptime
+        if !force, lastSampleAt > 0, now - lastSampleAt < Self.minSampleInterval {
+            return CpuHistory(samples: history)
+        }
+        lastSampleAt = now
         guard let ticks = readCpuTicks() else {
             return CpuHistory(samples: history)
         }
@@ -140,13 +151,22 @@ struct GpuHistory: Equatable, Sendable {
 final class StatusBarGpuSampler {
     static let shared = StatusBarGpuSampler()
     static let historyCapacity = 30
+    static let minSampleInterval: TimeInterval = 0.9
 
     private(set) var last: GpuLoad = GpuLoad(utilization: nil, name: nil)
     private(set) var history: [Double] = []
+    private var lastSampleAt: TimeInterval = 0
     private init() {}
 
+    var currentHistory: GpuHistory { GpuHistory(samples: history, lastKnown: last.utilization) }
+
     @discardableResult
-    func sample() -> GpuHistory {
+    func sample(force: Bool = false) -> GpuHistory {
+        let now = ProcessInfo.processInfo.systemUptime
+        if !force, lastSampleAt > 0, now - lastSampleAt < Self.minSampleInterval {
+            return GpuHistory(samples: history, lastKnown: last.utilization)
+        }
+        lastSampleAt = now
         last = readGpuLoad() ?? last
         if let u = last.utilization {
             history.append(u)

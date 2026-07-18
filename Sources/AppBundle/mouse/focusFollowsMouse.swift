@@ -3,6 +3,9 @@ import ApplicationServices
 
 @MainActor private var focusFollowsMouseMonitor: Any? = nil
 @MainActor private var focusFollowsTask: Task<(), any Error>? = nil
+/// Last window id we successfully focused via FFM — cheap skip without full tree focus lookup.
+@MainActor private var focusFollowsLastFocusedId: UInt32? = nil
+@MainActor private var focusFollowsLastPoint: CGPoint = .init(x: -1, y: -1)
 
 @MainActor func syncFocusFollowsMouse(_ config: Config) {
     if config.focusFollowsMouse.enabled == (focusFollowsMouseMonitor != nil) {
@@ -14,54 +17,78 @@ import ApplicationServices
         focusFollowsMouseMonitor = nil
         focusFollowsTask?.cancel()
         focusFollowsTask = nil
+        focusFollowsLastFocusedId = nil
         return
     }
 
     // Interestingly, this callback seems to not fire when the mouse is down which is good,
     // because this is how I want it to work for windows/tabs/files dragging
     focusFollowsMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { @MainActor _ in
-        // Prefer the shared mouseLocation helper (same coord system as layout rects / monitors).
         let location = mouseLocation
+        // Ignore sub-pixel jitter / tiny moves that still spam mouseMoved.
+        let dx = location.x - focusFollowsLastPoint.x
+        let dy = location.y - focusFollowsLastPoint.y
+        if dx * dx + dy * dy < 2.25 { // < 1.5pt
+            return
+        }
+        focusFollowsLastPoint = location
+
         focusFollowsTask?.cancel()
         focusFollowsTask = Task.startUnstructured { @MainActor in
             guard let token: RunSessionGuard = .isServerEnabled else { return }
             try checkCancellation()
-            // Ignores macOS menubar dropdown, but, unfortunately, it doesn't ignore non-native menu-like fake windows.
-            // Overlay panels (status bar / tab bar / borders) are our pid — treated as nil, not false.
-            // AX re-enters AppKit hitTest off MainActor; overlay hitTest is nonisolated to avoid SIGTRAP.
-            if await isAxWindowUnderMouse(location) == false { return }
-            try checkCancellation()
 
-            guard let window = try await windowUnderMouse(location) else { return }
-            // Same window already focused — skip a redundant session.
-            if window.windowId == focus.windowOrNil?.windowId { return }
-            try checkCancellation()
-            try await runLightSession(.focusFollowsMouse, token) {
-                _ = window.focusWindow()
-                window.nativeFocus()
+            // 1) Cheap geometry only — no AX. Most moves stay inside the same tile.
+            guard let window = windowUnderMouseCheap(location) else {
+                // 2) Optional AX fallback when layout rects miss (rare after layout is warm).
+                try checkCancellation()
+                if await isAxWindowUnderMouse(location) == false { return }
+                guard let window = try await windowUnderMouseAxFallback(location) else { return }
+                try await focusFollowsApply(window, token: token)
+                return
             }
+
+            // Already focused — zero session work (this is the hot path while moving inside a window).
+            if window.windowId == focusFollowsLastFocusedId
+                || window.windowId == focus.windowOrNil?.windowId
+            {
+                focusFollowsLastFocusedId = window.windowId
+                return
+            }
+
+            // 3) Menu / desktop filter only when we are about to change focus (not every pixel).
+            try checkCancellation()
+            if await isAxWindowUnderMouse(location) == false { return }
+
+            try await focusFollowsApply(window, token: token)
         }
     }
 }
 
-/// Resolve the AeroSpace-managed window under `location` (AeroSpace top-left coords).
 @MainActor
-private func windowUnderMouse(_ location: CGPoint) async throws -> Window? {
+private func focusFollowsApply(_ window: Window, token: RunSessionGuard) async throws {
+    try checkCancellation()
+    try await runLightSession(.focusFollowsMouse, token) {
+        _ = window.focusWindow()
+        window.nativeFocus()
+    }
+    focusFollowsLastFocusedId = window.windowId
+}
+
+/// Geometry-only hit test using layout rects (no AX). Fast enough for every mouse-move settle.
+@MainActor
+private func windowUnderMouseCheap(_ location: CGPoint) -> Window? {
     let workspace = location.monitorApproximation.activeWorkspace
 
-    // Floating (MRU order)
     for child in workspace.floatingWindowsContainer.mruChildren {
-        try checkCancellation()
         guard let child = child as? Window else { continue }
-        if let rect = child.lastAppliedLayoutPhysicalRect, rect.contains(location) {
+        if let rect = child.lastAppliedLayoutPhysicalRect ?? child.lastAppliedLayoutVirtualRect,
+           rect.contains(location)
+        {
             return child
         }
-        guard let rect = try await child.getAxRect(.cancellable) else { continue }
-        if rect.contains(location) { return child }
     }
 
-    // Tiling: physical layout rects, then virtual, then AX fallback when rects are missing
-    // (e.g. before the first successful layout pass finishes — common right after startup).
     if let w = location.findWindowRecursively(
         in: workspace.rootTilingContainer,
         virtual: false,
@@ -69,14 +96,23 @@ private func windowUnderMouse(_ location: CGPoint) async throws -> Window? {
     ) {
         return w
     }
-    if let w = location.findWindowRecursively(
+    return location.findWindowRecursively(
         in: workspace.rootTilingContainer,
         virtual: true,
         fullscreenCoversAll: true,
-    ) {
-        return w
-    }
+    )
+}
 
+/// AX rect scan — only when cheap geometry found nothing.
+@MainActor
+private func windowUnderMouseAxFallback(_ location: CGPoint) async throws -> Window? {
+    let workspace = location.monitorApproximation.activeWorkspace
+    for child in workspace.floatingWindowsContainer.mruChildren {
+        try checkCancellation()
+        guard let child = child as? Window else { continue }
+        guard let rect = try await child.getAxRect(.cancellable) else { continue }
+        if rect.contains(location) { return child }
+    }
     for w in workspace.allLeafWindowsRecursive {
         try checkCancellation()
         guard let rect = try await w.getAxRect(.cancellable) else { continue }
@@ -89,14 +125,11 @@ private func windowUnderMouse(_ location: CGPoint) async throws -> Window? {
 private nonisolated func isAxWindowUnderMouse(_ location: CGPoint) async -> Bool? {
     let systemwide = AXUIElementCreateSystemWide()
     var element: AXUIElement?
-    // AX uses the same top-left main-display space as AeroSpace layout rects / mouseLocation.
     if unsafe AXUIElementCopyElementAtPosition(systemwide, Float(location.x), Float(location.y), &element) != .success {
         return nil
     }
     guard let element else { return nil }
 
-    // Our HUD overlays sit above real windows in the AX z-order. If AX lands on our process,
-    // don't report false (that aborted all focus-follows-mouse after the bar shipped).
     var pid: pid_t = 0
     if AXUIElementGetPid(element, &pid) == .success, pid == getpid() {
         return nil

@@ -50,5 +50,16 @@ final class SessionPipelineTest: XCTestCase {
         let plan = SessionPipeline.planLight(event: .focusFollowsMouse)
         XCTAssertFalse(plan.layout)
         XCTAssertFalse(plan.scheduleFollowUpHeavy)
+        // High-frequency hover must not thrash borders/status bar/CPU sampling every move.
+        XCTAssertFalse(plan.clearFramesWritten)
+        XCTAssertFalse(plan.sideUiBorders)
+        XCTAssertTrue(plan.sideUiTray)
+    }
+
+    func testHotkeyLightStillRunsSideUi() {
+        let plan = SessionPipeline.planLight(event: .hotkeyBinding)
+        XCTAssertTrue(plan.sideUiBorders)
+        XCTAssertTrue(plan.sideUiTray)
+        XCTAssertTrue(plan.clearFramesWritten)
     }
 }
