@@ -57,12 +57,45 @@ func statusBarShouldShowWorkspace(isEmpty: Bool, isFocused: Bool, hideEmpty: Boo
 // MARK: - Pure module text builders (unit-testable)
 
 enum StatusBarClock {
-    /// `HH:mm` local time.
-    static func text(date: Date = Date(), calendar: Calendar = .current) -> String {
-        let h = calendar.component(.hour, from: date)
-        let m = calendar.component(.minute, from: date)
-        return String(format: "%02d:%02d", h, m)
+    /// Format local time with a `strftime`-style pattern (Sketchybar-compatible).
+    /// Supported tokens: `%H` `%M` `%S` `%d` `%m` `%Y` `%y` `%%`. Unknown tokens pass through.
+    static func text(
+        date: Date = Date(),
+        calendar: Calendar = .current,
+        format: String = "%H:%M",
+    ) -> String {
+        statusBarFormatClock(date: date, calendar: calendar, format: format)
     }
+}
+
+/// Pure clock formatter for unit tests.
+func statusBarFormatClock(date: Date, calendar: Calendar, format: String) -> String {
+    var out = ""
+    var i = format.startIndex
+    while i < format.endIndex {
+        let ch = format[i]
+        if ch == "%", format.index(after: i) < format.endIndex {
+            let next = format[format.index(after: i)]
+            switch next {
+                case "H": out += String(format: "%02d", calendar.component(.hour, from: date))
+                case "M": out += String(format: "%02d", calendar.component(.minute, from: date))
+                case "S": out += String(format: "%02d", calendar.component(.second, from: date))
+                case "d": out += String(format: "%02d", calendar.component(.day, from: date))
+                case "m": out += String(format: "%02d", calendar.component(.month, from: date))
+                case "Y": out += String(format: "%04d", calendar.component(.year, from: date))
+                case "y": out += String(format: "%02d", calendar.component(.year, from: date) % 100)
+                case "%": out += "%"
+                default:
+                    out.append(ch)
+                    out.append(next)
+            }
+            i = format.index(i, offsetBy: 2)
+            continue
+        }
+        out.append(ch)
+        i = format.index(after: i)
+    }
+    return out
 }
 
 enum StatusBarBattery {
@@ -240,7 +273,7 @@ enum StatusBarNetwork {
 @MainActor
 func statusBarSystemModuleText(_ id: String) -> String? {
     switch id {
-        case "clock": return StatusBarClock.text()
+        case "clock": return StatusBarClock.text(format: config.statusBar.clockFormat)
         case "battery": return StatusBarBattery.text(from: StatusBarBattery.liveSnapshot())
         // cpu / gpu render as graphs — optional text fallback for tests / external use
         case "cpu":

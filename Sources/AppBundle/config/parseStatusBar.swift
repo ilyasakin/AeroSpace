@@ -21,6 +21,8 @@ struct StatusBarConfig: ConvenienceMutable, Equatable, Sendable {
     var focusedBackground: String = "#89b4fa"
     var focusedForeground: String = "#1e1e2e"
     var fontSize: Int = 12
+    /// `strftime`-style clock format (e.g. `%H:%M`, `%d/%m %H:%M`). Sketchybar-compatible subset.
+    var clockFormat: String = "%H:%M"
 
     static let disabled = StatusBarConfig()
 }
@@ -38,6 +40,7 @@ private let statusBarParser: [String: any ParserProtocol<StatusBarConfig>] = [
     "focused-background": Parser(\.focusedBackground, parseString),
     "focused-foreground": Parser(\.focusedForeground, parseString),
     "font-size": Parser(\.fontSize, parseInt),
+    "clock-format": Parser(\.clockFormat, parseString),
 ]
 
 func parseStatusBar(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> StatusBarConfig {

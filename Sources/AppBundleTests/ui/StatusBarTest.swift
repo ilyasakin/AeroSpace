@@ -50,8 +50,12 @@ final class StatusBarNativeModulesTest: XCTestCase {
     func testClockFormat() {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: 0)!
-        let date = Date(timeIntervalSince1970: 0) // 00:00 UTC
+        let date = Date(timeIntervalSince1970: 0) // 00:00 UTC 1 Jan 1970
         assertEquals(StatusBarClock.text(date: date, calendar: cal), "00:00")
+        assertEquals(
+            StatusBarClock.text(date: date, calendar: cal, format: "%d/%m %H:%M"),
+            "01/01 00:00",
+        )
     }
 
     func testBatteryText() {

@@ -164,6 +164,20 @@ struct BarSettingsTab: View {
                             Spacer()
                             IntField(value: model.intBinding(["bar"], "font-size", get: \.statusBar.fontSize))
                         }
+                        HStack {
+                            Text("Clock format")
+                            Spacer()
+                            TextField(
+                                "%H:%M",
+                                text: model.stringChoiceBinding(["bar"], "clock-format", get: \.statusBar.clockFormat),
+                            )
+                            .frame(width: 140)
+                            .multilineTextAlignment(.trailing)
+                            .font(.system(.body, design: .monospaced))
+                        }
+                        Text("strftime-style: %H %M %S %d %m %Y %y  (e.g. %d/%m %H:%M)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
                     SettingsSection(title: "Workspaces module") {
