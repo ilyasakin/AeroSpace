@@ -10,12 +10,25 @@ func resizedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutabl
     Task.startUnstructured { @MainActor in
         guard let token: RunSessionGuard = .isServerEnabled else { return }
         let window = windowId.flatMap { Window.get(byId: $0) }
-        (window as? MacWindow)?.invalidateAxFrameCaches()
-        guard let window, try await isManipulatedWithMouse(window) else {
+        guard let window else { return }
+
+        let mouseResize: Bool
+        do {
+            mouseResize = try await isManipulatedWithMouse(window)
+        } catch {
+            return
+        }
+
+        if !mouseResize {
+            // Non-drag resize (app-driven): drop frame caches and rediscover/layout.
+            (window as? MacWindow)?.invalidateAxFrameCaches()
             scheduleCancellableCompleteRefreshSession(.ax(notif))
             return
         }
-        // Stamp before light plan so session skips side-UI rebuild + follow-up heavy.
+
+        // Mouse-drag resize: keep lastAppliedLayoutPhysicalRect — it is the *layout baseline*
+        // compared against the live AX/WS frame to compute weight diffs. Invalidating it here
+        // made every drag tick early-return (diff baseline was always nil).
         currentlyManipulatedWithMouseWindowId = window.windowId
         resizeWithMouseTask?.cancel()
         resizeWithMouseTask = Task.startUnstructured {
@@ -40,6 +53,12 @@ func resetManipulatedWithMouseIfPossible() async throws {
 
 private let adaptiveWeightBeforeResizeWithMouseKey = TreeNodeUserDataKey<CGFloat>(key: "adaptiveWeightBeforeResizeWithMouseKey")
 
+/// Whether mouse-resize can compute weight diffs: needs a layout baseline and a live frame.
+/// Pure helper so tests lock the invariant that invalidating lastApplied before drag breaks resize.
+func resizeWithMouseCanApplyDiffs(lastApplied: Rect?, live: Rect?) -> Bool {
+    lastApplied != nil && live != nil
+}
+
 @MainActor
 private func resizeWithMouse(_ window: Window) async throws { // todo cover with tests
     resetClosedWindowsCache()
@@ -49,8 +68,14 @@ private func resizeWithMouse(_ window: Window) async throws { // todo cover with
              .macosPopupWindowsContainer, .macosHiddenAppsWindowsContainer:
             return // Nothing to do for floating, or unconventional windows
         case .tilingContainer:
+            // Live frame (WS/AX). Baseline must remain lastApplied from layout — do not invalidate it
+            // on the mouse-drag path (see resizedObs).
             guard let rect = try await window.getAxRect(.cancellable) else { return }
             guard let lastAppliedLayoutRect = window.lastAppliedLayoutPhysicalRect else { return }
+            assert(
+                resizeWithMouseCanApplyDiffs(lastApplied: lastAppliedLayoutRect, live: rect),
+                "mouse resize requires layout baseline + live frame",
+            )
             let (lParent, lOwnIndex) = window.closestParent(hasChildrenInDirection: .left, withLayout: .tiles) ?? (nil, nil)
             let (dParent, dOwnIndex) = window.closestParent(hasChildrenInDirection: .down, withLayout: .tiles) ?? (nil, nil)
             let (uParent, uOwnIndex) = window.closestParent(hasChildrenInDirection: .up, withLayout: .tiles) ?? (nil, nil)

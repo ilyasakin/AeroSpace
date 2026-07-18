@@ -10,11 +10,21 @@ func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableR
     Task.startUnstructured { @MainActor in
         guard let token: RunSessionGuard = .isServerEnabled else { return }
         let window = windowId.flatMap { Window.get(byId: $0) }
-        (window as? MacWindow)?.invalidateAxFrameCaches()
-        guard let window, try await isManipulatedWithMouse(window) else {
+        guard let window else { return }
+
+        let mouseMove: Bool
+        do {
+            mouseMove = try await isManipulatedWithMouse(window)
+        } catch {
+            return
+        }
+
+        if !mouseMove {
+            (window as? MacWindow)?.invalidateAxFrameCaches()
             scheduleCancellableCompleteRefreshSession(.ax(notif))
             return
         }
+
         // Stamp before light plan so session skips side-UI rebuild + follow-up heavy.
         currentlyManipulatedWithMouseWindowId = window.windowId
         moveWithMouseTask?.cancel()
