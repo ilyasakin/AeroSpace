@@ -367,7 +367,7 @@ final class LayoutCommandTest: XCTestCase {
 
         await parseCommand("layout floating").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertTrue(w2.isFloating)
-        assertTrue(w2.isAlwaysOnTop)
+        assertFalse(w2.isAlwaysOnTop, "floating must not lock always-on-top (blocks tile interaction)")
         assertNotNil(w2.floatingRestoreSlot)
         // Remaining tiles keep order 1, 3
         assertEquals(
@@ -375,14 +375,14 @@ final class LayoutCommandTest: XCTestCase {
             [1, 3],
         )
 
-        // Focus another tile (interact without destroying restore slot)
+        // Focus another tile while float is open — restore slot stays valid
         assertEquals(w1.focusWindow(), true)
         assertTrue(w2.isFloating)
+        assertNotNil(w2.floatingRestoreSlot)
 
         assertEquals(w2.focusWindow(), true)
         await parseCommand("layout tiling").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertFalse(w2.isFloating)
-        assertFalse(w2.isAlwaysOnTop)
         assertNil(w2.floatingRestoreSlot)
         // Original order restored: 1, 2, 3 — not 1, 3, 2 (MRU-append)
         assertEquals(

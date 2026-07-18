@@ -71,15 +71,14 @@ struct LayoutCommand: Command {
                     case .floatingWindowsContainer(let container):
                         window.lastFloatingSize = (try? await window.getAxSize(.nonCancellable)) ?? window.lastFloatingSize
                         guard let workspace = container.nodeWorkspace else { return .fail(io.err(bugPrompt())) }
-                        // i3: unfloat re-inserts without scrambling order when possible.
+                        // Unfloat re-inserts at the original neighbor slot when possible
+                        // (sibling order unchanged — not MRU-append).
                         if let slot = window.floatingRestoreSlot {
                             window.floatingRestoreSlot = nil
-                            window.isAlwaysOnTop = false
                             if workspace.commitTilingRestoreFloatingSlot(windowId: window.windowId, slot: slot) {
                                 return .succ
                             }
                         }
-                        window.isAlwaysOnTop = false
                         do {
                             try await window.relayoutWindow(on: workspace, .nonCancellable, forceTile: true)
                         } catch {
@@ -90,16 +89,15 @@ struct LayoutCommand: Command {
             case .floating:
                 guard let window = target.windowOrNil else { return .fail(io.err(noWindowIsFocused)) }
                 let workspace = target.workspace
-                // Capture tiling slot *before* unbind so unfloat can restore order (i3 floating toggle).
+                // Capture tiling slot *before* unbind so unfloat can restore order.
                 if !window.isFloating {
                     window.floatingRestoreSlot = FloatingRestoreSlot.capture(from: window)
                 }
                 // Keep lastApplied as the current tile frame so a following resize/center in the
                 // same session can merge size+position (see MacWindow.setAxFrame / mergeFrameWrite).
+                // Do *not* force always-on-top: that only re-raises and blocks interacting with
+                // other tiles (focus works briefly, then the float is raised over them again).
                 window.bindAsFloatingWindow(to: workspace)
-                // i3: floating windows sit above the tiling layer; re-raise on focus changes.
-                window.isAlwaysOnTop = true
-                window.nativeRaise()
                 if let size = window.lastFloatingSize {
                     window.setAxFrame(nil, size)
                 }
