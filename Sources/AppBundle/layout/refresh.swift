@@ -4,12 +4,34 @@ import Common
 // Session orchestration lives in SessionPipeline.swift. This file keeps the public entry points
 // and the heavy phase implementations (discover, layout) that the pipeline calls.
 
+/// True while a heavy discovery session is scheduled or was cancelled before finishing.
+/// Light sessions that cancel a pending heavy must re-queue discovery after they finish
+/// (unless they already schedule follow-up heavy themselves).
+@MainActor var discoveryHeavyPending: Bool = false
+
+/// Bumps on every `scheduleCancellableCompleteRefreshSession` so a cancelled heavy cannot
+/// clear pending/task owned by a newer schedule.
+@MainActor private var heavyScheduleGeneration: UInt64 = 0
+
+/// Pure policy: re-queue discovery after a light that cancelled (or pre-empted) a heavy
+/// without scheduling its own follow-up.
+func sessionShouldRescheduleCancelledDiscovery(
+    discoveryHeavyPending: Bool,
+    hasActiveHeavyTask: Bool,
+    planSchedulesFollowUp: Bool,
+) -> Bool {
+    discoveryHeavyPending && !hasActiveHeavyTask && !planSchedulesFollowUp
+}
+
 @MainActor
 func scheduleCancellableCompleteRefreshSession(
     _ event: RefreshSessionEvent,
     optimisticallyPreLayoutWorkspaces: Bool = false,
 ) {
     activeRefreshTask?.cancel()
+    discoveryHeavyPending = true
+    heavyScheduleGeneration &+= 1
+    let generation = heavyScheduleGeneration
     activeRefreshTask = Task.startUnstructured { @MainActor in
         try checkCancellation()
         await runHeavyCompleteRefreshSession(
@@ -17,6 +39,10 @@ func scheduleCancellableCompleteRefreshSession(
             assumeCancellable: true,
             optimisticallyPreLayoutWorkspaces: optimisticallyPreLayoutWorkspaces,
         )
+        // Only the latest schedule may clear pending / the task handle.
+        guard generation == heavyScheduleGeneration else { return }
+        discoveryHeavyPending = false
+        activeRefreshTask = nil
     }
 }
 

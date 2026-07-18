@@ -135,4 +135,54 @@ final class SessionPipelineTest: XCTestCase {
         // First call (no previous) never skips
         XCTAssertFalse(trayUpdateCanSkip(fullLeafWalk: false, previous: nil, next: fp))
     }
+
+    func testCancelledHeavyIsRescheduledAfterNonDiscoveryLight() {
+        // Hotkey (no follow-up) cancelled an in-flight create/activate/mouse-up heavy →
+        // must re-queue discovery so the window is not left unregistered.
+        let plan = SessionPipeline.planLight(event: .hotkeyBinding)
+        XCTAssertFalse(plan.scheduleFollowUpHeavy)
+        XCTAssertTrue(sessionShouldRescheduleCancelledDiscovery(
+            discoveryHeavyPending: true,
+            hasActiveHeavyTask: false,
+            planSchedulesFollowUp: plan.scheduleFollowUpHeavy,
+        ))
+        // No pending obligation → no reschedule
+        XCTAssertFalse(sessionShouldRescheduleCancelledDiscovery(
+            discoveryHeavyPending: false,
+            hasActiveHeavyTask: false,
+            planSchedulesFollowUp: false,
+        ))
+        // Heavy still running (FFM did not cancel) → do not double-schedule
+        XCTAssertFalse(sessionShouldRescheduleCancelledDiscovery(
+            discoveryHeavyPending: true,
+            hasActiveHeavyTask: true,
+            planSchedulesFollowUp: false,
+        ))
+        // Light already schedules follow-up → that path owns the re-queue
+        XCTAssertFalse(sessionShouldRescheduleCancelledDiscovery(
+            discoveryHeavyPending: true,
+            hasActiveHeavyTask: false,
+            planSchedulesFollowUp: true,
+        ))
+        // Mouse-up settle plan still wants discovery follow-up when used as light
+        let mouseUp = SessionPipeline.planLight(event: .resetManipulatedWithMouse)
+        XCTAssertTrue(mouseUp.scheduleFollowUpHeavy)
+    }
+
+    func testDragLightDoesNotRescheduleUnlessPending() {
+        let plan = SessionPipeline.planLight(event: .ax("AXWindowMoved"), mouseManipulate: true)
+        XCTAssertFalse(plan.scheduleFollowUpHeavy)
+        // During drag with no cancelled heavy, stay quiet (mouse-up schedules complete heavy).
+        XCTAssertFalse(sessionShouldRescheduleCancelledDiscovery(
+            discoveryHeavyPending: false,
+            hasActiveHeavyTask: false,
+            planSchedulesFollowUp: plan.scheduleFollowUpHeavy,
+        ))
+        // If mouse-up heavy was scheduled then a concurrent light cancelled it, re-queue.
+        XCTAssertTrue(sessionShouldRescheduleCancelledDiscovery(
+            discoveryHeavyPending: true,
+            hasActiveHeavyTask: false,
+            planSchedulesFollowUp: plan.scheduleFollowUpHeavy,
+        ))
+    }
 }

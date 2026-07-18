@@ -157,12 +157,15 @@ enum SessionPipeline {
         )
         defer { signposter.endInterval("SessionPipeline.light", state) }
 
-        // Focus-follows-mouse fires continuously; canceling heavy here starved layout/discovery
-        // until a workspace switch (or other non-FFM session) finally completed. That matched
-        // "FFM dead until I switch spaces" reports.
+        // Focus-follows-mouse must not cancel heavy (starves discovery until a non-FFM session).
+        // Other lights may cancel a pending heavy for priority — but then we re-queue discovery
+        // after the light if nothing else schedules follow-up (see sessionShouldRescheduleCancelledDiscovery).
         if !event.isFocusFollowsMouse {
-            activeRefreshTask?.cancel() // Give priority to light session over pending heavy
-            activeRefreshTask = nil
+            if activeRefreshTask != nil {
+                activeRefreshTask?.cancel()
+                activeRefreshTask = nil
+                // discoveryHeavyPending stays true if a heavy was scheduled (obligation not met).
+            }
         }
 
         phaseBegin(clearFramesWritten: plan.clearFramesWritten)
@@ -207,6 +210,14 @@ enum SessionPipeline {
                     event,
                     optimisticallyPreLayoutWorkspaces: plan.followUpOptimisticLayout,
                 )
+            } else if sessionShouldRescheduleCancelledDiscovery(
+                discoveryHeavyPending: discoveryHeavyPending,
+                hasActiveHeavyTask: activeRefreshTask != nil,
+                planSchedulesFollowUp: plan.scheduleFollowUpHeavy,
+            ) {
+                // Pure geometry/focus light cancelled a create/destroy/activate/mouse-up heavy —
+                // re-queue one complete discovery so windows are not left unregistered.
+                scheduleCancellableCompleteRefreshSession(event)
             }
             return result
         }
