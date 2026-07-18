@@ -256,7 +256,8 @@ private func gradientPoints(angleDegrees: Double) -> (CGPoint, CGPoint) {
 /// WindowServer move/resize callback (runs on the thread that registered it - the main thread).
 /// `data` points to the moved window's CGWindowID. Handing it straight to the manager is how border
 /// masks track a live drag at the display's refresh rate instead of waiting for AeroSpace's refresh.
-/// Also drives mouse-resize sibling reflow (~60fps) via `MouseResizeDriver`.
+/// Also starts mouse-resize gestures; reflow is paced by `WorkspaceDisplayLink` on the
+/// workspace’s screen Hz (see `DisplayRefresh`).
 let windowBordersEventProc: SkyLight.NotifyProc = { _, data, _, _ in
     guard let data else { return }
     let windowId = data.load(as: UInt32.self)
@@ -427,8 +428,8 @@ final class WindowBordersManager {
     /// 3. Mark dirty via epoch + ContiguousArray append — no Set, no region snapshot array
     /// 4. Coalesce all events in this run-loop turn into ONE Core Animation transaction
     func handleWindowMoved(windowId: UInt32) {
-        // Display-rate samples of the drag target drive sibling reflow (~60fps). Must run even
-        // when borders are disabled so resize smoothness does not depend on the overlay.
+        // Drag-target WS events start/continue mouse-resize; vsync pacing is DisplayRefresh /
+        // WorkspaceDisplayLink for the workspace’s screen. Must run even when borders are off.
         MouseResizeDriver.noteWindowServerFrame(windowId: windowId)
 
         guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }

@@ -99,21 +99,30 @@ final class ResizeWithMouseTest: XCTestCase {
     }
 
     func testNominalRefreshHzPrefersScreenMaximumFramesPerSecond() {
-        // Build a dummy CVDisplayLink on the main display for the fallback path.
         var link: CVDisplayLink?
         XCTAssertEqual(CVDisplayLinkCreateWithCGDisplay(CGMainDisplayID(), &link), kCVReturnSuccess)
         guard let link else {
             XCTFail("CVDisplayLinkCreateWithCGDisplay failed")
             return
         }
-        defer { /* link is not started */ }
-        let screen = nsScreen(forDisplayId: CGMainDisplayID())
-        let hz = nominalRefreshHz(displayLink: link, screen: screen)
+        let screen = DisplayRefresh.nsScreen(forDisplayId: CGMainDisplayID())
+        let hz = DisplayRefresh.nominalRefreshHz(displayLink: link, screen: screen)
         XCTAssertGreaterThanOrEqual(hz, 30)
         XCTAssertLessThanOrEqual(hz, 500)
         if let screen, screen.maximumFramesPerSecond > 0 {
             XCTAssertEqual(hz, Double(screen.maximumFramesPerSecond), accuracy: 0.5)
         }
+    }
+
+    func testDisplayRefreshHzForWorkspaceMatchesMonitorScreen() {
+        let ws = Workspace.get(byName: name)
+        let hz = DisplayRefresh.hz(for: ws)
+        XCTAssertGreaterThanOrEqual(hz, 30)
+        XCTAssertLessThanOrEqual(hz, 500)
+        let monitorHz = DisplayRefresh.hz(for: ws.workspaceMonitor)
+        XCTAssertEqual(hz, monitorHz, accuracy: 0.5)
+        let interval = DisplayRefresh.frameInterval(for: ws)
+        XCTAssertEqual(interval, 1.0 / hz, accuracy: 0.0001)
     }
 
     func testResizeLikeMovedPathDoesNotClearBaselineOrSwap() async throws {

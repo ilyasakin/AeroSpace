@@ -1,41 +1,38 @@
 import AppKit
 import Common
-import CoreVideo
 
-/// High-rate mouse-resize driver locked to the **host display’s refresh rate**.
+/// High-rate mouse-resize driver paced by **`WorkspaceDisplayLink`** on the workspace’s screen.
 ///
-/// AX resized/moved notifications are too sparse for smooth sibling reflow. Once a resize
-/// gesture starts we run a `CVDisplayLink` on the CGDisplay under the window and, each vsync:
+/// Policy: frame-bound work uses `DisplayRefresh` for the workspace host display — never a
+/// hard-coded 60 Hz. See `DisplayRefresh.swift`.
+///
+/// Per vsync of that display:
 /// 1. Sample the drag target’s live frame (WindowServer overlay bounds)
 /// 2. Update tile weights from the drag-start baseline
 /// 3. Layout **only** that workspace (tiling only — skip floating)
 /// 4. Sync borders from layout rects
-///
-/// WindowServer modify notifies still call `kick` so the gesture starts immediately and the
-/// link is created even if the first AX event is late; per-frame work is paced by the link.
 @MainActor
 enum MouseResizeDriver {
     private static var target: Window?
     private static var busy = false
-    /// Last live frame we applied — skip identical samples.
     private static var lastLive: Rect?
-    private static var displayLink: CVDisplayLink?
-    private static var activeDisplayId: CGDirectDisplayID = 0
-    /// Last measured nominal Hz for the active link (tests / diagnostics).
-    private(set) static var activeRefreshHz: Double = 60
+    private static let subscriptionId = UUID()
+    private static var subscribedDisplayId: CGDirectDisplayID?
+    /// Nominal Hz of the active workspace display (diagnostics).
+    private(set) static var activeRefreshHz: Double = DisplayRefresh.fallbackHz
 
     /// Enter / continue a resize gesture. Safe to call from AX or WindowServer paths.
     static func kick(_ window: Window) {
         guard window.parent is TilingContainer else { return }
         currentlyManipulatedWithMouseWindowId = window.windowId
         target = window
-        ensureDisplayLink(for: window)
+        ensureSubscribed(for: window)
         // Immediate tick so the first edge move is not delayed one frame.
         scheduleTick()
     }
 
     /// WindowServer move/resize for the drag target — starts/continues the gesture; pacing is
-    /// the display link (not every WS event).
+    /// the workspace display link (not every WS event).
     static func noteWindowServerFrame(windowId: UInt32) {
         guard currentlyManipulatedWithMouseWindowId == windowId,
               let window = Window.get(byId: windowId),
@@ -48,42 +45,35 @@ enum MouseResizeDriver {
     static func stop() {
         target = nil
         lastLive = nil
-        stopDisplayLink()
-        activeRefreshHz = 60
-    }
-
-    // MARK: Display link (vsync of the window’s screen)
-
-    private static func ensureDisplayLink(for window: Window) {
-        let displayId = cgDisplayId(for: window) ?? CGMainDisplayID()
-        if displayLink != nil, activeDisplayId == displayId { return }
-        stopDisplayLink()
-        activeDisplayId = displayId
-
-        var link: CVDisplayLink?
-        guard CVDisplayLinkCreateWithCGDisplay(displayId, &link) == kCVReturnSuccess,
-              let link
-        else { return }
-
-        activeRefreshHz = nominalRefreshHz(displayLink: link, screen: nsScreen(forDisplayId: displayId))
-
-        CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, _ in
-            // CVDisplayLink fires off the main thread — hop to MainActor for tree/layout.
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { MouseResizeDriver.onDisplayPulse() }
-            }
-            return kCVReturnSuccess
-        }, nil)
-        CVDisplayLinkStart(link)
-        displayLink = link
-    }
-
-    private static func stopDisplayLink() {
-        if let link = displayLink {
-            CVDisplayLinkStop(link)
+        if let displayId = subscribedDisplayId {
+            WorkspaceDisplayLink.unsubscribe(displayId: displayId, id: subscriptionId)
+            subscribedDisplayId = nil
         }
-        displayLink = nil
-        activeDisplayId = 0
+        activeRefreshHz = DisplayRefresh.fallbackHz
+    }
+
+    private static func ensureSubscribed(for window: Window) {
+        let displayId = DisplayRefresh.displayId(for: window)
+            ?? window.nodeWorkspace.flatMap { DisplayRefresh.displayId(for: $0) }
+            ?? CGMainDisplayID()
+        activeRefreshHz = DisplayRefresh.hz(forDisplayId: displayId)
+
+        if subscribedDisplayId == displayId { return }
+        if let old = subscribedDisplayId {
+            WorkspaceDisplayLink.migrate(
+                id: subscriptionId,
+                from: old,
+                to: displayId,
+                onPulse: { MouseResizeDriver.onDisplayPulse() },
+            )
+        } else {
+            WorkspaceDisplayLink.subscribe(displayId: displayId, id: subscriptionId) {
+                MouseResizeDriver.onDisplayPulse()
+            }
+        }
+        subscribedDisplayId = displayId
+        activeRefreshHz = WorkspaceDisplayLink.activeRefreshHz(for: displayId)
+            ?? DisplayRefresh.hz(forDisplayId: displayId)
     }
 
     private static func onDisplayPulse() {
@@ -104,17 +94,15 @@ enum MouseResizeDriver {
         guard currentlyManipulatedWithMouseWindowId == window.windowId else { return }
         guard window.parent is TilingContainer else { return }
 
+        // Workspace may have moved monitors mid-drag — keep the link on the host display.
+        ensureSubscribed(for: window)
+
         let live = liveRectForMouseResizeSync(window)
         if let live, live == lastLive { return }
 
         let weightsChanged = applyResizeWeights(window, live: live)
         lastLive = live
-        // Always layout when weights change; also when live moved (origin-only edge) with weights.
-        guard weightsChanged || live != nil else { return }
-        guard weightsChanged else {
-            // Live sample changed but under weight threshold — still skip layout thrash.
-            return
-        }
+        guard weightsChanged else { return }
 
         guard let ws = window.nodeWorkspace else { return }
         do {
@@ -123,47 +111,6 @@ enum MouseResizeDriver {
         } catch {
             return
         }
-    }
-}
-
-// MARK: - Display identity / refresh rate
-
-/// Prefer `NSScreen.maximumFramesPerSecond` (ProMotion / high-Hz aware); fall back to the
-/// display link’s nominal period.
-func nominalRefreshHz(displayLink: CVDisplayLink, screen: NSScreen?) -> Double {
-    if let screen {
-        let fps = screen.maximumFramesPerSecond
-        if fps > 0 { return Double(fps) }
-    }
-    let period = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink)
-    if period.timeScale != 0, period.timeValue > 0 {
-        let seconds = Double(period.timeValue) / Double(period.timeScale)
-        if seconds > 0 { return 1.0 / seconds }
-    }
-    return 60
-}
-
-@MainActor
-func cgDisplayId(for window: Window) -> CGDirectDisplayID? {
-    let rect = liveRectForMouseResizeSync(window) ?? window.lastAppliedLayoutPhysicalRect
-    guard let rect else { return nil }
-    let ak = rect.toAppKitFrame()
-    let point = NSPoint(x: ak.midX, y: ak.midY)
-    guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) })
-            ?? NSScreen.screens.first
-    else { return nil }
-    return cgDisplayId(forScreen: screen)
-}
-
-func cgDisplayId(forScreen screen: NSScreen) -> CGDirectDisplayID? {
-    let key = NSDeviceDescriptionKey("NSScreenNumber")
-    return screen.deviceDescription[key] as? CGDirectDisplayID
-}
-
-func nsScreen(forDisplayId id: CGDirectDisplayID) -> NSScreen? {
-    let key = NSDeviceDescriptionKey("NSScreenNumber")
-    return NSScreen.screens.first { screen in
-        (screen.deviceDescription[key] as? CGDirectDisplayID) == id
     }
 }
 
