@@ -17,7 +17,8 @@ private struct HyprImportContext {
     var variables: [String: String] = [:]
     /// Sections whose contents are swallowed with a single diagnostic
     static let swallowedSections: Set<String> = [
-        "decoration", "animations", "input", "gestures", "misc", "dwindle", "master",
+        // decoration is partially handled (border colors) — not fully swallowed
+        "animations", "input", "gestures", "misc", "dwindle", "master",
         "binds", "xwayland", "opengl", "render", "cursor", "debug", "device", "monitor",
         "touchpad", "touchdevice", "tablet", "ecosystem", "experimental",
     ]
@@ -108,14 +109,35 @@ private struct HyprImportContext {
             case "windowrulev2", "windowrule":
                 handleWindowRule(value, isV2: key == "windowrulev2", line: line, original: original)
             case "workspace":
-                // workspace = 1, monitor:DP-1 [, default:true ...]
+                // workspace = 1, monitor:DP-1 [, default:true, persistent:true ...]
                 let parts = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                if let name = parts.first, let monitorPart = parts.first(where: { $0.hasPrefix("monitor:") }) {
+                guard let name = parts.first, !name.isEmpty else {
+                    skip(line, original, "can't parse workspace rule")
+                    return
+                }
+                var handled = false
+                if let monitorPart = parts.first(where: { $0.hasPrefix("monitor:") }) {
                     let monitor = String(monitorPart.dropFirst("monitor:".count))
                     builder.workspaceToMonitor.append((workspace: name, output: monitor))
                     note(line, original, "'\(monitor)' is a compositor connector name; macOS matches monitors by display name — replace with 'main', 'secondary', a monitor index, or a display-name regex")
-                } else {
-                    skip(line, original, "workspace rules other than monitor assignment are not supported")
+                    handled = true
+                }
+                if parts.contains(where: { $0 == "persistent:true" || $0 == "persistent:1" }) {
+                    builder.persistentWorkspaces.append(name)
+                    handled = true
+                }
+                if parts.contains(where: { $0.hasPrefix("default:") }) {
+                    note(line, original, "default workspace-on-created is not modeled separately; use persistent workspaces + force-assignment")
+                    handled = true
+                }
+                let unsupported = parts.dropFirst().filter {
+                    !$0.hasPrefix("monitor:") && !$0.hasPrefix("persistent:") && !$0.hasPrefix("default:")
+                }
+                for u in unsupported {
+                    skip(line, original, "workspace rule option '\(u)' has no macOS equivalent")
+                }
+                if !handled && unsupported.isEmpty {
+                    skip(line, original, "workspace rules other than monitor/persistent assignment are not supported")
                 }
             case "gaps_in" where section == "general":
                 if let v = Int(value.split(separator: ",").first.map(String.init) ?? value) {
@@ -126,12 +148,32 @@ private struct HyprImportContext {
                 if let v = Int(value.split(separator: ",").first.map(String.init) ?? value) {
                     for side in ["left", "bottom", "top", "right"] { builder.gapsOuter[side] = v }
                 }
+            case "col.active_border" where section == "decoration" || section == "general":
+                if let style = mapHyprBorderColor(value) {
+                    builder.windowBorders.append("active-color = \(tomlString(style))")
+                } else {
+                    skip(line, original, "can't parse col.active_border")
+                }
+            case "col.inactive_border" where section == "decoration" || section == "general":
+                if let style = mapHyprBorderColor(value) {
+                    builder.windowBorders.append("inactive-color = \(tomlString(style))")
+                } else {
+                    skip(line, original, "can't parse col.inactive_border")
+                }
+            case "rounding" where section == "decoration":
+                if let v = Int(value) {
+                    builder.windowBorders.append("corner-radius = \(v)")
+                }
+            case "border_size" where section == "general":
+                if let v = Int(value) {
+                    builder.windowBorders.append("width = \(v)")
+                }
             case "layout" where section == "general":
                 switch value {
                     case "dwindle":
                         builder.tilingPolicy = "dwindle"
                     case "master":
-                        skip(line, original, "master-stack layout is not supported yet; imported as manual tiling")
+                        builder.defaultLayout = "master"
                     default:
                         skip(line, original, "unknown layout '\(value)'")
                 }
@@ -235,14 +277,25 @@ private struct HyprImportContext {
                     case "e-1", "m-1", "-1": return .success(["workspace prev"])
                     case "previous": return .success(["workspace-back-and-forth"])
                     default:
-                        if arg.hasPrefix("special") { return .failure("special workspaces are not supported; see the sticky command") }
+                        if arg.hasPrefix("special") {
+                            let name = specialWorkspaceName(arg)
+                            return .success(["toggle-special-workspace \(shellQuoteArg(name))"])
+                        }
                         return .success(["workspace \(shellQuoteArg(sanitizeWorkspace(arg)))"])
                 }
             case "movetoworkspace", "movetoworkspacesilent":
-                if arg.hasPrefix("special") { return .failure("special workspaces are not supported; see the sticky command") }
+                if arg.hasPrefix("special") {
+                    let name = specialWorkspaceName(arg)
+                    return .success(["move-node-to-workspace \(shellQuoteArg(name))"])
+                }
                 return .success(["move-node-to-workspace \(shellQuoteArg(sanitizeWorkspace(arg)))"])
             case "togglespecialworkspace":
-                return .failure("special workspaces are not supported; see the sticky command")
+                let name = arg.isEmpty ? "special" : specialWorkspaceName(arg.hasPrefix("special") ? arg : "special:\(arg)")
+                return .success(["toggle-special-workspace \(shellQuoteArg(name))"])
+            case "togglegroup":
+                return .success(["toggle-group"])
+            case "changegroupactive":
+                return .success(["focus dfs-next"])
             case "movefocus":
                 guard let direction = mapDirection(arg) else { return .failure("can't parse direction '\(arg)'") }
                 return .success(["focus \(direction)"])
@@ -286,11 +339,36 @@ private struct HyprImportContext {
         }
     }
 
-    mutating func sanitizeWorkspace(_ name: String) -> String {
+    func sanitizeWorkspace(_ name: String) -> String {
         var name = name
         if name.hasPrefix("name:") { name = String(name.dropFirst("name:".count)) }
         let sanitized = name.filter { !$0.isWhitespace }
         return sanitized.isEmpty ? "1" : sanitized
+    }
+
+    /// `special`, `special:magic` → workspace name for toggle-special-workspace
+    func specialWorkspaceName(_ arg: String) -> String {
+        if arg == "special" { return "special" }
+        if arg.hasPrefix("special:") {
+            let rest = String(arg.dropFirst("special:".count))
+            return rest.isEmpty ? "special" : sanitizeWorkspace(rest)
+        }
+        return sanitizeWorkspace(arg)
+    }
+
+    /// Parse `size 800 600` / `move 100 200` from action token and/or following parts.
+    func parseTwoInts(from action: String, rest parts: [String]) -> (Int, Int)? {
+        var tokens = action.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
+        if tokens.count >= 3 {
+            // action includes numbers: ["size", "800", "600"]
+            if let a = Int(tokens[1]), let b = Int(tokens[2]) { return (a, b) }
+        }
+        // windowrulev2 = size, 800 600, class:...  → parts[0]=size, parts[1]=800 600
+        if parts.count >= 2 {
+            let nums = parts[1].split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Int($0) }
+            if nums.count >= 2 { return (nums[0], nums[1]) }
+        }
+        return nil
     }
 
     // MARK: window rules
@@ -334,7 +412,22 @@ private struct HyprImportContext {
             case "fullscreen": builder.windowCallbacks.append((matchers: matchers, run: ["fullscreen"]))
             case "center": builder.windowCallbacks.append((matchers: matchers, run: ["center-window"]))
             default:
-                if action.hasPrefix("workspace") {
+                if action.hasPrefix("size") {
+                    // size 800 600  or  size, 800 600 (parts already split)
+                    let dims = parseTwoInts(from: action, rest: parts)
+                    if let (w, h) = dims {
+                        builder.windowCallbacks.append((matchers: matchers, run: ["layout floating", "resize-to \(w) \(h)"]))
+                    } else {
+                        skip(line, original, "can't parse window rule size action")
+                    }
+                } else if action.hasPrefix("move") && !action.hasPrefix("movefocus") {
+                    let dims = parseTwoInts(from: action, rest: parts)
+                    if let (x, y) = dims {
+                        builder.windowCallbacks.append((matchers: matchers, run: ["layout floating", "move-to \(x) \(y)"]))
+                    } else {
+                        skip(line, original, "can't parse window rule move action")
+                    }
+                } else if action.hasPrefix("workspace") {
                     var target = String(action.dropFirst("workspace".count)).trimmingCharacters(in: .whitespaces)
                     if target.isEmpty, parts.count >= 3 { target = parts[1] } // 'workspace, 3, class:...' form
                     target = target.replacingOccurrences(of: "silent", with: "").trimmingCharacters(in: .whitespaces)
@@ -343,6 +436,48 @@ private struct HyprImportContext {
                     skip(line, original, "window rule action '\(action)' has no equivalent (visual effects don't exist on macOS)")
                 }
         }
+    }
+
+    /// Hyprland `rgba(33ccffee) rgba(00ff99ee) 45deg` → AeroSpace gradient/solid color string
+    func mapHyprBorderColor(_ value: String) -> String? {
+        let tokens = value.split(whereSeparator: { $0 == " " || $0 == "," }).map(String.init)
+        guard !tokens.isEmpty else { return nil }
+        var colors: [String] = []
+        var angle: Int?
+        for t in tokens {
+            if t.hasSuffix("deg"), let deg = Int(t.dropLast(3)) {
+                angle = deg
+                continue
+            }
+            if let hex = hyprColorTokenToHex(t) {
+                colors.append(hex)
+            }
+        }
+        guard !colors.isEmpty else { return nil }
+        if colors.count == 1, angle == nil {
+            return colors[0]
+        }
+        // gradient: angle + space-separated stops (AeroSpace gradient grammar)
+        let deg = angle ?? 0
+        return "gradient(\(deg)deg, \(colors.joined(separator: ", ")))"
+    }
+
+    func hyprColorTokenToHex(_ token: String) -> String? {
+        var t = token.trimmingCharacters(in: .whitespaces)
+        // rgba(33ccffee) or rgb(33ccff)
+        if t.lowercased().hasPrefix("rgba(") || t.lowercased().hasPrefix("rgb(") {
+            guard let open = t.firstIndex(of: "("), let close = t.firstIndex(of: ")") else { return nil }
+            let inner = t[t.index(after: open) ..< close]
+            let hex = String(inner).filter(\.isHexDigit)
+            guard hex.count == 6 || hex.count == 8 else { return nil }
+            return "0x" + hex.lowercased()
+        }
+        if t.lowercased().hasPrefix("0x") {
+            return t.lowercased()
+        }
+        let hex = t.filter(\.isHexDigit)
+        if hex.count == 6 || hex.count == 8 { return "0x" + hex.lowercased() }
+        return nil
     }
 
     mutating func appendClassMatcher(_ pattern: String, to matchers: inout [String], notes: inout [String]) {

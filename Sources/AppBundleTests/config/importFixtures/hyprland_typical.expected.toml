@@ -21,6 +21,12 @@ outer.right = 12
 [workspace-to-monitor-force-assignment]
 1 = 'DP-1'
 
+[window-borders]
+enabled = true
+width = 2
+active-color = '0x33ccffee'
+corner-radius = 10
+
 [[window-detection-rules]]
 if.app-id = 'com.apple.systempreferences'
 treat-as = 'float'
@@ -55,6 +61,7 @@ alt-2 = 'workspace 2'
 alt-3 = 'workspace 3'
 alt-shift-1 = 'move-node-to-workspace 1'
 alt-shift-2 = 'move-node-to-workspace 2'
+alt-s = 'toggle-special-workspace magic'
 alt-esc = 'workspace-back-and-forth'
 alt-ctrl-right = 'resize width +30'
 alt-ctrl-down = 'resize height -30'
@@ -71,18 +78,14 @@ esc = 'mode main'
 #     ^ monitor layout is configured in macOS System Settings
 # line 11: env = XCURSOR_SIZE,24
 #     ^ environment variables: use the [exec.env-vars] config section if needed
-# line 16: border_size = 2
-#     ^ general option has no macOS equivalent
-# line 17: col.active_border = rgba(33ccffee)
-#     ^ general option has no macOS equivalent
-# line 21: decoration { ... }
-#     ^ visual effects (blur, rounding, animations) don't exist on macOS
+# line 24: enabled = true
+#     ^ unrecognized option
+# line 25: size = 3
+#     ^ unrecognized option
 # line 29: animations { ... }
 #     ^ visual effects (blur, rounding, animations) don't exist on macOS
 # line 34: input { ... }
 #     ^ input devices are configured in macOS System Settings
-# line 58: bind = $mainMod, S, togglespecialworkspace, magic
-#     ^ special workspaces are not supported; see the sticky command
 # line 59: bind = $mainMod, mouse_down, workspace, e+1
 #     ^ key 'mouse_down' or modifiers 'SUPER' have no equivalent
 # line 74: windowrulev2 = opacity 0.9, class:^(Alacritty)$

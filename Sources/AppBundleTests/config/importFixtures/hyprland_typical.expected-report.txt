@@ -1,12 +1,10 @@
 line 6: [skipped] monitor=,preferred,auto,1 — monitor layout is configured in macOS System Settings
 line 11: [skipped] env = XCURSOR_SIZE,24 — environment variables: use the [exec.env-vars] config section if needed
-line 16: [skipped] border_size = 2 — general option has no macOS equivalent
-line 17: [skipped] col.active_border = rgba(33ccffee) — general option has no macOS equivalent
-line 21: [skipped] decoration { ... } — visual effects (blur, rounding, animations) don't exist on macOS
+line 24: [skipped] enabled = true — unrecognized option
+line 25: [skipped] size = 3 — unrecognized option
 line 29: [skipped] animations { ... } — visual effects (blur, rounding, animations) don't exist on macOS
 line 34: [skipped] input { ... } — input devices are configured in macOS System Settings
-line 58: [skipped] bind = $mainMod, S, togglespecialworkspace, magic — special workspaces are not supported; see the sticky command
 line 59: [skipped] bind = $mainMod, mouse_down, workspace, e+1 — key 'mouse_down' or modifiers 'SUPER' have no equivalent
 line 74: [skipped] windowrulev2 = opacity 0.9, class:^(Alacritty)$ — window rule action 'opacity 0.9' has no equivalent (visual effects don't exist on macOS)
 line 76: [note] workspace = 1, monitor:DP-1 — 'DP-1' is a compositor connector name; macOS matches monitors by display name — replace with 'main', 'secondary', a monitor index, or a display-name regex
-32 of 42 directives translated, 10 skipped
+36 of 44 directives translated, 8 skipped

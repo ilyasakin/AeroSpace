@@ -37,10 +37,13 @@ struct AeroConfigBuilder {
     var gapsInner: [String: Int] = [:] // vertical/horizontal
     var gapsOuter: [String: Int] = [:] // left/bottom/top/right
     var workspaceToMonitor: [(workspace: String, output: String)] = []
+    var persistentWorkspaces: [String] = []
     var detectionRules: [(matchers: [String], treatAs: String)] = []
     var windowCallbacks: [(matchers: [String], run: [String])] = []
     var disableFlattenNormalization = false
     var tilingPolicy: String? = nil
+    /// Border style fragments emitted under [window-borders]
+    var windowBorders: [String] = []
 }
 
 private struct I3ImportContext {

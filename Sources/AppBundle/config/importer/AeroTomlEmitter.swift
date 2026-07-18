@@ -82,6 +82,21 @@ func emitAeroToml(builder: AeroConfigBuilder, diagnostics: [ImportDiagnostic], s
         out.append("")
     }
 
+    if !builder.persistentWorkspaces.isEmpty {
+        let list = builder.persistentWorkspaces.map { tomlString($0) }.joined(separator: ", ")
+        out.append("persistent-workspaces = [\(list)]")
+        out.append("")
+    }
+
+    if !builder.windowBorders.isEmpty {
+        out.append("[window-borders]")
+        out.append("enabled = true")
+        for line in builder.windowBorders {
+            out.append(line)
+        }
+        out.append("")
+    }
+
     for rule in builder.detectionRules {
         out.append("[[window-detection-rules]]")
         for matcher in rule.matchers {
