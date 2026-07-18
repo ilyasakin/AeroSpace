@@ -61,10 +61,14 @@ private final class BorderEntry {
     var radius = 0
     var rect: Rect // live top-left-global frame of the target window
 
-    /// Last values applied to the layer - used to skip path/frame writes
+    /// Last values applied to the layer - used to skip path/frame writes. Includes overlay origin so
+    /// a multi-monitor reconfig (coverAllScreens moves the overlay) still forces a rewrite even when
+    /// the window's global rect is unchanged
     private var appliedRect: Rect?
     private var appliedWidth = -1
     private var appliedRadius = -1
+    private var appliedOriginX: CGFloat?
+    private var appliedOriginY: CGFloat?
     private var appliedStroke: CGColor?
     private var appliedZ: CGFloat = -1
     private var hadOccluders = false
@@ -87,10 +91,13 @@ private final class BorderEntry {
         let w = CGFloat(width)
         let panel = layerRect(rect, originX, originY).insetBy(dx: -w, dy: -w)
         let geometryChanged = appliedRect != rect || appliedWidth != width || appliedRadius != radius
+            || appliedOriginX != originX || appliedOriginY != originY
         if geometryChanged {
             appliedRect = rect
             appliedWidth = width
             appliedRadius = radius
+            appliedOriginX = originX
+            appliedOriginY = originY
             shape.frame = panel
             let strokeRect = CGRect(x: w / 2, y: w / 2, width: panel.width - w, height: panel.height - w)
             let r = CGFloat(radius) + w / 2
@@ -104,10 +111,6 @@ private final class BorderEntry {
         if appliedZ != zPosition {
             appliedZ = zPosition
             shape.zPosition = zPosition
-        }
-        // When geometry didn't change, panel is still the correct local frame
-        if !geometryChanged {
-            return shape.frame
         }
         return panel
     }
@@ -167,9 +170,8 @@ final class WindowBordersManager {
 
     // MARK: Coalesced dirty redraw (performance)
 
-    /// Border ids that need stroke and/or mask recompute. Empty + fullRedraw => redraw everything
+    /// Border ids that need stroke and/or mask recompute. Full redraws go through refresh() only
     private var dirtyIds: Set<UInt32> = []
-    private var fullRedrawPending = false
     private var redrawScheduled = false
     /// Flushes dirty borders once per run-loop turn (BeforeWaiting), so a burst of WindowServer
     /// move events becomes one CATransaction - without the extra frame of latency that
@@ -214,7 +216,7 @@ final class WindowBordersManager {
         rebuildStack(onScreenStack())
         // Config / membership / stack order may have changed - full recompute once, immediately
         // (refresh is already session-batched; no need to coalesce further)
-        flushRedraw(full: true, dirty: [])
+        flushAll()
     }
 
     /// A window moved/resized (WindowServer event). This callback fires for EVERY window on the
@@ -296,37 +298,42 @@ final class WindowBordersManager {
             MainActor.assumeIsolated {
                 self.redrawScheduled = false
                 self.coalesceObserver = nil
-                let full = self.fullRedrawPending
-                self.fullRedrawPending = false
                 let dirty = self.dirtyIds
                 self.dirtyIds.removeAll(keepingCapacity: true)
-                self.flushRedraw(full: full, dirty: dirty)
+                self.flushDirty(dirty)
             }
         }
         coalesceObserver = observer
         CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
     }
 
-    private func flushRedraw(full: Bool, dirty: Set<UInt32>) {
-        let originX = overlay.frame.origin.x
-        let originY = overlay.frame.origin.y
-        // Shared across all paints in this flush - avoid re-allocating per border
-        let managedIds = Set(entries.keys)
-        let activeRect = activeId.flatMap { entries[$0]?.rect }
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if full {
+    private func flushAll() {
+        flush { paint in
             for (id, entry) in entries {
-                paint(id: id, entry: entry, originX: originX, originY: originY,
-                      managedIds: managedIds, activeRect: activeRect)
+                paint(id, entry)
             }
-        } else {
+        }
+    }
+
+    private func flushDirty(_ dirty: Set<UInt32>) {
+        flush { paint in
             for id in dirty {
                 guard let entry = entries[id] else { continue }
-                paint(id: id, entry: entry, originX: originX, originY: originY,
-                      managedIds: managedIds, activeRect: activeRect)
+                paint(id, entry)
             }
+        }
+    }
+
+    private func flush(_ body: (_ paint: (UInt32, BorderEntry) -> Void) -> Void) {
+        let originX = overlay.frame.origin.x
+        let originY = overlay.frame.origin.y
+        let managedIds = Set(entries.keys)
+        let activeRect = activeId.flatMap { entries[$0]?.rect }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        body { id, entry in
+            paint(id: id, entry: entry, originX: originX, originY: originY,
+                  managedIds: managedIds, activeRect: activeRect)
         }
         CATransaction.commit()
     }
@@ -366,7 +373,6 @@ final class WindowBordersManager {
             coalesceObserver = nil
         }
         redrawScheduled = false
-        fullRedrawPending = false
         dirtyIds.removeAll()
         for (_, entry) in entries { entry.shape.removeFromSuperlayer() }
         entries.removeAll()
