@@ -79,23 +79,27 @@ enum SkyLight {
     }
 }
 
-// Windows whose frame we've written via AX during the current refresh session. WindowServer
-// (SkyLight) can lag an AX frame write, so a read-after-write in the same session (e.g. `resize`
-// then `center-window`) must go through AX - which is serialized after the write on the app's
-// thread - instead of the SkyLight fast path, or it reads the pre-write frame and mis-positions.
-// Cleared at each session start. Guarded by Thread.isMainThread; these ops run on the main actor
+// Windows whose frame we've written via AX recently. WindowServer (SkyLight) can lag an AX
+// frame write, so a read-after-write (e.g. `resize` then `center-window` in one binding, or a
+// light session that schedules a complete refresh) must not trust SLSGetWindowBounds until the
+// next light session starts — which clears the set. Heavy/complete refreshes intentionally do
+// NOT clear, or the lag window after light→heavy would reintroduce the mis-position bug.
+// Guarded by Thread.isMainThread; these ops run on the main actor
 private nonisolated(unsafe) var framesWrittenThisSession: Set<UInt32> = []
 
 func markFrameWrittenThisSession(_ windowId: UInt32) {
     if Thread.isMainThread { unsafe framesWrittenThisSession.insert(windowId) }
 }
 
+/// Call only at light-session entry. Complete/heavy refreshes keep the set so cross-session lag
+/// after a command body still forces AX (or lastApplied for borders)
 @MainActor func clearFramesWrittenThisSession() {
     unsafe framesWrittenThisSession.removeAll(keepingCapacity: true)
 }
 
-/// True when SkyLight might be stale for this window (its frame was written this session). When
-/// uncertain (off the main thread) returns true, so the caller falls back to the always-correct AX read
+/// True when SkyLight might be stale for this window (its frame was written since the last light
+/// session start). When uncertain (off the main thread) returns true, so the caller falls back
+/// to the always-correct AX read
 func skyLightFrameMayBeStale(_ windowId: UInt32) -> Bool {
     Thread.isMainThread ? unsafe framesWrittenThisSession.contains(windowId) : true
 }

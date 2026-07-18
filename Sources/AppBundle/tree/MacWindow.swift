@@ -211,7 +211,15 @@ final class MacWindow: Window {
     }
 
     override func getAxSize(_ cm: CancellationMode) async throws -> CGSize? {
-        if !skyLightFrameMayBeStale(windowId), let bounds = SkyLight.windowBounds(windowId) {
+        // After an AX write this session, WindowServer may still report the old frame. Prefer the
+        // layout rect we just applied (no hop) or fall through to AX (serialized after the write)
+        if skyLightFrameMayBeStale(windowId) {
+            if let applied = lastAppliedLayoutPhysicalRect {
+                return CGSize(width: applied.width, height: applied.height)
+            }
+            return try await macApp.getAxSize(windowId, cm)
+        }
+        if let bounds = SkyLight.windowBounds(windowId) {
             return CGSize(width: bounds.width, height: bounds.height)
         }
         return try await macApp.getAxSize(windowId, cm)
@@ -223,7 +231,11 @@ final class MacWindow: Window {
     }
 
     override func getAxRect(_ cm: CancellationMode) async throws -> Rect? {
-        if !skyLightFrameMayBeStale(windowId), let bounds = SkyLight.windowBounds(windowId) { return bounds }
+        if skyLightFrameMayBeStale(windowId) {
+            if let applied = lastAppliedLayoutPhysicalRect { return applied }
+            return try await macApp.getAxRect(windowId, cm)
+        }
+        if let bounds = SkyLight.windowBounds(windowId) { return bounds }
         return try await macApp.getAxRect(windowId, cm)
     }
 }

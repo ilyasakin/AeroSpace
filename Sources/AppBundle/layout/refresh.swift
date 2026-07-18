@@ -32,7 +32,10 @@ func runHeavyCompleteRefreshSession(
     if !TrayMenuModel.shared.isEnabled { return }
     invalidateWindowLevelCache()
     invalidateMonitorsCache()
-    clearFramesWrittenThisSession()
+    // Do NOT clear framesWrittenThisSession here. A light session that just wrote AX frames
+    // may have scheduled this complete refresh while WindowServer still lags; clearing would
+    // re-enable SkyLight mid-lag and reintroduce the resize→center hazard across the boundary.
+    // Light sessions clear at their start so marks do not accumulate forever.
     let res = await Result {
         try await $refreshSessionEvent.withValue(event) {
             let nativeFocused = try await getNativeFocusedWindow(.cancellable)
@@ -47,9 +50,10 @@ func runHeavyCompleteRefreshSession(
 
             updateTrayText()
             SecureInputPanel.shared.refresh()
-            WindowBordersManager.shared.refresh()
             try await normalizeLayoutReason()
             if shouldLayoutWorkspaces { try await layoutWorkspaces() }
+            // Borders after layout so they see post-write frames (lastApplied / WS), not pre-layout ones
+            WindowBordersManager.shared.refresh()
         }
     }
     switch res {
@@ -86,12 +90,13 @@ func runLightSession<T>(
 
         updateTrayText()
         SecureInputPanel.shared.refresh()
-        WindowBordersManager.shared.refresh()
         // Query-only CLI (list-*, echo, test, …) must not pay layout + full window discovery.
         // Mutating commands still schedule a complete refresh so newly appeared windows are
         // registered and normalizeLayoutReason can run
         let needsLayoutAndDiscovery = !event.isFocusFollowsMouse && !event.isQueryOnly
         if needsLayoutAndDiscovery { try await layoutWorkspaces() }
+        // Borders after layout (and after command body setAxFrame) so overlay rects match reality
+        WindowBordersManager.shared.refresh()
         if focusBefore != focusAfter {
             focusAfter?.nativeFocus() // syncFocusToMacOs
         }

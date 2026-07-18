@@ -195,11 +195,15 @@ final class WindowBordersManager {
         overlay.coverAllScreens()
         overlay.orderFrontRegardless()
 
+        // Shared with windowLevelCache: one CGWindowList scan per refresh session. Build the
+        // stack first so bordered windows can reuse those rects instead of N SLSGetWindowBounds
+        rebuildStack(onScreenWindowSnapshot().normalStack)
+
         activeId = focus.windowOrNil?.windowId
         var seen = Set<UInt32>(minimumCapacity: entries.count)
         for workspace in Workspace.allUnsorted where workspace.isVisible {
             for window in workspace.allLeafWindowsRecursive {
-                guard let rect = SkyLight.overlayBounds(window.windowId) ?? window.lastAppliedLayoutPhysicalRect else { continue }
+                guard let rect = resolvedBorderRect(for: window) else { continue }
                 seen.insert(window.windowId)
                 let entry = entries[window.windowId] ?? makeEntry(window.windowId, rect: rect)
                 entry.rect = rect
@@ -213,11 +217,20 @@ final class WindowBordersManager {
             entries.removeValue(forKey: id)
         }
 
-        // Shared with windowLevelCache: one CGWindowList scan per refresh session
-        rebuildStack(onScreenWindowSnapshot().normalStack)
         // Config / membership / stack order may have changed - full recompute once, immediately
         // (refresh is already session-batched; no need to coalesce further)
         flushAll()
+    }
+
+    /// Pick the best frame for a bordered window without a needless SLS round-trip:
+    /// 1. lastApplied — what layout commanded (also covers SkyLight lag after AX writes)
+    /// 2. CGWindowList stack rect already paid for by onScreenWindowSnapshot
+    /// 3. Live SLS bounds (overlay path; not gated on skylight-reads)
+    private func resolvedBorderRect(for window: Window) -> Rect? {
+        if let applied = window.lastAppliedLayoutPhysicalRect { return applied }
+        let id = window.windowId
+        if let i = stackIndex[id] { return stack[i].rect }
+        return SkyLight.overlayBounds(id)
     }
 
     /// A window moved/resized (WindowServer event). This callback fires for EVERY window on the
