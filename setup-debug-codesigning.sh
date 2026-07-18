@@ -14,17 +14,28 @@ set -euo pipefail
 
 CERT_CN="AeroSpace Debug Self-Signed"
 
-if security find-identity -v -p codesigning | grep -q "$CERT_CN"; then
-    echo "✓ Signing identity '$CERT_CN' already exists. Nothing to do."
+# A VALID identity shows as a line ending in the quoted name with no trailing "(…)" policy error.
+# Name-match alone isn't enough: a cert with the right name but wrong key usage still appears here
+if security find-identity -v -p codesigning | grep -qE "\"$CERT_CN\"$"; then
+    echo "✓ Signing identity '$CERT_CN' already exists and is usable. Nothing to do."
     exit 0
 fi
+
+# Remove any previous, broken instance (e.g. one created before the key-usage fix) so re-running
+# always converges on a valid identity instead of tripping over the leftover
+echo "Removing any previous (broken) '$CERT_CN' certificate…"
+while security delete-identity -c "$CERT_CN" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; do :; done
+sudo security delete-certificate -c "$CERT_CN" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "Generating a self-signed code-signing certificate…"
+# keyUsage=digitalSignature is REQUIRED or macOS reports "Invalid Key Usage for policy" and codesign
+# refuses the identity; extendedKeyUsage=codeSigning + CA:false complete a valid leaf signing cert
 openssl req -x509 -newkey rsa:2048 -keyout "$tmp/key.pem" -out "$tmp/cert.pem" -days 3650 -nodes \
     -subj "/CN=$CERT_CN" \
+    -addext "keyUsage=critical,digitalSignature" \
     -addext "extendedKeyUsage=critical,codeSigning" \
     -addext "basicConstraints=critical,CA:false"
 
