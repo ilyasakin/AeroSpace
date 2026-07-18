@@ -56,6 +56,13 @@ private final class BorderEntry {
         mask.fillRule = .evenOdd
         mask.fillColor = NSColor.black.cgColor
     }
+
+    /// The window rect outset by the border width - the area the border actually paints
+    var region: Rect {
+        let w = CGFloat(width)
+        return Rect(topLeftX: rect.topLeftX - w, topLeftY: rect.topLeftY - w,
+                    width: rect.width + 2 * w, height: rect.height + 2 * w)
+    }
 }
 
 /// WindowServer move/resize callback (runs on the thread that registered it - the main thread).
@@ -124,15 +131,26 @@ final class WindowBordersManager {
         redraw()
     }
 
-    /// A window moved/resized (WindowServer event). Update the live rect in our stack and, if it's
-    /// bordered, its own entry, then re-mask everything - the mover changes what it covers. Cheap:
-    /// one frame read plus a path rebuild per bordered window, no window-list syscall
+    /// A window moved/resized (WindowServer event). This callback fires for EVERY window on the
+    /// system, so we redraw only when the move actually affects a border: either the mover is bordered,
+    /// or it overlaps a bordered window (as an occluder) at its old or new position. Everything else -
+    /// an unrelated app animating a window - updates the cached rect and returns without touching the GPU
     func handleWindowMoved(windowId: UInt32) {
         guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
         guard let rect = SkyLight.overlayBounds(windowId) else { return }
+        let oldRect = stack.first(where: { $0.id == windowId })?.rect
         if let i = stack.firstIndex(where: { $0.id == windowId }) { stack[i].rect = rect }
         entries[windowId]?.rect = rect
+
+        let affectsBorder = entries[windowId] != nil
+            || overlapsAnyBorder(rect)
+            || (oldRect.map(overlapsAnyBorder) ?? false)
+        guard affectsBorder else { return }
         redraw()
+    }
+
+    private func overlapsAnyBorder(_ rect: Rect) -> Bool {
+        entries.contains { rectsIntersect($0.value.region, rect) }
     }
 
     /// Rebuild every border's stroke path + occlusion mask from the current rects and stack
@@ -178,9 +196,7 @@ final class WindowBordersManager {
     /// the windows stacked above it, but the active window is forced to be frontmost: it is never
     /// occluded by another managed (inactive) window, and it always occludes every inactive window
     private func occluders(of id: UInt32, outset entry: BorderEntry, indexById: [UInt32: Int]) -> [Rect] {
-        let w = CGFloat(entry.width)
-        let region = Rect(topLeftX: entry.rect.topLeftX - w, topLeftY: entry.rect.topLeftY - w,
-                          width: entry.rect.width + 2 * w, height: entry.rect.height + 2 * w)
+        let region = entry.region
         let isActive = id == activeId
         var result: [Rect] = []
         var included = Set<UInt32>()
