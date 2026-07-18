@@ -203,6 +203,18 @@ final class StatusBarConfigTest: XCTestCase {
         let result = parseConfig("start-at-login = false\n")
         assertFalse(result.config.statusBar.enabled)
         assertFalse(result.config.statusBar.hideEmptyWorkspaces)
+        assertFalse(result.config.statusBar.focusedShowIcon)
+    }
+
+    func testParseFocusedShowIcon() {
+        let toml = """
+            [bar]
+            enabled = true
+            focused-show-icon = true
+            """
+        let result = parseConfig(toml)
+        assertEquals(result.errors.map { $0.description(.error) }, [])
+        assertTrue(result.config.statusBar.focusedShowIcon)
     }
 
     func testHideEmptyWorkspacesFilter() {

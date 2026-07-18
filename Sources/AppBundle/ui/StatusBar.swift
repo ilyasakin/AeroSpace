@@ -322,7 +322,7 @@ private final class StatusBarContentView: NSView {
         let gpuHistory = StatusBarGpuSampler.shared.currentHistory
 
         enum Placeable {
-            case text(String, bg: NSColor?, fg: NSColor, action: (() -> Void)?)
+            case text(String, bg: NSColor?, fg: NSColor, action: (() -> Void)?, icon: NSImage?)
             /// Per-sample core loads (averaged into a sparkline): samples[t][core], oldest → newest.
             case cpuHistory([[Double]], fg: NSColor)
             /// Single-series GPU history, oldest → newest.
@@ -330,13 +330,19 @@ private final class StatusBarContentView: NSView {
         }
 
         let sparkTrail = sparklinePercentTrailingWidth(fontSize: CGFloat(max(10, config.fontSize - 1)))
+        let iconSide = max(12, min(height - 8, 18))
 
         func width(of item: Placeable) -> CGFloat {
             switch item {
-                case .text(let t, _, let color, _):
+                case .text(let t, _, let color, _, let icon):
                     let attr = NSAttributedString(string: t, attributes: [.font: font, .foregroundColor: color])
-                    let isChip = t.count <= 2
-                    return max(attr.size().width + (isChip ? 0 : 12), isChip ? height : 0)
+                    let isChip = t.count <= 2 && icon == nil
+                    var w = max(attr.size().width + (isChip ? 0 : 12), isChip ? height : 0)
+                    if icon != nil {
+                        w += iconSide + 6 // icon + gap before label
+                        if t.count <= 2 { w += 8 } // keep padding when short labels sit next to icons
+                    }
+                    return w
                 case .cpuHistory:
                     let n = StatusBarCpuSampler.historyCapacity
                     return defaultSparklineLayout(sampleCount: n, trailingWidth: sparkTrail).totalWidth
@@ -350,13 +356,30 @@ private final class StatusBarContentView: NSView {
             let w = width(of: item)
             let frame = NSRect(x: x, y: 0, width: w, height: height)
             switch item {
-                case .text(let t, let bg, let color, let action):
+                case .text(let t, let bg, let color, let action, let icon):
                     if let action {
-                        let btn = StatusBarButton(frame: frame, title: t, font: font, fg: color, bg: bg, onClick: action)
+                        let btn = StatusBarButton(
+                            frame: frame,
+                            title: t,
+                            font: font,
+                            fg: color,
+                            bg: bg,
+                            icon: icon,
+                            iconSide: iconSide,
+                            onClick: action,
+                        )
                         addSubview(btn)
                         buttons.append(btn)
                     } else {
-                        let chip = StatusBarChipView(frame: frame, title: t, font: font, fg: color, bg: bg)
+                        let chip = StatusBarChipView(
+                            frame: frame,
+                            title: t,
+                            font: font,
+                            fg: color,
+                            bg: bg,
+                            icon: icon,
+                            iconSide: iconSide,
+                        )
                         addSubview(chip)
                         buttons.append(chip)
                     }
@@ -408,15 +431,18 @@ private final class StatusBarContentView: NSView {
                                 bg: active ? focusBg : (visibleHere ? focusBg.withAlphaComponent(0.35) : nil),
                                 fg: active ? focusFg : fg,
                                 action: { onWorkspaceClick(ws.name) },
+                                icon: nil,
                             ))
                         }
                     case "mode":
                         if let mode = activeMode, mode != mainModeId {
-                            out.append(.text("[\(mode)]", bg: nil, fg: fg, action: nil))
+                            out.append(.text("[\(mode)]", bg: nil, fg: fg, action: nil, icon: nil))
                         }
                     case "focused":
-                        let title = focus.windowOrNil?.app.name ?? focus.workspace.name
-                        out.append(.text(title, bg: nil, fg: fg, action: nil))
+                        let window = focus.windowOrNil
+                        let title = window?.app.name ?? focus.workspace.name
+                        let icon = config.focusedShowIcon ? statusBarAppIcon(for: window) : nil
+                        out.append(.text(title, bg: nil, fg: fg, action: nil, icon: icon))
                     case "cpu":
                         // Prefer ring buffer; until the second tick, show latest core sample once.
                         let effective: [[Double]] = {
@@ -429,7 +455,7 @@ private final class StatusBarContentView: NSView {
                         out.append(.gpuHistory(gpuHistory.samples, last: gpuHistory.lastKnown, fg: fg))
                     default:
                         if let text = statusBarSystemModuleText(mod) {
-                            out.append(.text(text, bg: nil, fg: fg, action: nil))
+                            out.append(.text(text, bg: nil, fg: fg, action: nil, icon: nil))
                         }
                 }
             }
@@ -460,7 +486,7 @@ private final class StatusBarContentView: NSView {
                     x: Int(frameX.rounded()),
                     y: Int((height / 2).rounded()),
                 ))
-            })
+            }, icon: nil)
             place(item, x: leftX)
             leftX += w + 4
         }
@@ -628,17 +654,31 @@ final class StatusBarSparklineView: NSView {
 }
 
 /// Chip with true center alignment (NSTextField is unreliable for single glyphs).
+/// Optional leading app icon (used by the `focused` module when `focused-show-icon` is on).
 @MainActor
 private class StatusBarChipView: NSView {
     private let title: String
     private let font: NSFont
     private let fg: NSColor
+    private let icon: NSImage?
+    private let iconSide: CGFloat
     var onClick: (() -> Void)?
 
-    init(frame: NSRect, title: String, font: NSFont, fg: NSColor, bg: NSColor?, onClick: (() -> Void)? = nil) {
+    init(
+        frame: NSRect,
+        title: String,
+        font: NSFont,
+        fg: NSColor,
+        bg: NSColor?,
+        icon: NSImage? = nil,
+        iconSide: CGFloat = 16,
+        onClick: (() -> Void)? = nil,
+    ) {
         self.title = title
         self.font = font
         self.fg = fg
+        self.icon = icon
+        self.iconSide = iconSide
         self.onClick = onClick
         super.init(frame: frame)
         wantsLayer = true
@@ -651,8 +691,31 @@ private class StatusBarChipView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        let hasIcon = icon != nil
+        var textOriginX: CGFloat = 0
+        var textWidth = bounds.width
+
+        if let icon {
+            let side = min(iconSide, max(10, bounds.height - 6))
+            let ix: CGFloat = 6
+            let iy = ((bounds.height - side) / 2).rounded(.toNearestOrAwayFromZero)
+            let iconRect = NSRect(x: ix, y: iy, width: side, height: side)
+            // Template-ish: keep full-color Dock icons (don't apply tint).
+            icon.draw(
+                in: iconRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: [.interpolation: NSImageInterpolation.high],
+            )
+            textOriginX = ix + side + 4
+            textWidth = max(0, bounds.width - textOriginX - 4)
+        }
+
         let para = NSMutableParagraphStyle()
-        para.alignment = .center
+        para.alignment = hasIcon ? .left : .center
+        para.lineBreakMode = .byTruncatingTail
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: fg,
@@ -661,7 +724,7 @@ private class StatusBarChipView: NSView {
         let size = (title as NSString).size(withAttributes: attrs)
         // Optical vertical center: AppKit text metrics sit slightly high for digits/letters.
         let y = ((bounds.height - size.height) / 2).rounded(.toNearestOrAwayFromZero) - 0.5
-        let rect = NSRect(x: 0, y: y, width: bounds.width, height: size.height)
+        let rect = NSRect(x: textOriginX, y: y, width: textWidth, height: size.height)
         (title as NSString).draw(in: rect, withAttributes: attrs)
     }
 
@@ -696,9 +759,42 @@ private class StatusBarChipView: NSView {
 
 @MainActor
 private final class StatusBarButton: StatusBarChipView {
-    init(frame: NSRect, title: String, font: NSFont, fg: NSColor, bg: NSColor?, onClick: @escaping () -> Void) {
-        super.init(frame: frame, title: title, font: font, fg: fg, bg: bg, onClick: onClick)
+    init(
+        frame: NSRect,
+        title: String,
+        font: NSFont,
+        fg: NSColor,
+        bg: NSColor?,
+        icon: NSImage? = nil,
+        iconSide: CGFloat = 16,
+        onClick: @escaping () -> Void,
+    ) {
+        super.init(
+            frame: frame,
+            title: title,
+            font: font,
+            fg: fg,
+            bg: bg,
+            icon: icon,
+            iconSide: iconSide,
+            onClick: onClick,
+        )
     }
+}
+
+/// Dock icon for the window's app (for the `focused` module).
+@MainActor
+func statusBarAppIcon(for window: Window?) -> NSImage? {
+    guard let window else { return nil }
+    if let mac = window.app as? MacApp {
+        if let icon = mac.nsApp.icon {
+            return icon
+        }
+        if let path = mac.bundlePath {
+            return NSWorkspace.shared.icon(forFile: path)
+        }
+    }
+    return nil
 }
 
 // MARK: - Color helper

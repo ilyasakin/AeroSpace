@@ -199,6 +199,16 @@ struct BarSettingsTab: View {
                         WorkspaceSymbolsEditor()
                     }
 
+                    SettingsSection(title: "Focused app module") {
+                        Toggle(
+                            "Show app icon",
+                            isOn: model.boolBinding(["bar"], "focused-show-icon", get: \.statusBar.focusedShowIcon),
+                        )
+                        Text("Draws the current app’s Dock icon next to its name in the “focused” module.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     SettingsSection(title: "Left modules") {
                         Text("Switch on to show. Drag the grip to reorder left → right.")
                             .font(.caption)

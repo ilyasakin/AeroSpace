@@ -11,6 +11,8 @@ struct StatusBarConfig: ConvenienceMutable, Equatable, Sendable {
     var modulesRight: [String] = ["clock", "battery"]
     /// When true, the workspaces module omits empty (unoccupied) workspaces — except the focused one.
     var hideEmptyWorkspaces: Bool = false
+    /// When true, the `focused` module draws the current app's Dock icon next to its name.
+    var focusedShowIcon: Bool = false
     /// Optional display labels for the workspaces module: workspace name → letter/symbol/emoji.
     /// Unmapped workspaces still show their real name. Clicks always use the real name.
     var workspaceSymbols: [String: String] = [:]
@@ -33,6 +35,7 @@ private let statusBarParser: [String: any ParserProtocol<StatusBarConfig>] = [
     "modules-left": Parser(\.modulesLeft, parseArrayOfStrings),
     "modules-right": Parser(\.modulesRight, parseArrayOfStrings),
     "hide-empty-workspaces": Parser(\.hideEmptyWorkspaces, parseBool),
+    "focused-show-icon": Parser(\.focusedShowIcon, parseBool),
     "workspace-symbols": Parser(\.workspaceSymbols, parseWorkspaceSymbols),
     "status-command": Parser(\.statusCommand, parseArrayOfStrings),
     "background": Parser(\.background, parseString),
