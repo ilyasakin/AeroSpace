@@ -99,17 +99,20 @@ enum SessionPipeline {
 
     // MARK: - Heavy
 
+    /// - Returns: `true` if the heavy completed fully; `false` if cancelled (or disabled).
+    ///   Callers that track discovery obligations must not clear them on `false`.
+    @discardableResult
     static func runHeavy(
         _ event: RefreshSessionEvent,
         assumeCancellable: Bool,
         plan: Plan,
-    ) async {
+    ) async -> Bool {
         let state = signposter.beginInterval(
             "SessionPipeline.heavy",
             "event: \(event) axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)",
         )
         defer { signposter.endInterval("SessionPipeline.heavy", state) }
-        if !TrayMenuModel.shared.isEnabled { return }
+        if !TrayMenuModel.shared.isEnabled { return true }
 
         phaseBegin(clearFramesWritten: plan.clearFramesWritten)
 
@@ -137,9 +140,10 @@ enum SessionPipeline {
             }
         }
         switch res {
-            case .success(()): break
+            case .success(()): return true
             case .failure(let err as CancellationError):
                 check(assumeCancellable, "Non cancellable refresh session was canceled: \(err) (\(type(of: err)))")
+                return false
             case .failure(let err): die("Illegal error: \(err)")
         }
     }
@@ -160,12 +164,10 @@ enum SessionPipeline {
         // Focus-follows-mouse must not cancel heavy (starves discovery until a non-FFM session).
         // Other lights may cancel a pending heavy for priority — but then we re-queue discovery
         // after the light if nothing else schedules follow-up (see sessionShouldRescheduleCancelledDiscovery).
+        // noteHeavyCancelledByLightSession also bumps generation so a mid-flight heavy that
+        // swallows CancellationError cannot clear discoveryHeavyPending on return.
         if !event.isFocusFollowsMouse {
-            if activeRefreshTask != nil {
-                activeRefreshTask?.cancel()
-                activeRefreshTask = nil
-                // discoveryHeavyPending stays true if a heavy was scheduled (obligation not met).
-            }
+            noteHeavyCancelledByLightSession()
         }
 
         phaseBegin(clearFramesWritten: plan.clearFramesWritten)

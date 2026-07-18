@@ -9,9 +9,9 @@ import Common
 /// (unless they already schedule follow-up heavy themselves).
 @MainActor var discoveryHeavyPending: Bool = false
 
-/// Bumps on every `scheduleCancellableCompleteRefreshSession` so a cancelled heavy cannot
-/// clear pending/task owned by a newer schedule.
-@MainActor private var heavyScheduleGeneration: UInt64 = 0
+/// Bumps on every schedule **and** when a light cancels a running heavy, so a cancelled task
+/// cannot clear pending after `runHeavy` swallows `CancellationError`.
+@MainActor var heavyScheduleGeneration: UInt64 = 0
 
 /// Pure policy: re-queue discovery after a light that cancelled (or pre-empted) a heavy
 /// without scheduling its own follow-up.
@@ -21,6 +21,26 @@ func sessionShouldRescheduleCancelledDiscovery(
     planSchedulesFollowUp: Bool,
 ) -> Bool {
     discoveryHeavyPending && !hasActiveHeavyTask && !planSchedulesFollowUp
+}
+
+/// Pure policy: the schedule task may clear `discoveryHeavyPending` only when this generation
+/// still owns the obligation **and** heavy completed without cancellation.
+func mayClearDiscoveryHeavyPending(
+    generationMatches: Bool,
+    heavyCompletedSuccessfully: Bool,
+) -> Bool {
+    generationMatches && heavyCompletedSuccessfully
+}
+
+/// Invalidate a cancelled heavy's generation so it cannot clear pending when it returns.
+@MainActor
+func noteHeavyCancelledByLightSession() {
+    if activeRefreshTask != nil {
+        activeRefreshTask?.cancel()
+        activeRefreshTask = nil
+        // Keep discoveryHeavyPending true; bump gen so the cancelled task cannot clear it.
+        heavyScheduleGeneration &+= 1
+    }
 }
 
 @MainActor
@@ -33,26 +53,38 @@ func scheduleCancellableCompleteRefreshSession(
     heavyScheduleGeneration &+= 1
     let generation = heavyScheduleGeneration
     activeRefreshTask = Task.startUnstructured { @MainActor in
-        try checkCancellation()
-        await runHeavyCompleteRefreshSession(
-            event,
-            assumeCancellable: true,
-            optimisticallyPreLayoutWorkspaces: optimisticallyPreLayoutWorkspaces,
-        )
-        // Only the latest schedule may clear pending / the task handle.
-        guard generation == heavyScheduleGeneration else { return }
-        discoveryHeavyPending = false
-        activeRefreshTask = nil
+        do {
+            try checkCancellation()
+            let completed = await runHeavyCompleteRefreshSession(
+                event,
+                assumeCancellable: true,
+                optimisticallyPreLayoutWorkspaces: optimisticallyPreLayoutWorkspaces,
+            )
+            // Mid-flight cancel: runHeavy may swallow CancellationError and return false —
+            // must NOT clear pending (light will re-queue).
+            if mayClearDiscoveryHeavyPending(
+                generationMatches: generation == heavyScheduleGeneration,
+                heavyCompletedSuccessfully: completed && !Task.isCancelled,
+            ) {
+                discoveryHeavyPending = false
+                activeRefreshTask = nil
+            }
+        } catch is CancellationError {
+            // Pre-start cancel: leave discoveryHeavyPending true for re-queue.
+        } catch {
+            die("Illegal error scheduling heavy: \(error)")
+        }
     }
 }
 
 @MainActor
+@discardableResult
 func runHeavyCompleteRefreshSession(
     _ event: RefreshSessionEvent,
     assumeCancellable: Bool,
     layoutWorkspaces shouldLayoutWorkspaces: Bool = true,
     optimisticallyPreLayoutWorkspaces: Bool = false,
-) async {
+) async -> Bool {
     await SessionPipeline.runHeavy(
         event,
         assumeCancellable: assumeCancellable,

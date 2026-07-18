@@ -185,4 +185,73 @@ final class SessionPipelineTest: XCTestCase {
             planSchedulesFollowUp: plan.scheduleFollowUpHeavy,
         ))
     }
+
+    /// Drives the real clear-policy used by `scheduleCancellableCompleteRefreshSession`
+    /// after `runHeavy` returns (including when CancellationError was swallowed).
+    func testMayClearDiscoveryHeavyPendingOnlyOnSuccessfulComplete() {
+        // Success + still the owning generation → clear pending
+        XCTAssertTrue(mayClearDiscoveryHeavyPending(
+            generationMatches: true,
+            heavyCompletedSuccessfully: true,
+        ))
+        // Cancelled mid-flight (runHeavy returned false) → MUST keep pending
+        XCTAssertFalse(mayClearDiscoveryHeavyPending(
+            generationMatches: true,
+            heavyCompletedSuccessfully: false,
+        ))
+        // Light bumped generation after cancel → old task must not clear
+        XCTAssertFalse(mayClearDiscoveryHeavyPending(
+            generationMatches: false,
+            heavyCompletedSuccessfully: true,
+        ))
+        XCTAssertFalse(mayClearDiscoveryHeavyPending(
+            generationMatches: false,
+            heavyCompletedSuccessfully: false,
+        ))
+    }
+
+    /// Integration of the two gates used after a light pre-empts a mid-flight heavy.
+    func testMidFlightCancelPathKeepsPendingAndReschedules() {
+        // Simulate: heavy was running (pending true), light cancelled it (task nil, gen bumped).
+        // Heavy task returns with completed=false OR generation mismatch → cannot clear.
+        let stillPendingAfterCancel = !mayClearDiscoveryHeavyPending(
+            generationMatches: false, // light called noteHeavyCancelledByLightSession
+            heavyCompletedSuccessfully: false, // or true-after-swallow — still mismatch
+        )
+        XCTAssertTrue(stillPendingAfterCancel)
+
+        let plan = SessionPipeline.planLight(event: .hotkeyBinding)
+        XCTAssertFalse(plan.scheduleFollowUpHeavy)
+        // After light body: pending still true, no active task → re-queue
+        XCTAssertTrue(sessionShouldRescheduleCancelledDiscovery(
+            discoveryHeavyPending: true,
+            hasActiveHeavyTask: false,
+            planSchedulesFollowUp: plan.scheduleFollowUpHeavy,
+        ))
+    }
+
+    @MainActor
+    func testNoteHeavyCancelledBumpsGenerationSoOldTaskCannotClear() {
+        // Drive real MainActor state used by schedule + light cancel.
+        let genBefore = heavyScheduleGeneration
+        discoveryHeavyPending = true
+        // Simulate a scheduled task handle so cancel path runs.
+        activeRefreshTask = Task.startUnstructured { @MainActor in
+            try await Task.sleep(for: .seconds(60))
+        }
+        noteHeavyCancelledByLightSession()
+        XCTAssertNil(activeRefreshTask)
+        XCTAssertTrue(discoveryHeavyPending, "cancel must not clear discovery obligation")
+        XCTAssertTrue(
+            heavyScheduleGeneration > genBefore,
+            "generation must bump so cancelled heavy cannot clear pending on return",
+        )
+        // Old generation must not be allowed to clear
+        XCTAssertFalse(mayClearDiscoveryHeavyPending(
+            generationMatches: false,
+            heavyCompletedSuccessfully: true,
+        ))
+        // Cleanup
+        discoveryHeavyPending = false
+    }
 }
