@@ -8,6 +8,7 @@ final class PersistentTilingNodeTest: XCTestCase {
     override func setUp() async throws {
         setUpWorkspacesForTests()
         TreeHistory.clear()
+        Workspace.clearTilingStructureGenerations()
     }
 
     private func sampleTree() -> PersistentTilingNode {
@@ -111,6 +112,32 @@ final class PersistentTilingNodeTest: XCTestCase {
         TreeHistory.recordLive()
         XCTAssertEqual(TreeHistory.count, 2)
         XCTAssertEqual(TreeHistory.latest?.windowIds.contains(21), true)
+    }
+
+    func testLayoutUsesPersistentSpineAndSetsFrames() async throws {
+        // Use the focused workspace from setUp so we don't leave an extra visible workspace
+        let ws = focus.workspace
+        let root = ws.rootTilingContainer
+        let w1 = TestWindow.new(id: 40, parent: root, adaptiveWeight: 1)
+        let w2 = TestWindow.new(id: 41, parent: root, adaptiveWeight: 1)
+
+        try await ws.layoutWorkspace()
+
+        // Spine generation stored for history/cutover
+        XCTAssertNotNil(ws.tilingStructureGeneration)
+        XCTAssertEqual(Set(ws.tilingStructureGeneration!.windowIds), [40, 41])
+
+        // Frames applied to live windows (persistent walk resolves by id)
+        let r1 = try await w1.getAxRect(.nonCancellable)
+        let r2 = try await w2.getAxRect(.nonCancellable)
+        XCTAssertNotNil(r1)
+        XCTAssertNotNil(r2)
+        XCTAssertGreaterThan(r1!.width, 0)
+        XCTAssertGreaterThan(r2!.width, 0)
+        // Side-by-side tiles: different x origins on horizontal root
+        if root.orientation == .h {
+            XCTAssertNotEqual(r1!.topLeftX, r2!.topLeftX)
+        }
     }
 
     func testFrozenContainerUsesPersistentSpine() {

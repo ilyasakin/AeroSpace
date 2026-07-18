@@ -123,13 +123,14 @@ Immutable, single-linked (downward) path-copying spine for tiling structure:
 - `LiveTreeBridge.swift` — capture live `TilingContainer` ↔ restore into live tree
 - `TreeHistory.swift` — ring buffer of `PersistentWorldSnapshot` after layout sessions
 - Closed-windows freeze (`FrozenContainer`) stores `PersistentTilingNode` and restores via it
+- **`layoutPersistent.swift`** — tiling layout walks the captured spine (structure source of truth
+  for the pass); windows resolved by id for AX writes. Floating still uses the live tree.
+  Each workspace stores `tilingStructureGeneration` after layout.
 
-Live `TreeNode` remains the AX/identity handle layer (windows still bind for layout/focus).
-Structural history and freeze/restore use the persistent spine. Full elimination of mutable
-parent/child dual links on `TreeNode` is a further cutover; the data model and ops for that
-cutover are in place and tested.
+Live `TreeNode` remains the mutation/bind surface and AX identity layer. Layout geometry for
+tiling no longer recurses the dual-link tree for structure — only the persistent generation.
 
 ### Follow-up work (not done yet)
 
-- Full cutover: make live layout/focus read structure only from `PersistentTilingNode` generations
-  (drop dual-link `_parent`/`_children` mutation as source of truth)
+- Mutate via path-copy commits first, then materialize live handles (invert today’s capture-then-layout)
+- Drop dual-link as bind/unbind implementation once all readers use generations
