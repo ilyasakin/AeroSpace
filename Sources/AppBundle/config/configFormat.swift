@@ -4,34 +4,50 @@ import Foundation
 enum ConfigSourceFormat: Equatable, Sendable {
     case toml
     case hyprland
+    case i3
 }
 
-/// Decide TOML vs Hyprland after reading config text.
-/// Primary: file extension (`.conf`/`.hypr` → Hyprland, `.toml` → TOML).
-/// Fallback sniff for extension-less / unknown paths. When unsure, default to TOML.
+/// Decide TOML vs Hyprland vs i3 after reading config text.
+/// Primary: path/extension heuristics, then content sniff. When unsure, default to TOML.
 func detectConfigFormat(text: String, url: URL?) -> ConfigSourceFormat {
     if let url {
-        switch url.pathExtension.lowercased() {
-            case "conf", "hypr": return .hyprland
+        let path = url.path.lowercased()
+        let ext = url.pathExtension.lowercased()
+        switch ext {
             case "toml": return .toml
+            case "hypr": return .hyprland
+            case "conf":
+                // `.conf` alone is ambiguous (Hyprland *and* some i3 copies). Prefer content.
+                let sniffed = sniffConfigFormat(text)
+                if sniffed != .toml { return sniffed }
+                // Path hints when content is empty/unsure
+                if path.contains("/i3/") || path.hasSuffix("/.i3/config") { return .i3 }
+                if path.contains("/hypr/") || path.contains("hyprland") { return .hyprland }
+                return .hyprland // legacy default for bare .conf
             default: break
+        }
+        // i3 standard paths: ~/.config/i3/config, ~/.i3/config (often no extension)
+        if path.contains("/i3/config") || path.hasSuffix("/.i3/config") || path.hasSuffix("/i3/config") {
+            return .i3
+        }
+        if path.contains("/hypr/") || path.hasSuffix("hyprland.conf") {
+            return .hyprland
         }
     }
     return sniffConfigFormat(text)
 }
 
-/// Conservative content sniff. Only returns Hyprland when early non-comment lines look like
-/// Hyprland grammar and there is no clear TOML shape. Unsure → TOML.
+/// Conservative content sniff. Prefer an explicit dialect only when early non-comment lines
+/// look like that grammar and not like TOML. Unsure → TOML.
 func sniffConfigFormat(_ text: String) -> ConfigSourceFormat {
     var sawHyprland = false
+    var sawI3 = false
     var sawToml = false
     var nonCommentLines = 0
 
     for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
         var line = String(rawLine)
         if let hash = line.firstIndex(of: "#") {
-            // TOML full-line comments and Hypr `#` comments — ignore trailing notes for sniff only when
-            // the `#` starts the line (after trim). Inline `#` in TOML strings is rare at file start.
             let beforeHash = line[..<hash].trimmingCharacters(in: .whitespaces)
             if beforeHash.isEmpty {
                 continue
@@ -49,20 +65,22 @@ func sniffConfigFormat(_ text: String) -> ConfigSourceFormat {
         if looksLikeHyprlandLine(trimmed) {
             sawHyprland = true
         }
+        if looksLikeI3Line(trimmed) {
+            sawI3 = true
+        }
     }
 
-    if sawHyprland && !sawToml {
-        return .hyprland
-    }
+    if sawToml { return .toml }
+    // Hyprland and i3 can both use `bind` / `set` — prefer Hypr when its stronger markers appear
+    if sawHyprland { return .hyprland }
+    if sawI3 { return .i3 }
     return .toml
 }
 
 private func looksLikeTomlLine(_ trimmed: String) -> Bool {
-    // Table header: [mode.main.binding] or [[on-window-detected]]
     if trimmed.hasPrefix("[") {
         return true
     }
-    // Typical TOML dotted keys used by AeroSpace
     if trimmed.hasPrefix("config-version")
         || trimmed.hasPrefix("after-startup-command")
         || trimmed.hasPrefix("start-at-login")
@@ -79,23 +97,19 @@ private func looksLikeTomlLine(_ trimmed: String) -> Bool {
 }
 
 private func looksLikeHyprlandLine(_ trimmed: String) -> Bool {
-    // Variable: $mainMod = SUPER
     if trimmed.hasPrefix("$"), trimmed.contains("=") {
         return true
     }
-    // Section open: general {
     if trimmed.hasSuffix("{") {
         let name = trimmed.dropLast().trimmingCharacters(in: .whitespaces)
         if !name.isEmpty, !name.contains("="), !name.contains("[") {
             return true
         }
     }
-    // bind* = MOD, key, dispatcher
     let lower = trimmed.lowercased()
     for prefix in ["bind =", "binde =", "bindl =", "bindr =", "bindm =", "bindel =", "bindle =", "bindn =", "bindt ="] {
         if lower.hasPrefix(prefix) { return true }
     }
-    // Common top-level hypr assignments (with or without spaces around `=`)
     if lower.hasPrefix("bind=")
         || lower.hasPrefix("binde=")
         || lower.hasPrefix("exec-once")
@@ -108,4 +122,46 @@ private func looksLikeHyprlandLine(_ trimmed: String) -> Bool {
         return true
     }
     return false
+}
+
+private func looksLikeI3Line(_ trimmed: String) -> Bool {
+    let lower = trimmed.lowercased()
+    // Classic i3 directives (word at start of line)
+    let prefixes = [
+        "set $", "bindsym ", "bindcode ", "mode \"", "mode '", "mode ",
+        "workspace_layout", "default_orientation", "for_window ",
+        "assign ", "workspace ", "floating_modifier", "focus_follows_mouse",
+        "gaps ", "smart_gaps", "smart_borders", "font ", "bar {",
+        "exec_always ", "exec --no-startup-id", "client.focused",
+        "hide_edge_borders", "popup_during_fullscreen",
+    ]
+    for p in prefixes {
+        if lower.hasPrefix(p) { return true }
+    }
+    // `set $mod Mod4` style without space after set when `$`
+    if lower.hasPrefix("set $") { return true }
+    if lower.hasPrefix("set ") && trimmed.contains("$") { return true }
+    return false
+}
+
+/// Well-known Linux WM config paths used when no native AeroSpace config exists.
+func linuxCompatConfigCandidates(xdgConfigHome: URL? = nil, home: URL? = nil) -> [(kind: String, url: URL)] {
+    let home = home ?? FileManager.default.homeDirectoryForCurrentUser
+    let xdg = xdgConfigHome
+        ?? ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].map { URL(filePath: $0) }
+        ?? home.appending(path: ".config/")
+    return [
+        ("i3", xdg.appending(path: "i3/config")),
+        ("i3", home.appending(path: ".i3/config")),
+        ("Hyprland", xdg.appending(path: "hypr/hyprland.conf")),
+    ]
+}
+
+/// Default path for native TOML (and for the macOS-extras sidecar when primary is a Linux dialect).
+func aerospaceTomlSidecarUrl(xdgConfigHome: URL? = nil, home: URL? = nil) -> URL {
+    let home = home ?? FileManager.default.homeDirectoryForCurrentUser
+    let xdg = xdgConfigHome
+        ?? ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].map { URL(filePath: $0) }
+        ?? home.appending(path: ".config/")
+    return xdg.appending(path: "aerospace").appending(path: "aerospace.toml")
 }

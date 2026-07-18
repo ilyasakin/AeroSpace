@@ -2,42 +2,48 @@ import AppKit
 import Common
 import Foundation
 
-/// First-run experience: no user config exists, but an i3 or Hyprland config does.
-/// Offer to import it instead of silently running on the default config
+/// First-run notice when a Linux WM config is the primary config (auto-discovered).
+/// Plug-and-play: we already run the file live — this only informs and offers optional eject.
 @MainActor
 func offerForeignConfigImportIfNeeded() async {
     if isUnitTest || serverArgs.isReadOnly { return }
-    guard case .noCustomConfigExists = findCustomConfigUrl() else { return }
+    // Only when the live primary is a discovered i3/Hyprland file (not forced path, not native TOML).
+    guard serverArgs.configLocation == nil else { return }
+    guard case .file(let primaryUrl) = findCustomConfigUrl() else { return }
+    let format = detectConfigFormat(
+        text: (try? String(contentsOf: primaryUrl, encoding: .utf8)) ?? "",
+        url: primaryUrl,
+    )
+    guard format == .i3 || format == .hyprland else { return }
 
-    let home = FileManager.default.homeDirectoryForCurrentUser
-    let xdgConfigHome = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].map { URL(filePath: $0) }
-        ?? home.appending(path: ".config/")
-    let candidates: [(kind: String, url: URL, importer: (String, ImportOptions) -> ImportResult)] = [
-        ("i3", xdgConfigHome.appending(path: "i3/config"), importI3Config),
-        ("i3", home.appending(path: ".i3/config"), importI3Config),
-        ("Hyprland", xdgConfigHome.appending(path: "hypr/hyprland.conf"), importHyprConfig),
-    ]
-    guard let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0.url.path) }) else { return }
-    guard let sourceText = try? String(contentsOf: found.url, encoding: .utf8) else { return }
+    let noticeKey = "aerospace.linuxCompatConfigNoticeShown"
+    if UserDefaults.standard.bool(forKey: noticeKey) { return }
 
+    let sidecar = aerospaceTomlSidecarUrl()
+    let kind = format == .i3 ? "i3" : "Hyprland"
     let alert = NSAlert()
-    alert.messageText = "Import your \(found.kind) config?"
+    alert.messageText = "Using your \(kind) config"
     alert.informativeText =
-        "No AeroSpace config found, but a \(found.kind) config exists at \(found.url.path).\n\n" +
-        "AeroSpace can translate it: keybindings, window rules, gaps and workspace assignments " +
-        "are imported; lines that don't apply on macOS are kept as explained comments."
-    alert.addButton(withTitle: "Import")
-    alert.addButton(withTitle: "Not Now")
-    guard alert.runModal() == .alertFirstButtonReturn else { return }
+        "AeroSpace is running \(primaryUrl.path) directly — keybindings and rules load at runtime.\n\n" +
+        "Optional: eject to native TOML if you want macOS-only features (borders, status bar, etc.) " +
+        "in one file, or add a small TOML sidecar at \(sidecar.path) that overlays the Linux config.\n\n" +
+        "Linux status bars (polybar/i3status/i3bar) do not run on macOS; use the first-party bar or i3 IPC tooling."
+    alert.addButton(withTitle: "Got It")
+    alert.addButton(withTitle: "Eject to TOML…")
+    let response = alert.runModal()
+    UserDefaults.standard.set(true, forKey: noticeKey)
+    guard response == .alertSecondButtonReturn else { return }
 
-    let result = found.importer(sourceText, ImportOptions())
-    let destination = xdgConfigHome.appending(path: "aerospace").appending(path: "aerospace.toml")
+    guard let sourceText = try? String(contentsOf: primaryUrl, encoding: .utf8) else { return }
+    let result: ImportResult = format == .i3
+        ? importI3Config(sourceText, ImportOptions())
+        : importHyprConfig(sourceText, ImportOptions())
     do {
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try result.toml.write(to: destination, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: sidecar.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try result.toml.write(to: sidecar, atomically: true, encoding: .utf8)
     } catch {
         let failure = NSAlert()
-        failure.messageText = "Import failed"
+        failure.messageText = "Eject failed"
         failure.informativeText = error.localizedDescription
         failure.runModal()
         return
@@ -45,10 +51,10 @@ func offerForeignConfigImportIfNeeded() async {
     _ = await reloadConfig_nonCancellable()
 
     let done = NSAlert()
-    done.messageText = "Config imported"
+    done.messageText = "Ejected to TOML"
     done.informativeText =
         "\(result.translatedCount) of \(result.directiveCount) directives translated, \(result.skippedCount) skipped.\n\n" +
-        "Written to \(destination.path). Skipped lines are preserved as comments at the bottom of the file, " +
-        "each with an explanation. Run 'aerospace import-config \(found.kind == "i3" ? "i3" : "hyprland") --dry-run' any time to review."
+        "Written to \(sidecar.path). The native TOML is now the primary config. " +
+        "Run 'aerospace import-config \(format == .i3 ? "i3" : "hyprland") --dry-run' any time to review a conversion."
     done.runModal()
 }

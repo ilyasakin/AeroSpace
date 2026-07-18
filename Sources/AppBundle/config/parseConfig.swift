@@ -50,25 +50,70 @@ func readConfig(forceConfigUrl: URL?) -> ReadConfigResult {
     )
 }
 
-/// Parse config text, routing Hyprland syntax through the importer when detected.
-/// `sourceUrl` supplies the extension for format detection; when nil, content sniff is used.
+/// Parse config text, routing i3/Hyprland syntax through the importer when detected.
+/// `sourceUrl` supplies the path/extension for format detection; when nil, content sniff is used.
+/// When the primary dialect is i3/Hyprland and a TOML sidecar exists, the sidecar is merged
+/// overlay-wins (`~/.config/aerospace/aerospace.toml`).
 @MainActor
 func parseConfigText(_ text: String, sourceUrl: URL? = nil) -> ParseConfigResult {
-    switch detectConfigFormat(text: text, url: sourceUrl) {
+    let format = detectConfigFormat(text: text, url: sourceUrl)
+    let primary: ParseConfigResult = switch format {
         case .toml:
-            return parseConfig(text)
+            parseConfig(text)
         case .hyprland:
-            let imported = importHyprConfig(text, ImportOptions())
-            let parsed = parseConfig(imported.toml)
-            let importWarnings = imported.diagnostics.map { diagnostic in
-                ConfigParseDiagnostic(.emptyRoot, "hyprland import: \(diagnostic.description)")
-            }
-            return ParseConfigResult(
-                config: parsed.config,
-                errors: parsed.errors,
-                warnings: importWarnings + parsed.warnings,
-            )
+            parseImportedDialect(text, kind: "hyprland", importHyprConfig)
+        case .i3:
+            parseImportedDialect(text, kind: "i3", importI3Config)
     }
+
+    guard format != .toml, let sourceUrl, let sidecarUrl = findTomlSidecarUrl(primaryConfigUrl: sourceUrl) else {
+        return primary
+    }
+    return applyTomlSidecar(primary: primary, sidecarUrl: sidecarUrl)
+}
+
+@MainActor
+private func parseImportedDialect(
+    _ text: String,
+    kind: String,
+    _ importer: (String, ImportOptions) -> ImportResult,
+) -> ParseConfigResult {
+    let imported = importer(text, ImportOptions())
+    let parsed = parseConfig(imported.toml)
+    let importWarnings = imported.diagnostics.map { diagnostic in
+        ConfigParseDiagnostic(.emptyRoot, "\(kind) import: \(diagnostic.description)")
+    }
+    return ParseConfigResult(
+        config: parsed.config,
+        errors: parsed.errors,
+        warnings: importWarnings + parsed.warnings,
+    )
+}
+
+/// Merge a TOML sidecar onto an already-parsed primary config. Sidecar keys win; omitted keys keep primary values.
+@MainActor
+func applyTomlSidecar(primary: ParseConfigResult, sidecarUrl: URL) -> ParseConfigResult {
+    let sidecarText: String
+    do {
+        sidecarText = try String(contentsOf: sidecarUrl, encoding: .utf8)
+    } catch {
+        let msg = "Can't read TOML sidecar \(sidecarUrl.path.singleQuoted): \(error.localizedDescription)"
+        return ParseConfigResult(
+            config: primary.config,
+            errors: primary.errors + [.init(.emptyRoot, msg, preventConfigReload: false)],
+            warnings: primary.warnings,
+        )
+    }
+    let overlaid = parseConfig(sidecarText, base: primary.config)
+    let note = ConfigParseDiagnostic(
+        .emptyRoot,
+        "toml sidecar: applied \(sidecarUrl.path) (keys in the sidecar override the primary config)",
+    )
+    return ParseConfigResult(
+        config: overlaid.config,
+        errors: primary.errors + overlaid.errors,
+        warnings: primary.warnings + [note] + overlaid.warnings,
+    )
 }
 
 struct ConfigParseDiagnostic: Error, Equatable {
@@ -182,6 +227,7 @@ private let configParser: [String: any ParserProtocol<Config>] = [
 
     "gaps": Parser(\.gaps, parseGaps),
     "window-borders": Parser(\.windowBorders, parseWindowBorders),
+    "bar": Parser(\.statusBar, parseStatusBar),
     "focus-follows-mouse": Parser(\.focusFollowsMouse, parseFocusFollowsMouse),
     "workspace-to-monitor-force-assignment": Parser(\.workspaceToMonitorForceAssignment, parseWorkspaceToMonitorAssignment),
     "on-window-detected": Parser(\.onWindowDetected, parseOnWindowDetectedArray),
@@ -265,7 +311,9 @@ struct ParseConfigResult {
     var allowReloadConfig: Bool { errors.allSatisfy { !$0.preventConfigReload } }
 }
 
-@MainActor func parseConfig(_ rawToml: String) -> ParseConfigResult {
+/// Parse native TOML into a `Config`. When `base` is provided (sidecar overlay), omitted keys keep
+/// the base values; keys present in the TOML win.
+@MainActor func parseConfig(_ rawToml: String, base: Config = Config()) -> ParseConfigResult {
     var errors = NonCopyable([ConfigParseDiagnostic]())
 
     let rawTable: OrderedJson.JsonDict
@@ -286,11 +334,11 @@ struct ParseConfigResult {
 
     let configVersion: ConfigVersion = rawTable[configVersionConfigRootKey]
         .flatMap { parseConfigVersion($0, .rootKey(configVersionConfigRootKey)).getOrNil(appendErrorTo: &errors.value) }
-        ?? .min
+        ?? base.configVersion
 
     var c = ConfigParserContext(configVersion: configVersion, errors: errors.consume(), warnings: [ConfigParseDiagnostic]())
 
-    var config = rawTable.parseTable(Config(), configParser, .emptyRoot, &c)
+    var config = rawTable.parseTable(base, configParser, .emptyRoot, &c)
     config.configVersion = configVersion
 
     if let mapping = rawTable[keyMappingConfigRootKey].flatMap({ parseKeyMapping($0, .rootKey(keyMappingConfigRootKey), &c) }) {
@@ -431,7 +479,7 @@ private func parsePersistentWorkspaces(_ raw: OrderedJson, _ backtrace: ConfigBa
         }
 }
 
-private func parseArrayOfStrings(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<[String]> {
+func parseArrayOfStrings(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<[String]> {
     parseTomlArray(raw, backtrace)
         .flatMap { arr in
             arr.enumerated().mapAllOrFailure { (index, elem) in
