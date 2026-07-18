@@ -13,8 +13,13 @@ private let rawExecConfigParser: [String: any ParserProtocol<RawExecConfig>] = [
 
 let defaultOverriddenEnvVars = ["PATH": "/opt/homebrew/bin:/opt/homebrew/sbin:\(env["PATH"] ?? "")"]
 
+/// Injected into every exec environment so i3ipc clients / scripts find our socket.
+private var i3SockEnvVar: [String: String] {
+    isUnitTest ? [:] : ["I3SOCK": i3IpcSocketPath]
+}
+
 struct ExecConfig: Equatable {
-    var envVariables: [String: String] = env + defaultOverriddenEnvVars
+    var envVariables: [String: String] = env + defaultOverriddenEnvVars + i3SockEnvVar
 }
 
 struct RawExecConfig: ConvenienceMutable, Equatable {

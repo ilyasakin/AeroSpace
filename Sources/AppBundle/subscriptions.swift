@@ -56,5 +56,6 @@ func broadcastEvent(_ event: ServerEvent) {
                 _ = subscribers.removeValue(forKey: id)
             }
         }
+        // i3 IPC events are emitted at the focus-transition call sites (workspace then window).
     }
 }

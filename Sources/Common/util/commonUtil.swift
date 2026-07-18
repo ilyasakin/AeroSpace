@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 
 public let socketPath = "/tmp/\(aeroSpaceAppId)-\(unixUserName).sock"
+// i3IpcSocketPath lives in I3IpcProtocol.swift (same /tmp naming scheme, `-i3.sock` suffix).
 public let unixUserName = NSUserName()
 public let mainModeId = "main"
 

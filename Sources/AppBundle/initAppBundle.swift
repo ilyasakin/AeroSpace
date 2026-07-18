@@ -23,6 +23,7 @@ import Foundation
         await offerForeignConfigImportIfNeeded()
 
         startUnixSocketServer()
+        startI3IpcServer()
         GlobalObserver.initObserver()
         Workspace.garbageCollectUnusedWorkspaces() // init workspaces
         _ = Workspace.all.first?.focusWorkspace()

@@ -143,12 +143,14 @@ extension Workspace {
     if onFocusChangedRecursionGuard { return }
     onFocusChangedRecursionGuard = true
     defer { onFocusChangedRecursionGuard = false }
+    // Workspace transition *before* window focus (i3 IPC + bars): emit workspace events first
+    // so clients don't briefly paint the old workspace with the new window.
+    if let _prevFocusedWorkspaceName, hasFocusedWorkspaceChanged {
+        onWorkspaceChanged(_prevFocusedWorkspaceName, frozenFocus.workspaceName, focus)
+    }
     if hasFocusChanged {
         raiseAlwaysOnTopWindows()
         _ = await onFocusChanged(.defaultEnv, CmdIoImpl.emptyStdinIgnoringOut, focus)
-    }
-    if let _prevFocusedWorkspaceName, hasFocusedWorkspaceChanged {
-        onWorkspaceChanged(_prevFocusedWorkspaceName, frozenFocus.workspaceName, focus)
     }
     if hasFocusedMonitorChanged {
         _ = await onFocusedMonitorChanged(.defaultEnv, CmdIoImpl.emptyStdinIgnoringOut, focus)
@@ -168,6 +170,12 @@ extension Workspace {
         windowId: focus.windowOrNil?.windowId,
         workspace: focus.workspace.name,
     ))
+    // Window event only after any workspace event from this transition (see call order above).
+    i3IpcBroadcastWindowEvent(
+        change: "focus",
+        windowId: focus.windowOrNil?.windowId,
+        workspace: focus.workspace.name,
+    )
     return await config.onFocusChanged.run(env.withFocus(focus), io)
 }
 
@@ -176,6 +184,7 @@ extension Workspace {
         workspace: newWorkspace,
         prevWorkspace: oldWorkspace,
     ))
+    i3IpcBroadcastWorkspaceEvent(change: "focus", currentName: newWorkspace, oldName: oldWorkspace)
     if let exec = config.execOnWorkspaceChange.first {
         let process = Process()
         process.executableURL = URL(filePath: exec)
@@ -183,6 +192,7 @@ extension Workspace {
         var environment = config.execConfig.envVariables
         environment[AEROSPACE_FOCUSED_WORKSPACE] = newWorkspace
         environment[AEROSPACE_PREV_WORKSPACE] = oldWorkspace
+        environment["I3SOCK"] = i3IpcSocketPath
         switch focus.asLeaf {
             case .emptyWorkspace(let w):
                 environment[AEROSPACE_WORKSPACE] = w.name

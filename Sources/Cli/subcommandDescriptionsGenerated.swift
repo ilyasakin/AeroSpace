@@ -18,6 +18,8 @@ let subcommandDescriptions = [
     ["  focus-monitor", "Focus monitor by relative direction, by order, or by pattern"],
     ["  focus", "Set focus to a window."],
     ["  fullscreen", "Toggle the fullscreen mode for the focused window"],
+    ["  i3-msg", "i3-IPC client (GET_WORKSPACES, RUN_COMMAND, SUBSCRIBE, …) via AeroSpace's i3 socket"],
+    ["  i3-socket-path", "Print the i3-IPC socket path (also set as $I3SOCK for exec)"],
     ["  import-config", "Translate an i3 or Hyprland config into a native config + compatibility report"],
     ["  join-with", "Put the focused window and the nearest node in the specified direction under a common parent container"],
     ["  layout", "Change layout of the focused node to the given layout"],

@@ -16,7 +16,15 @@ struct Main {
     static func main() async {
         // Global -j/--json (M5): aerospace -j list-windows == list-windows --json.
         // Only injects for JSON-capable subcommands; -j is never rewritten as a flag value.
-        let args = preprocessAerospaceCliArgs(Array(CommandLine.arguments.dropFirst())).slice
+        let rawArgs = Array(CommandLine.arguments.dropFirst())
+        // i3 IPC client surface (separate from AeroSpace server protocol)
+        if let first = rawArgs.first,
+           first == "i3-msg" || first == "i3-socket-path" || first == "i3-get-socketpath"
+        {
+            await handleI3Cli(rawArgs)
+        }
+
+        let args = preprocessAerospaceCliArgs(rawArgs).slice
 
         if args.isEmpty {
             exit(EXIT_CODE_TWO, err: usage)
