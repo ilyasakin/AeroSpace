@@ -135,12 +135,30 @@ final class StatusBarNativeModulesTest: XCTestCase {
         assertTrue(abs(loads[1] - 0.10) < 0.001)
     }
 
-    func testCoreGraphLayoutWidth() {
-        let layout = defaultCoreGraphLayout(coreCount: 8, barHeight: 28)
-        assertTrue(layout.totalWidth > 20)
-        let bar = layout.barFrame(index: 0, load: 0.5, height: 28)
-        assertTrue(bar.height > 0)
-        assertTrue(bar.height < 28)
+    func testHistoryGraphLayoutWidth() {
+        let layout = defaultHistoryGraphLayout(sampleCount: 30, coreCount: 8)
+        assertTrue(layout.totalWidth > 40)
+        let cell = layout.cellFrame(sampleIndex: 0, coreIndex: 0, load: 0.5, viewHeight: 28)
+        assertTrue(cell.height > 0)
+        assertTrue(cell.height <= 28)
+    }
+
+    func testAppendHistorySampleRingBuffer() {
+        var h: [[Double]] = []
+        for i in 0 ..< 5 {
+            h = appendHistorySample(h, sample: [Double(i)], capacity: 3)
+        }
+        // Keep last 3: 2, 3, 4
+        assertEquals(h.count, 3)
+        assertEquals(h[0], [2])
+        assertEquals(h[2], [4])
+    }
+
+    func testAppendHistoryResetsWhenCoreCountChanges() {
+        var h = [[0.1, 0.2], [0.3, 0.4]]
+        h = appendHistorySample(h, sample: [0.5, 0.6, 0.7], capacity: 10)
+        assertEquals(h.count, 1)
+        assertEquals(h[0].count, 3)
     }
 }
 

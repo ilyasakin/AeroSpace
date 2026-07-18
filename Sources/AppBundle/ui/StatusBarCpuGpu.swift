@@ -2,12 +2,19 @@ import Darwin
 import Foundation
 import IOKit
 
-// MARK: - Per-core CPU sampling
+// MARK: - Per-core CPU sampling + short history
 
-/// Busy fraction 0...1 for each logical CPU, derived from two `host_processor_info` snapshots.
+/// Busy fraction 0...1 for each logical CPU at one sample instant.
 struct CpuCoreLoads: Equatable, Sendable {
-    /// One entry per logical core (P-cores + E-cores all appear as separate CPUs on Apple Silicon).
     var cores: [Double]
+}
+
+/// Ring buffer of per-core samples. `samples[t][core]` is load at time t (oldest first).
+struct CpuHistory: Equatable, Sendable {
+    /// Oldest → newest; each entry is one sample of all cores.
+    var samples: [[Double]]
+    var coreCount: Int { samples.last?.count ?? 0 }
+    var length: Int { samples.count }
 }
 
 /// Pure delta between two CPU tick samples → busy fractions. Unit-testable without Mach APIs.
@@ -37,30 +44,49 @@ func cpuCoreLoads(
     return out
 }
 
-/// Process-wide sampler: keeps the previous tick snapshot so each `sample()` returns a real rate.
+/// Append `sample` to `history`, dropping the oldest when over capacity. Pure helper for tests.
+func appendHistorySample(_ history: [[Double]], sample: [Double], capacity: Int) -> [[Double]] {
+    guard capacity > 0 else { return [] }
+    var next = history
+    // Core count changed — restart history so columns stay aligned.
+    if let last = next.last, last.count != sample.count {
+        next = []
+    }
+    next.append(sample)
+    if next.count > capacity {
+        next.removeFirst(next.count - capacity)
+    }
+    return next
+}
+
+/// Process-wide sampler: previous Mach ticks + ring buffer of recent per-core loads.
 @MainActor
 final class StatusBarCpuSampler {
     static let shared = StatusBarCpuSampler()
+    /// ~30s of history at 1 Hz.
+    static let historyCapacity = 30
 
     private var previousTicks: [(user: UInt32, system: UInt32, idle: UInt32, nice: UInt32)] = []
     private(set) var lastLoads: [Double] = []
+    /// Oldest → newest samples.
+    private(set) var history: [[Double]] = []
 
     private init() {}
 
-    /// Take a sample. First call seeds ticks and returns zeros (or last known); subsequent calls
-    /// return per-core busy fractions since the previous sample.
     @discardableResult
-    func sample() -> CpuCoreLoads {
+    func sample() -> CpuHistory {
         guard let ticks = readCpuTicks() else {
-            return CpuCoreLoads(cores: lastLoads)
+            return CpuHistory(samples: history)
         }
         if previousTicks.count == ticks.count, !previousTicks.isEmpty {
             lastLoads = cpuCoreLoads(previous: previousTicks, current: ticks)
+            history = appendHistorySample(history, sample: lastLoads, capacity: Self.historyCapacity)
         } else if lastLoads.count != ticks.count {
             lastLoads = Array(repeating: 0, count: ticks.count)
+            history = []
         }
         previousTicks = ticks
-        return CpuCoreLoads(cores: lastLoads)
+        return CpuHistory(samples: history)
     }
 }
 
@@ -81,7 +107,6 @@ private func readCpuTicks() -> [(user: UInt32, system: UInt32, idle: UInt32, nic
         vm_deallocate(mach_task_self_, vm_address_t(bitPattern: infoArray), size)
     }
 
-    // Each processor contributes CPU_STATE_MAX integers (user, system, idle, nice).
     let stride = Int(CPU_STATE_MAX)
     let totalInts = Int(infoCount)
     let cores = min(Int(cpuCount), totalInts / stride)
@@ -89,7 +114,6 @@ private func readCpuTicks() -> [(user: UInt32, system: UInt32, idle: UInt32, nic
     result.reserveCapacity(cores)
     for i in 0 ..< cores {
         let base = i * stride
-        // CPU_STATE_USER=0, SYSTEM=1, IDLE=2, NICE=3
         let user = UInt32(bitPattern: infoArray[base + Int(CPU_STATE_USER)])
         let system = UInt32(bitPattern: infoArray[base + Int(CPU_STATE_SYSTEM)])
         let idle = UInt32(bitPattern: infoArray[base + Int(CPU_STATE_IDLE)])
@@ -99,29 +123,42 @@ private func readCpuTicks() -> [(user: UInt32, system: UInt32, idle: UInt32, nic
     return result
 }
 
-// MARK: - GPU sampling (best-effort via IOAccelerator)
+// MARK: - GPU sampling + history
 
 struct GpuLoad: Equatable, Sendable {
-    /// 0...1 device utilization when known.
     var utilization: Double?
     var name: String?
+}
+
+struct GpuHistory: Equatable, Sendable {
+    /// Oldest → newest utilization samples (0...1). Missing samples stored as 0 when dimmed.
+    var samples: [Double]
+    var lastKnown: Double?
 }
 
 @MainActor
 final class StatusBarGpuSampler {
     static let shared = StatusBarGpuSampler()
+    static let historyCapacity = 30
+
     private(set) var last: GpuLoad = GpuLoad(utilization: nil, name: nil)
+    private(set) var history: [Double] = []
     private init() {}
 
     @discardableResult
-    func sample() -> GpuLoad {
+    func sample() -> GpuHistory {
         last = readGpuLoad() ?? last
-        return last
+        if let u = last.utilization {
+            history.append(u)
+            if history.count > Self.historyCapacity {
+                history.removeFirst(history.count - Self.historyCapacity)
+            }
+        }
+        // When unavailable, don't push fake zeros that look like idle — keep prior history.
+        return GpuHistory(samples: history, lastKnown: last.utilization)
     }
 }
 
-/// Walks IOAccelerator services for "Device Utilization %" / "Renderer Utilization %".
-/// Not guaranteed on every Mac / OS version — returns nil when unavailable.
 func readGpuLoad() -> GpuLoad? {
     let matching = IOServiceMatching("IOAccelerator")
     var iterator: io_iterator_t = 0
@@ -146,13 +183,11 @@ func readGpuLoad() -> GpuLoad? {
             ?? dict["CFBundleIdentifier"] as? String
             ?? dict["IOClass"] as? String
 
-        // PerformanceStatistics is the usual home for utilization percentages.
         let stats = dict["PerformanceStatistics"] as? [String: Any] ?? dict
         var util: Double?
         for key in ["Device Utilization %", "Renderer Utilization %", "GPU Activity(%)", "Hardware utilization %"] {
             if let n = stats[key] as? NSNumber {
                 let v = n.doubleValue
-                // Values are typically 0...100
                 util = v > 1.0 ? min(1, v / 100.0) : min(1, max(0, v))
                 break
             }
@@ -162,7 +197,6 @@ func readGpuLoad() -> GpuLoad? {
             }
         }
         if let util {
-            // Prefer the highest utilization among accelerators (discrete + integrated).
             if best?.utilization ?? -1 < util {
                 best = GpuLoad(utilization: util, name: name)
             }
@@ -173,40 +207,68 @@ func readGpuLoad() -> GpuLoad? {
     return best
 }
 
-// MARK: - Graph geometry (pure, testable)
+// MARK: - History graph geometry (pure, testable)
 
-/// Layout for a multi-core sparkline inside a status-bar chip.
-struct CoreGraphLayout: Equatable {
-    var barWidth: CGFloat
-    var gap: CGFloat
+/// Layout for a multi-core *time-history* chart: X = time, each row = one core.
+struct HistoryGraphLayout: Equatable {
+    var sampleCount: Int
+    var coreCount: Int
+    var columnWidth: CGFloat
+    var rowGap: CGFloat
     var paddingX: CGFloat
     var paddingY: CGFloat
-    var coreCount: Int
+    var labelWidth: CGFloat
 
     var totalWidth: CGFloat {
-        guard coreCount > 0 else { return paddingX * 2 }
-        return paddingX * 2 + CGFloat(coreCount) * barWidth + CGFloat(max(0, coreCount - 1)) * gap
+        let cols = max(1, sampleCount)
+        return paddingX * 2 + labelWidth + CGFloat(cols) * columnWidth
     }
 
-    /// Bar rect in local view coordinates (origin bottom-left, AppKit).
-    func barFrame(index: Int, load: Double, height: CGFloat) -> CGRect {
-        let x = paddingX + CGFloat(index) * (barWidth + gap)
-        let usable = max(1, height - paddingY * 2)
-        let h = max(1, usable * CGFloat(min(1, max(0, load))))
-        let y = paddingY
-        return CGRect(x: x, y: y, width: barWidth, height: h)
+    /// Rectangle for one sample column on one core row (AppKit coords, origin bottom-left).
+    /// `load` fills from the bottom of the row upward.
+    func cellFrame(
+        sampleIndex: Int,
+        coreIndex: Int,
+        load: Double,
+        viewHeight: CGFloat,
+    ) -> CGRect {
+        let cores = max(1, coreCount)
+        let usableH = max(1, viewHeight - paddingY * 2)
+        let rowH = (usableH - CGFloat(cores - 1) * rowGap) / CGFloat(cores)
+        // Core 0 at top of the chart (Activity Monitor style)
+        let rowFromTop = CGFloat(coreIndex)
+        let rowBottom = paddingY + (CGFloat(cores - 1) - rowFromTop) * (rowH + rowGap)
+        let x = paddingX + labelWidth + CGFloat(sampleIndex) * columnWidth
+        let h = max(0.5, rowH * CGFloat(min(1, max(0, load))))
+        return CGRect(x: x, y: rowBottom, width: max(1, columnWidth - 0.5), height: h)
+    }
+
+    /// Full row track background.
+    func rowTrackFrame(coreIndex: Int, viewHeight: CGFloat) -> CGRect {
+        let cores = max(1, coreCount)
+        let usableH = max(1, viewHeight - paddingY * 2)
+        let rowH = (usableH - CGFloat(cores - 1) * rowGap) / CGFloat(cores)
+        let rowFromTop = CGFloat(coreIndex)
+        let rowBottom = paddingY + (CGFloat(cores - 1) - rowFromTop) * (rowH + rowGap)
+        let x = paddingX + labelWidth
+        let w = CGFloat(max(1, sampleCount)) * columnWidth
+        return CGRect(x: x, y: rowBottom, width: w, height: rowH)
     }
 }
 
-func defaultCoreGraphLayout(coreCount: Int, barHeight: CGFloat) -> CoreGraphLayout {
-    // Keep readable on dense chips: thin bars, 1pt gaps, scale width with core count but cap.
-    let barW: CGFloat = coreCount > 16 ? 2 : (coreCount > 8 ? 3 : 4)
-    let gap: CGFloat = 1
-    return CoreGraphLayout(
-        barWidth: barW,
-        gap: gap,
-        paddingX: 4,
-        paddingY: 3,
-        coreCount: coreCount,
+func defaultHistoryGraphLayout(
+    sampleCount: Int,
+    coreCount: Int,
+    columnWidth: CGFloat = 2.5,
+    labelWidth: CGFloat = 0,
+) -> HistoryGraphLayout {
+    HistoryGraphLayout(
+        sampleCount: max(1, sampleCount),
+        coreCount: max(1, coreCount),
+        columnWidth: columnWidth,
+        rowGap: coreCount > 12 ? 0.5 : 1,
+        paddingX: 3,
+        paddingY: 2,
+        labelWidth: labelWidth,
     )
 }

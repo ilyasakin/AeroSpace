@@ -317,14 +317,16 @@ private final class StatusBarContentView: NSView {
         var leftX: CGFloat = 8
         let height = bounds.height > 0 ? bounds.height : CGFloat(config.height)
 
-        // Sample once per rebuild so left+right share the same CPU/GPU snapshot.
-        let cpuLoads = StatusBarCpuSampler.shared.sample().cores
-        let gpuLoad = StatusBarGpuSampler.shared.sample()
+        // Sample once per rebuild so left+right share the same history snapshot.
+        let cpuHistory = StatusBarCpuSampler.shared.sample()
+        let gpuHistory = StatusBarGpuSampler.shared.sample()
 
         enum Placeable {
             case text(String, bg: NSColor?, fg: NSColor, action: (() -> Void)?)
-            case cpuGraph([Double], fg: NSColor)
-            case gpuGraph(Double?, fg: NSColor)
+            /// Per-core short-time history: samples[t][core], oldest → newest.
+            case cpuHistory([[Double]], fg: NSColor)
+            /// Single-series GPU history, oldest → newest.
+            case gpuHistory([Double], last: Double?, fg: NSColor)
         }
 
         func width(of item: Placeable) -> CGFloat {
@@ -333,10 +335,13 @@ private final class StatusBarContentView: NSView {
                     let attr = NSAttributedString(string: t, attributes: [.font: font, .foregroundColor: color])
                     let isChip = t.count <= 2
                     return max(attr.size().width + (isChip ? 0 : 12), isChip ? height : 0)
-                case .cpuGraph(let cores, _):
-                    return defaultCoreGraphLayout(coreCount: max(1, cores.count), barHeight: height).totalWidth
-                case .gpuGraph:
-                    return defaultCoreGraphLayout(coreCount: 1, barHeight: height).totalWidth + 18 // bar + "G" label
+                case .cpuHistory(let samples, _):
+                    let cores = samples.last?.count ?? 1
+                    let n = max(samples.count, StatusBarCpuSampler.historyCapacity)
+                    return defaultHistoryGraphLayout(sampleCount: n, coreCount: max(1, cores)).totalWidth
+                case .gpuHistory:
+                    let n = max(gpuHistory.samples.count, StatusBarGpuSampler.historyCapacity)
+                    return defaultHistoryGraphLayout(sampleCount: n, coreCount: 1, labelWidth: 10).totalWidth
             }
         }
 
@@ -354,17 +359,22 @@ private final class StatusBarContentView: NSView {
                         addSubview(chip)
                         buttons.append(chip)
                     }
-                case .cpuGraph(let cores, let color):
-                    let graph = StatusBarCoreGraphView(frame: frame, cores: cores, accent: color, label: nil)
+                case .cpuHistory(let samples, let color):
+                    let graph = StatusBarHistoryGraphView(
+                        frame: frame,
+                        samples: samples,
+                        accent: color,
+                        mode: .cpu,
+                    )
                     addSubview(graph)
                     buttons.append(graph)
-                case .gpuGraph(let load, let color):
-                    let graph = StatusBarCoreGraphView(
+                case .gpuHistory(let samples, let last, let color):
+                    let graph = StatusBarHistoryGraphView(
                         frame: frame,
-                        cores: [load ?? 0],
+                        samples: samples.map { [$0] },
                         accent: color,
-                        label: "G",
-                        dimmed: load == nil,
+                        mode: .gpu,
+                        dimmed: last == nil && samples.isEmpty,
                     )
                     addSubview(graph)
                     buttons.append(graph)
@@ -396,9 +406,15 @@ private final class StatusBarContentView: NSView {
                         let title = focus.windowOrNil?.app.name ?? focus.workspace.name
                         out.append(.text(title, bg: nil, fg: fg, action: nil))
                     case "cpu":
-                        out.append(.cpuGraph(cpuLoads.isEmpty ? [0] : cpuLoads, fg: fg))
+                        // Prefer ring buffer; until the second tick, show latest core sample once.
+                        let effective: [[Double]] = {
+                            if !cpuHistory.samples.isEmpty { return cpuHistory.samples }
+                            let cores = StatusBarCpuSampler.shared.lastLoads
+                            return cores.isEmpty ? [[0]] : [cores]
+                        }()
+                        out.append(.cpuHistory(effective, fg: fg))
                     case "gpu":
-                        out.append(.gpuGraph(gpuLoad.utilization, fg: fg))
+                        out.append(.gpuHistory(gpuHistory.samples, last: gpuHistory.lastKnown, fg: fg))
                     default:
                         if let text = statusBarSystemModuleText(mod) {
                             out.append(.text(text, bg: nil, fg: fg, action: nil))
@@ -453,20 +469,33 @@ private final class StatusBarContentView: NSView {
     }
 }
 
-// MARK: - Per-core / GPU sparkline
+// MARK: - Short-time history graph (X = time, row = core)
 
-/// Vertical bar per core (or a single bar for GPU). Bottom-aligned, fills with load 0...1.
+enum StatusBarHistoryGraphMode {
+    case cpu
+    case gpu
+}
+
+/// Scrolling multi-core (or single GPU) history chart.
+/// Each column is one sample (~1s); each row is one logical core. Newest is on the right.
 @MainActor
-final class StatusBarCoreGraphView: NSView {
-    private var cores: [Double]
+final class StatusBarHistoryGraphView: NSView {
+    /// samples[time][core], oldest → newest
+    private var samples: [[Double]]
     private let accent: NSColor
-    private let label: String?
+    private let mode: StatusBarHistoryGraphMode
     private let dimmed: Bool
 
-    init(frame: NSRect, cores: [Double], accent: NSColor, label: String? = nil, dimmed: Bool = false) {
-        self.cores = cores
+    init(
+        frame: NSRect,
+        samples: [[Double]],
+        accent: NSColor,
+        mode: StatusBarHistoryGraphMode,
+        dimmed: Bool = false,
+    ) {
+        self.samples = samples
         self.accent = accent
-        self.label = label
+        self.mode = mode
         self.dimmed = dimmed
         super.init(frame: frame)
         wantsLayer = true
@@ -477,23 +506,20 @@ final class StatusBarCoreGraphView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(cores: [Double]) {
-        self.cores = cores
-        toolTip = tooltipString()
-        needsDisplay = true
-    }
-
     private func tooltipString() -> String {
-        if let label, label == "G" {
-            if let u = cores.first, !dimmed {
-                return String(format: "GPU %.0f%%", u * 100)
-            }
-            return "GPU utilization unavailable"
+        switch mode {
+            case .gpu:
+                if let last = samples.last?.first, !dimmed {
+                    return String(format: "GPU %.0f%% (last %ds)", last * 100, samples.count)
+                }
+                return "GPU utilization unavailable"
+            case .cpu:
+                guard let last = samples.last, !last.isEmpty else { return "CPU" }
+                let avg = last.reduce(0, +) / Double(last.count)
+                let parts = last.enumerated().map { i, v in String(format: "C%d: %.0f%%", i, v * 100) }
+                return String(format: "CPU avg %.0f%% · %ds history — ", avg * 100, samples.count)
+                    + parts.joined(separator: "  ")
         }
-        if cores.isEmpty { return "CPU" }
-        let parts = cores.enumerated().map { i, v in String(format: "C%d: %.0f%%", i, v * 100) }
-        let avg = cores.reduce(0, +) / Double(cores.count)
-        return String(format: "CPU avg %.0f%% — ", avg * 100) + parts.joined(separator: "  ")
     }
 
     nonisolated override func hitTest(_ point: NSPoint) -> NSView? {
@@ -509,13 +535,26 @@ final class StatusBarCoreGraphView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let labelW: CGFloat = label == nil ? 0 : 12
-        let layout = defaultCoreGraphLayout(coreCount: max(1, cores.count), barHeight: bounds.height)
-        // Background track
-        let trackColor = accent.withAlphaComponent(dimmed ? 0.12 : 0.18)
-        let fillColor = accent.withAlphaComponent(dimmed ? 0.35 : 0.9)
+        let coreCount = max(1, samples.last?.count ?? 1)
+        let capacity = mode == .cpu ? StatusBarCpuSampler.historyCapacity : StatusBarGpuSampler.historyCapacity
+        // Right-align history so growth fills from the right (scrolling feel as capacity fills).
+        let sampleCount = max(samples.count, 1)
+        let labelW: CGFloat = mode == .gpu ? 10 : 0
+        let layout = defaultHistoryGraphLayout(
+            sampleCount: capacity,
+            coreCount: coreCount,
+            columnWidth: 2.5,
+            labelWidth: labelW,
+        )
 
-        if let label {
+        // Chart background
+        let chart = layout.rowTrackFrame(coreIndex: 0, viewHeight: bounds.height)
+            .union(layout.rowTrackFrame(coreIndex: coreCount - 1, viewHeight: bounds.height))
+        let bg = NSBezierPath(roundedRect: chart.insetBy(dx: -1, dy: 0), xRadius: 2, yRadius: 2)
+        accent.withAlphaComponent(dimmed ? 0.08 : 0.12).setFill()
+        bg.fill()
+
+        if mode == .gpu {
             let para = NSMutableParagraphStyle()
             para.alignment = .center
             let attrs: [NSAttributedString.Key: Any] = [
@@ -523,21 +562,35 @@ final class StatusBarCoreGraphView: NSView {
                 .foregroundColor: accent.withAlphaComponent(0.85),
                 .paragraphStyle: para,
             ]
-            let r = NSRect(x: 0, y: 0, width: labelW, height: bounds.height)
-            (label as NSString).draw(in: r.offsetBy(dx: 0, dy: (bounds.height - 11) / 2), withAttributes: attrs)
+            ("G" as NSString).draw(
+                in: NSRect(x: 0, y: (bounds.height - 11) / 2, width: labelW, height: 11),
+                withAttributes: attrs,
+            )
         }
 
-        let originX = labelW
-        for (i, load) in cores.enumerated() {
-            var bar = layout.barFrame(index: i, load: 1, height: bounds.height) // full track
-            bar.origin.x += originX
-            trackColor.setFill()
-            NSBezierPath(roundedRect: bar, xRadius: 1, yRadius: 1).fill()
+        // Pad left with empty columns so the series sits flush right (scrolling window).
+        let pad = max(0, capacity - sampleCount)
+        let trackColor = accent.withAlphaComponent(0.14)
+        let fillColor = accent.withAlphaComponent(dimmed ? 0.35 : 0.92)
 
-            var filled = layout.barFrame(index: i, load: load, height: bounds.height)
-            filled.origin.x += originX
-            fillColor.setFill()
-            NSBezierPath(roundedRect: filled, xRadius: 1, yRadius: 1).fill()
+        for core in 0 ..< coreCount {
+            // Track under each core row
+            trackColor.setFill()
+            NSBezierPath(rect: layout.rowTrackFrame(coreIndex: core, viewHeight: bounds.height)).fill()
+
+            for (si, sample) in samples.enumerated() {
+                let load = core < sample.count ? sample[core] : 0
+                let col = pad + si
+                guard col < capacity else { continue }
+                let cell = layout.cellFrame(
+                    sampleIndex: col,
+                    coreIndex: core,
+                    load: load,
+                    viewHeight: bounds.height,
+                )
+                fillColor.setFill()
+                NSBezierPath(rect: cell).fill()
+            }
         }
     }
 }
