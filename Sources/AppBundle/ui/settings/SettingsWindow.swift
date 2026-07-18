@@ -167,7 +167,7 @@ struct BarSettingsTab: View {
                     }
 
                     SettingsSection(title: "Left modules") {
-                        Text("Click to enable/disable. Drag enabled rows to reorder (left → right on the bar).")
+                        Text("Toggle to show on the bar. Drag the grip on “On bar” rows to reorder (left → right).")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         BarModulePicker(
@@ -177,7 +177,7 @@ struct BarSettingsTab: View {
                     }
 
                     SettingsSection(title: "Right modules") {
-                        Text("Click to enable/disable. Drag enabled rows to reorder (left → right in the right cluster).")
+                        Text("Toggle to show on the bar. Drag the grip on “On bar” rows to reorder (left → right).")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         BarModulePicker(
@@ -239,7 +239,10 @@ struct BarSettingsTab: View {
     }
 }
 
-/// Classic toggle list for modules, with drag-to-reorder on the enabled set.
+/// One list of modules: a single Toggle per row (on/off), drag-reorder only for “On bar”.
+///
+/// Avoids double checkbox chrome (custom checkmark + button). List stays in edit mode so
+/// macOS shows real reorder grips; toggles are separate controls so they don’t steal drag.
 struct BarModulePicker: View {
     let selected: [String]
     let onChange: ([String]) -> Void
@@ -249,18 +252,19 @@ struct BarModulePicker: View {
         catalog.filter { !selected.contains($0.rawValue) }
     }
 
+    /// Keep list permanently in edit mode so `.onMove` grips are always available (macOS).
+    @State private var editMode: EditMode = .active
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Enabled modules — drag to reorder; click to disable
-            if !selected.isEmpty {
-                List {
-                    ForEach(Array(selected.enumerated()), id: \.offset) { index, id in
-                        moduleRow(
-                            id: id,
-                            enabled: true,
-                            order: index + 1,
-                            showDragHandle: true,
-                        ) {
+        List {
+            Section {
+                if selected.isEmpty {
+                    Text("Nothing on this side yet — turn a module on below.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(selected, id: \.self) { id in
+                        moduleRow(id: id, isOn: true) {
                             onChange(selected.filter { $0 != id })
                         }
                     }
@@ -270,57 +274,58 @@ struct BarModulePicker: View {
                         onChange(next)
                     }
                 }
-                .listStyle(.bordered(alternatesRowBackgrounds: true))
-                .frame(minHeight: CGFloat(max(36, selected.count * 28 + 12)), maxHeight: 160)
+            } header: {
+                Text("On bar")
             }
 
-            // Disabled / available — click to enable (appended, same as before)
-            ForEach(available, id: \.rawValue) { mod in
-                moduleRow(
-                    id: mod.rawValue,
-                    enabled: false,
-                    order: nil,
-                    showDragHandle: false,
-                ) {
-                    onChange(selected + [mod.rawValue])
+            if !available.isEmpty {
+                Section {
+                    ForEach(available, id: \.rawValue) { mod in
+                        moduleRow(id: mod.rawValue, isOn: false) {
+                            onChange(selected + [mod.rawValue])
+                        }
+                    }
+                } header: {
+                    Text("Available")
                 }
             }
         }
+        .listStyle(.bordered(alternatesRowBackgrounds: true))
+        .frame(
+            minHeight: CGFloat(min(280, 44 + (selected.count + available.count) * 28)),
+            maxHeight: 320,
+        )
+        .environment(\.editMode, $editMode)
     }
 
     @ViewBuilder
-    private func moduleRow(
-        id: String,
-        enabled: Bool,
-        order: Int?,
-        showDragHandle: Bool,
-        action: @escaping () -> Void,
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                if showDragHandle {
-                    Image(systemName: "line.3.horizontal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(enabled ? Color.accentColor : Color.secondary)
+    private func moduleRow(id: String, isOn: Bool, setOn: @escaping () -> Void) -> some View {
+        // Toggle is the only on/off control — no second checkmark icon.
+        // `setOn` is invoked when the user flips the switch; get always reflects `isOn`.
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(StatusBarBuiltinModule(rawValue: id)?.title ?? id)
                     .font(.body)
                 Text(id)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
-                Spacer()
-                if let order {
-                    Text("#\(order)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                }
             }
-            .contentShape(Rectangle())
-            .padding(.vertical, 2)
+            Spacer(minLength: 8)
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { isOn },
+                    set: { newValue in
+                        // Only act on real flips (get already matches current state).
+                        if newValue != isOn { setOn() }
+                    },
+                ),
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 2)
     }
 }
 
