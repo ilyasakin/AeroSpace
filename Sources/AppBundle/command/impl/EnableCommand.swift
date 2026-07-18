@@ -32,8 +32,31 @@ struct EnableCommand: Command {
             }
             await activateMode_nonCancellable(mainModeId)
         } else {
+            // Disabling stops layout; unpark any hide-in-corner windows so they are not left
+            // as a 1px strip at the display edge while AeroSpace is "paused".
+            restoreAllWindowsFromHideCornerForDisable()
             await activateMode_nonCancellable(nil)
         }
         return .succ
+    }
+}
+
+/// Best-effort: put every managed window on-screen when tiling is turned off.
+@MainActor
+private func restoreAllWindowsFromHideCornerForDisable() {
+    for window in MacWindow.allWindowsMap.values {
+        window.unhideFromCorner()
+        let axRect = window.macApp.getAxRectForTermination(window.windowId)
+        let monitor = window.nodeMonitor
+            ?? axRect.map { $0.center.monitorApproximation }
+            ?? mainMonitor
+        let visible = monitor.visibleRect
+        // Prefer last laid-out size, then AX, then floating size.
+        let preferred = window.lastAppliedLayoutPhysicalRect?.size
+            ?? axRect?.size
+            ?? window.lastFloatingSize
+        let size = terminationRestoreSize(preferred: preferred, visibleRect: visible)
+        let point = centeredTopLeft(windowSize: size, in: visible)
+        window.macApp.setAxFrameForTermination(window.windowId, point, size)
     }
 }

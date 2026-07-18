@@ -10,36 +10,86 @@ let lockScreenAppBundleId = "com.apple.loginwindow"
 let zoomAppBundleId = "us.zoom.xos"
 
 func interceptTermination(_ _signal: Int32) {
+    // SIGKILL cannot be caught — only install for signals that can (SIGINT, SIGTERM).
     signal(_signal, { (signal: Int32) in
-        check(Thread.current.isMainThread)
-        Task.startUnstructured { @MainActor in
+        // Run restore on the main actor synchronously so parked windows are centered
+        // before the process actually exits (async Task here used to race with exit).
+        MainActor.runSync {
             terminationHandler?.beforeTermination()
-            exit(signal)
         }
+        exit(signal)
     } as sig_t)
 }
 
 @MainActor
 func initTerminationHandler() {
     unsafe _terminationHandler = AppServerTerminationHandler()
+    // Any quit path (menu, Cmd+Q via AppKit, terminate()) — not only our tray button.
+    NotificationCenter.default.addObserver(
+        forName: NSApplication.willTerminateNotification,
+        object: nil,
+        queue: .main,
+    ) { _ in
+        MainActor.assumeIsolated {
+            terminationHandler?.beforeTermination()
+        }
+    }
+    // Catchable process signals (debug *and* release). SIGKILL is uncatchable.
+    interceptTermination(SIGINT)
+    interceptTermination(SIGTERM)
+}
+
+/// Center `windowSize` inside `visibleRect` (AeroSpace top-left coords, +y down).
+/// Pure helper so quit-restore math stays unit-testable.
+func centeredTopLeft(windowSize: CGSize, in visibleRect: Rect) -> CGPoint {
+    let w = min(max(windowSize.width, 1), visibleRect.width)
+    let h = min(max(windowSize.height, 1), visibleRect.height)
+    return CGPoint(
+        x: visibleRect.topLeftX + (visibleRect.width - w) / 2,
+        y: visibleRect.topLeftY + (visibleRect.height - h) / 2,
+    )
+}
+
+/// Clamp a preferred size so it fits the visible monitor area.
+func terminationRestoreSize(preferred: CGSize?, visibleRect: Rect) -> CGSize {
+    let fallback = CGSize(width: visibleRect.width * 0.7, height: visibleRect.height * 0.7)
+    let raw = preferred.flatMap { s -> CGSize? in
+        (s.width > 1 && s.height > 1) ? s : nil
+    } ?? fallback
+    return CGSize(
+        width: min(raw.width, visibleRect.width),
+        height: min(raw.height, visibleRect.height),
+    )
 }
 
 private struct AppServerTerminationHandler: TerminationHandler {
     @MainActor
+    private static var didRun = false
+
+    @MainActor
     func beforeTermination() {
-        // Persist tiling before we start tearing windows down for quit.
+        // Menu + willTerminate + signals can all fire; only restore once.
+        if Self.didRun { return }
+        Self.didRun = true
+
+        // Persist tiling before we start moving windows for quit.
         SessionLayoutStore.saveNow()
-        // Make all windows fullscreen before Quit
+
+        // Invisible workspaces park windows off-screen (hide-in-corner). On quit/crash-signal
+        // we must put every managed window back on a visible, centered place so users can
+        // find them without hunting the Dock-edge pixel strip.
         for window in MacWindow.allWindowsMap.values {
-            // makeAllWindowsVisibleAndRestoreSize may be invoked when something went wrong (e.g. some windows are unbound)
-            // that's why it's not allowed to use `.parent` call in here
-            let monitor = window.macApp.getAxRectForTermination(window.windowId)?.center.monitorApproximation ?? mainMonitor
-            let monitorVisibleRect = monitor.visibleRect
-            let windowSize = window.lastFloatingSize ?? CGSize(width: monitorVisibleRect.width, height: monitorVisibleRect.height)
-            let point = CGPoint(
-                x: (monitorVisibleRect.width - windowSize.width) / 2,
-                y: (monitorVisibleRect.height - windowSize.height) / 2,
-            )
+            // Prefer tree monitor (workspace home). AX center of a corner-parked window can
+            // be off-screen and pick the wrong display under multi-monitor.
+            // Avoid `.parent` when the tree may be mid-teardown — nodeMonitor is fine.
+            let axRect = window.macApp.getAxRectForTermination(window.windowId)
+            let monitor = window.nodeMonitor
+                ?? axRect.map { $0.center.monitorApproximation }
+                ?? mainMonitor
+            let visible = monitor.visibleRect
+            let preferredSize = axRect?.size ?? window.lastFloatingSize
+            let windowSize = terminationRestoreSize(preferred: preferredSize, visibleRect: visible)
+            let point = centeredTopLeft(windowSize: windowSize, in: visible)
             window.macApp.setAxFrameForTermination(window.windowId, point, windowSize)
         }
         if isDebug {
@@ -57,6 +107,8 @@ private struct AppServerTerminationHandler: TerminationHandler {
 
 @MainActor
 func terminateApp() -> Never {
+    // Belt-and-suspenders: restore even if willTerminate is skipped somehow.
+    terminationHandler?.beforeTermination()
     NSApplication.shared.terminate(nil)
     die("Unreachable code")
 }

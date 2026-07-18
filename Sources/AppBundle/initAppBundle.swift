@@ -14,9 +14,8 @@ import Foundation
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2.0)
         if isDebug {
             await toggleReleaseServerIfDebug(.off)
-            interceptTermination(SIGINT)
-            interceptTermination(SIGKILL)
         }
+        // Signal/quit hooks (SIGINT, SIGTERM, willTerminate) install in initTerminationHandler.
 
         await bootstrapConfig_nonCancellable()
         _ = await reloadConfig_nonCancellable()

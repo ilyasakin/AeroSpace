@@ -77,7 +77,8 @@ public func dieT<T>(
 }
 
 extension MainActor {
-    static func runSync(block: @escaping @MainActor () -> ()) {
+    /// Run a MainActor-isolated block synchronously (including from signal handlers).
+    public static func runSync(block: @escaping @MainActor () -> ()) {
         switch Thread.isMainThread {
             case true: MainActor.assumeIsolated(block)
             case false: DispatchQueue.main.asyncAndWait { block() }
