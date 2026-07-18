@@ -35,6 +35,18 @@ final class WindowBordersTest: XCTestCase {
         assertEquals(borders.cornerRadius(forAppId: nil), 10)
     }
 
+    func testBorderStylePrimaryColor() {
+        let solid = BorderStyle.solid(RgbaColor(r: 1, g: 2, b: 3))
+        assertEquals(solid.primaryColor, RgbaColor(r: 1, g: 2, b: 3))
+        let grad = BorderStyle.gradient(angleDegrees: 45, stops: [
+            RgbaColor(r: 10, g: 0, b: 0),
+            RgbaColor(r: 0, g: 10, b: 0),
+        ])
+        assertEquals(grad.primaryColor, RgbaColor(r: 10, g: 0, b: 0))
+        let glow = BorderStyle.glow(RgbaColor(r: 5, g: 5, b: 5), blurRadius: 8)
+        assertEquals(glow.primaryColor, RgbaColor(r: 5, g: 5, b: 5))
+    }
+
     // MARK: Dirty / occlusion math (performance-critical correctness)
 
     func testRegionOutsetsByWidth() {

@@ -211,6 +211,7 @@ enum SessionPipeline {
     /// Phase 8b — borders (must run after layout when layout ran this session)
     private static func phaseSideUiBorders() {
         WindowBordersManager.shared.refresh()
+        GroupTabBarManager.shared.refresh()
     }
 }
 

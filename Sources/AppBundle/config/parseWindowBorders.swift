@@ -21,12 +21,30 @@ struct RgbaColor: Equatable, Sendable {
     }
 }
 
+/// Border paint style: solid color, linear gradient, or glow (blurred expanded stroke).
+enum BorderStyle: Equatable, Sendable {
+    case solid(RgbaColor)
+    case gradient(angleDegrees: Double, stops: [RgbaColor])
+    case glow(RgbaColor, blurRadius: Double)
+
+    var primaryColor: RgbaColor {
+        switch self {
+            case .solid(let c): c
+            case .gradient(_, let stops): stops.first ?? RgbaColor(r: 0, g: 0, b: 0)
+            case .glow(let c, _): c
+        }
+    }
+}
+
 struct WindowBorders: ConvenienceMutable, Equatable, Sendable {
     var enabled: Bool = false
     /// Border of the focused window
     var activeColor: RgbaColor = RgbaColor(r: 0x7A, g: 0xA2, b: 0xF7) // pleasant blue
     /// Border of every other visible window
     var inactiveColor: RgbaColor = RgbaColor(r: 0x49, g: 0x4D, b: 0x64) // muted gray
+    /// Extended style (gradient/glow). When nil, `activeColor`/`inactiveColor` solids are used.
+    var activeStyle: BorderStyle? = nil
+    var inactiveStyle: BorderStyle? = nil
     var width: Int = 4
     var cornerRadius: Int = 10
     /// Per-app corner-radius overrides, keyed by app bundle id. macOS exposes no API to read a
@@ -41,16 +59,41 @@ struct WindowBorders: ConvenienceMutable, Equatable, Sendable {
         if let appId, let override = cornerRadiusOverrides[appId] { return override }
         return cornerRadius
     }
+
+    func resolvedActiveStyle() -> BorderStyle { activeStyle ?? .solid(activeColor) }
+    func resolvedInactiveStyle() -> BorderStyle { inactiveStyle ?? .solid(inactiveColor) }
 }
 
 private let windowBordersParser: [String: any ParserProtocol<WindowBorders>] = [
     "enabled": Parser(\.enabled, parseBool),
-    "active-color": Parser(\.activeColor, parseColor),
-    "inactive-color": Parser(\.inactiveColor, parseColor),
+    "active-color": Parser(\.activeColor, parseActiveColorField),
+    "inactive-color": Parser(\.inactiveColor, parseInactiveColorField),
     "width": Parser(\.width, parseInt),
     "corner-radius": Parser(\.cornerRadius, parseInt),
     "corner-radius-overrides": Parser(\.cornerRadiusOverrides, parseCornerRadiusOverrides),
 ]
+
+/// Parse solid / gradient / glow into activeColor + activeStyle
+private func parseActiveColorField(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> RgbaColor {
+    switch parseBorderStyle(raw, backtrace) {
+        case .success(let style):
+            // Store style on a side channel via mutating through parser is awkward; handle in parseWindowBorders
+            return style.primaryColor
+        case .failure(let err):
+            c.errors.append(err)
+            return WindowBorders().activeColor
+    }
+}
+
+private func parseInactiveColorField(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> RgbaColor {
+    switch parseBorderStyle(raw, backtrace) {
+        case .success(let style):
+            return style.primaryColor
+        case .failure(let err):
+            c.errors.append(err)
+            return WindowBorders().inactiveColor
+    }
+}
 
 /// Parses a `{ "app.bundle.id" = <radius> }` table into per-app corner-radius overrides
 func parseCornerRadiusOverrides(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> [String: Int] {
@@ -68,16 +111,70 @@ func parseCornerRadiusOverrides(_ raw: OrderedJson, _ backtrace: ConfigBacktrace
 }
 
 func parseWindowBorders(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> WindowBorders {
-    parseTable(raw, .disabled, windowBordersParser, backtrace, &c)
+    var borders = parseTable(raw, .disabled, windowBordersParser, backtrace, &c)
+    // Re-parse color fields as full BorderStyle so gradients/glow are retained
+    if let table = raw.asDictOrNil {
+        if let active = table["active-color"], case .success(let style) = parseBorderStyle(active, backtrace + .key("active-color")) {
+            borders.activeStyle = style
+            borders.activeColor = style.primaryColor
+        }
+        if let inactive = table["inactive-color"], case .success(let style) = parseBorderStyle(inactive, backtrace + .key("inactive-color")) {
+            borders.inactiveStyle = style
+            borders.inactiveColor = style.primaryColor
+        }
+    }
+    return borders
 }
 
 /// Parses a hex color string. Accepts:
 /// - JankyBorders style `0xAARRGGBB` (alpha first) or `0xRRGGBB`
 /// - CSS style `#RRGGBB` or `#RRGGBBAA` (alpha last)
+/// - `gradient(<deg>deg, <color>, <color>, …)`
+/// - `glow(<color>[, <blur>])`
 func parseColor(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<RgbaColor> {
+    parseBorderStyle(raw, backtrace).map(\.primaryColor)
+}
+
+func parseBorderStyle(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<BorderStyle> {
     parseString(raw, backtrace).flatMap { str in
-        parseHexColor(str).toResult(.init(backtrace, "Can't parse color '\(str)'. Use '0xAARRGGBB' (JankyBorders style) or '#RRGGBB[AA]'"))
+        parseBorderStyleString(str).toResult(
+            .init(backtrace, "Can't parse border style '\(str)'. Use hex color, gradient(...), or glow(...)"),
+        )
     }
+}
+
+func parseBorderStyleString(_ str: String) -> BorderStyle? {
+    let trimmed = str.trimmingCharacters(in: .whitespaces)
+    let lower = trimmed.lowercased()
+    if lower.hasPrefix("gradient("), trimmed.hasSuffix(")") {
+        let inner = String(trimmed.dropFirst("gradient(".count).dropLast())
+        let parts = splitBorderStyleArgs(inner)
+        guard let first = parts.first else { return nil }
+        var angle = 0.0
+        var colorParts = parts
+        if first.lowercased().hasSuffix("deg"), let deg = Double(first.dropLast(3)) {
+            angle = deg
+            colorParts = Array(parts.dropFirst())
+        }
+        let colors = colorParts.compactMap(parseHexColor)
+        guard colors.count >= 2 else { return nil }
+        return .gradient(angleDegrees: angle, stops: colors)
+    }
+    if lower.hasPrefix("glow("), trimmed.hasSuffix(")") {
+        let inner = String(trimmed.dropFirst("glow(".count).dropLast())
+        let parts = splitBorderStyleArgs(inner)
+        guard let first = parts.first, let color = parseHexColor(first) else { return nil }
+        let blur = parts.count > 1 ? (Double(parts[1]) ?? 8) : 8
+        return .glow(color, blurRadius: blur)
+    }
+    if let solid = parseHexColor(trimmed) {
+        return .solid(solid)
+    }
+    return nil
+}
+
+private func splitBorderStyleArgs(_ inner: String) -> [String] {
+    inner.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
 }
 
 func parseHexColor(_ str: String) -> RgbaColor? {

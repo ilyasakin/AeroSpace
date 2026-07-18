@@ -46,10 +46,30 @@ final class WindowBordersOverlay: NSPanelHud {
 /// One managed window's border: a stroked rounded rect plus a mask that hides the parts covered by
 /// windows stacked above it. Geometry and style writes are skipped when nothing changed so a
 /// full/dirty redraw is cheap when only a subset of borders moved.
+///
+/// All paint layers (solid stroke, gradient, glow) live under `host` so the occlusion mask applies
+/// to every style. `removeFromOverlay()` drops the entire host tree (no orphan gradient/glow layers).
 @MainActor
 private final class BorderEntry {
+    /// Root for this window's border; added to the overlay. Occlusion mask is applied here so
+    /// solid / gradient / glow all respect the active-frontmost cutout policy.
+    let host = CALayer()
     let shape = CAShapeLayer()
-    let mask = CAShapeLayer()
+    /// Optional gradient/glow; children of `host`. Solid stroke uses `shape` alone.
+    let gradient = CAGradientLayer()
+    let glow = CAShapeLayer()
+    /// Stroke-ring mask for the gradient fill (ring shape only; separate from occlusion).
+    private let gradientStrokeMask = CAShapeLayer()
+    /// Even-odd cutout of windows stacked above this border (host-level).
+    private let occlusionMask = CAShapeLayer()
+    var style: BorderStyle = .solid(RgbaColor(r: 0, g: 0, b: 0)) {
+        didSet {
+            if style != oldValue {
+                color = style.primaryColor
+                styleDirty = true
+            }
+        }
+    }
     var color: RgbaColor = RgbaColor(r: 0, g: 0, b: 0) {
         didSet {
             if color != oldValue { strokeColor = color.cgColor }
@@ -60,6 +80,7 @@ private final class BorderEntry {
     var width = 0
     var radius = 0
     var rect: Rect // live top-left-global frame of the target window
+    private var styleDirty = true
 
     /// Last values applied to the layer - used to skip path/frame writes. Includes overlay origin so
     /// a multi-monitor reconfig (coverAllScreens moves the overlay) still forces a rewrite even when
@@ -77,9 +98,20 @@ private final class BorderEntry {
         self.rect = rect
         shape.fillColor = NSColor.clear.cgColor
         shape.lineJoin = .round
-        mask.fillRule = .evenOdd
-        mask.fillColor = NSColor.black.cgColor
+        occlusionMask.fillRule = .evenOdd
+        occlusionMask.fillColor = NSColor.black.cgColor
         strokeColor = color.cgColor
+        glow.fillColor = NSColor.clear.cgColor
+        glow.lineJoin = .round
+        gradientStrokeMask.fillColor = NSColor.clear.cgColor
+        gradientStrokeMask.strokeColor = NSColor.black.cgColor
+        gradientStrokeMask.lineJoin = .round
+        host.addSublayer(shape)
+    }
+
+    /// Detach every layer for this border (shape + gradient + glow) from the overlay.
+    func removeFromOverlay() {
+        host.removeFromSuperlayer()
     }
 
     /// The window rect outset by the border width - the area the border actually paints
@@ -98,28 +130,78 @@ private final class BorderEntry {
             appliedRadius = radius
             appliedOriginX = originX
             appliedOriginY = originY
-            shape.frame = panel
+            host.frame = panel
+            let bounds = CGRect(origin: .zero, size: panel.size)
+            shape.frame = bounds
             let strokeRect = CGRect(x: w / 2, y: w / 2, width: panel.width - w, height: panel.height - w)
             let r = CGFloat(radius) + w / 2
-            shape.path = CGPath(roundedRect: strokeRect, cornerWidth: r, cornerHeight: r, transform: nil)
+            let path = CGPath(roundedRect: strokeRect, cornerWidth: r, cornerHeight: r, transform: nil)
+            shape.path = path
             shape.lineWidth = w
+            styleDirty = true
+        }
+        if styleDirty || geometryChanged {
+            styleDirty = false
+            applyStylePaint(w: w)
         }
         if appliedStroke !== strokeColor {
             appliedStroke = strokeColor
-            shape.strokeColor = strokeColor
+            if case .solid = style {
+                shape.strokeColor = strokeColor
+            }
         }
         if appliedZ != zPosition {
             appliedZ = zPosition
-            shape.zPosition = zPosition
+            host.zPosition = zPosition
         }
         return panel
+    }
+
+    private func applyStylePaint(w: CGFloat) {
+        let bounds = shape.frame
+        switch style {
+            case .solid(let c):
+                gradient.removeFromSuperlayer()
+                glow.removeFromSuperlayer()
+                shape.strokeColor = c.cgColor
+                shape.fillColor = NSColor.clear.cgColor
+            case .gradient(let angle, let stops):
+                glow.removeFromSuperlayer()
+                // Ring-shaped stroke mask on the gradient; host-level occlusion is separate
+                gradientStrokeMask.frame = bounds
+                gradientStrokeMask.path = shape.path
+                gradientStrokeMask.lineWidth = w
+                gradient.frame = bounds
+                gradient.colors = stops.map(\.cgColor) as [Any]
+                gradient.startPoint = gradientPoints(angleDegrees: angle).0
+                gradient.endPoint = gradientPoints(angleDegrees: angle).1
+                gradient.mask = gradientStrokeMask
+                shape.strokeColor = NSColor.clear.cgColor
+                if gradient.superlayer !== host {
+                    host.insertSublayer(gradient, below: shape)
+                }
+            case .glow(let c, let blur):
+                gradient.removeFromSuperlayer()
+                shape.strokeColor = c.cgColor
+                glow.frame = bounds
+                glow.path = shape.path
+                glow.lineWidth = w * 2.5
+                glow.strokeColor = c.nsColor.withAlphaComponent(0.45).cgColor
+                glow.shadowColor = c.cgColor
+                glow.shadowRadius = blur
+                glow.shadowOpacity = 0.9
+                glow.shadowOffset = .zero
+                if glow.superlayer !== host {
+                    host.insertSublayer(glow, below: shape)
+                }
+        }
     }
 
     func applyMask(panel: CGRect, occluders: [Rect], originX: CGFloat, originY: CGFloat) {
         if occluders.isEmpty {
             if hadOccluders {
-                shape.mask = nil
-                mask.path = nil
+                host.mask = nil
+                occlusionMask.path = nil
                 hadOccluders = false
             }
             return
@@ -132,10 +214,18 @@ private final class BorderEntry {
             path.addRect(CGRect(x: local.minX - panel.minX, y: local.minY - panel.minY,
                                 width: local.width, height: local.height))
         }
-        mask.frame = CGRect(origin: .zero, size: panel.size)
-        mask.path = path // even-odd fill -> full panel minus the covered rects
-        shape.mask = mask
+        occlusionMask.frame = CGRect(origin: .zero, size: panel.size)
+        occlusionMask.path = path // even-odd fill -> full panel minus the covered rects
+        // Host mask clips solid stroke, gradient, and glow together
+        host.mask = occlusionMask
     }
+}
+
+private func gradientPoints(angleDegrees: Double) -> (CGPoint, CGPoint) {
+    let rad = angleDegrees * .pi / 180
+    let dx = cos(rad) * 0.5
+    let dy = sin(rad) * 0.5
+    return (CGPoint(x: 0.5 - dx, y: 0.5 - dy), CGPoint(x: 0.5 + dx, y: 0.5 + dy))
 }
 
 /// WindowServer move/resize callback (runs on the thread that registered it - the main thread).
@@ -207,13 +297,14 @@ final class WindowBordersManager {
                 seen.insert(window.windowId)
                 let entry = entries[window.windowId] ?? makeEntry(window.windowId, rect: rect)
                 entry.rect = rect
-                entry.color = window.windowId == activeId ? cfg.activeColor : cfg.inactiveColor
+                entry.style = window.windowId == activeId ? cfg.resolvedActiveStyle() : cfg.resolvedInactiveStyle()
+                entry.color = entry.style.primaryColor
                 entry.width = cfg.width
                 entry.radius = cfg.cornerRadius(forAppId: window.app.rawAppBundleId)
             }
         }
         for (id, entry) in entries where !seen.contains(id) {
-            entry.shape.removeFromSuperlayer()
+            entry.removeFromOverlay()
             entries.removeValue(forKey: id)
         }
 
@@ -376,7 +467,7 @@ final class WindowBordersManager {
 
     private func makeEntry(_ id: UInt32, rect: Rect) -> BorderEntry {
         let entry = BorderEntry(rect: rect)
-        overlay.root.addSublayer(entry.shape)
+        overlay.root.addSublayer(entry.host)
         entries[id] = entry
         return entry
     }
@@ -388,7 +479,7 @@ final class WindowBordersManager {
         }
         redrawScheduled = false
         dirtyIds.removeAll()
-        for (_, entry) in entries { entry.shape.removeFromSuperlayer() }
+        for (_, entry) in entries { entry.removeFromOverlay() }
         entries.removeAll()
         stack.removeAll()
         stackIndex.removeAll()
@@ -403,7 +494,6 @@ final class WindowBordersManager {
             stackIndex[item.id] = i
         }
     }
-
 }
 
 /// A top-left-global Rect converted to overlay-layer coordinates (bottom-left, overlay-relative)
