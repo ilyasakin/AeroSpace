@@ -72,12 +72,16 @@ extension CmdArgs {
                 command = MoveNodeToMonitorCommand(args: self as! MoveNodeToMonitorCmdArgs)
             case .moveNodeToWorkspace:
                 command = MoveNodeToWorkspaceCommand(args: self as! MoveNodeToWorkspaceCmdArgs)
+            case .moveTo:
+                command = MoveToCommand(args: self as! MoveToCmdArgs)
             case .moveWorkspaceToMonitor:
                 command = MoveWorkspaceToMonitorCommand(args: self as! MoveWorkspaceToMonitorCmdArgs)
             case .reloadConfig:
                 command = ReloadConfigCommand(args: self as! ReloadConfigCmdArgs)
             case .resize:
                 command = ResizeCommand(args: self as! ResizeCmdArgs)
+            case .resizeTo:
+                command = ResizeToCommand(args: self as! ResizeToCmdArgs)
             case .runCallback:
                 command = RunCallbackCommand(args: self as! RunCallbackCmdArgs)
             case .split:
@@ -96,6 +100,10 @@ extension CmdArgs {
                 command = TestNotCommand(args: self as! TestNotCmdArgs)
             case .tilingPolicy:
                 command = TilingPolicyCommand(args: self as! TilingPolicyCmdArgs)
+            case .toggleGroup:
+                command = ToggleGroupCommand(args: self as! ToggleGroupCmdArgs)
+            case .toggleSpecialWorkspace:
+                command = ToggleSpecialWorkspaceCommand(args: self as! ToggleSpecialWorkspaceCmdArgs)
             case .triggerBinding:
                 command = TriggerBindingCommand(args: self as! TriggerBindingCmdArgs)
             case .volume:

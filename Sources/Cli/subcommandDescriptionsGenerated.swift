@@ -51,4 +51,8 @@ let subcommandDescriptions = [
     ["  volume", "Manipulate volume"],
     ["  workspace-back-and-forth", "Switch between the focused workspace and previously focused workspace back and forth"],
     ["  workspace", "Focus the specified workspace"],
+    ["  move-to", "Place a floating window at an absolute top-left position"],
+    ["  resize-to", "Set absolute pixel size of the focused/target window"],
+    ["  toggle-group", "Wrap the focused tiled window in an accordion group, or unwrap it"],
+    ["  toggle-special-workspace", "Swap-toggle a named special/scratch workspace on the focused monitor"],
 ]

@@ -197,3 +197,15 @@ let workspace_help_generated = """
     USAGE: workspace [-h|--help] [--auto-back-and-forth] [--fail-if-noop] [--] <workspace-name>
        OR: workspace [-h|--help] [--wrap-around] [--stdin|--no-stdin] (next|prev)
     """
+let move_to_help_generated = """
+    USAGE: move-to [-h|--help] [--window-id <window-id>] <x> <y>
+    """
+let resize_to_help_generated = """
+    USAGE: resize-to [-h|--help] [--window-id <window-id>] <width> <height>
+    """
+let toggle_group_help_generated = """
+    USAGE: toggle-group [-h|--help] [--window-id <window-id>]
+    """
+let toggle_special_workspace_help_generated = """
+    USAGE: toggle-special-workspace [-h|--help] [--] <workspace>
+    """

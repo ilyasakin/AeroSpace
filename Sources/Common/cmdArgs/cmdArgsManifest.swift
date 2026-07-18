@@ -49,9 +49,11 @@ public enum CmdKind: String, CaseIterable, Equatable, Sendable {
     case moveMouse = "move-mouse"
     case moveNodeToMonitor = "move-node-to-monitor"
     case moveNodeToWorkspace = "move-node-to-workspace"
+    case moveTo = "move-to"
     case moveWorkspaceToMonitor = "move-workspace-to-monitor"
     case reloadConfig = "reload-config"
     case resize
+    case resizeTo = "resize-to"
     case runCallback = "run-callback"
     case split
     case sticky
@@ -61,6 +63,8 @@ public enum CmdKind: String, CaseIterable, Equatable, Sendable {
     case test
     case testNot = "test-not"
     case tilingPolicy = "tiling-policy"
+    case toggleGroup = "toggle-group"
+    case toggleSpecialWorkspace = "toggle-special-workspace"
     case triggerBinding = "trigger-binding"
 
     case _true = "true"
@@ -142,6 +146,8 @@ func initSubcommands() -> [String: any SubCommandParserProtocol] {
                 result[kind.rawValue] = SubCommandParser(parseMoveNodeToMonitorCmdArgs)
             case .moveNodeToWorkspace:
                 result[kind.rawValue] = SubCommandParser(parseMoveNodeToWorkspaceCmdArgs)
+            case .moveTo:
+                result[kind.rawValue] = SubCommandParser(parseMoveToCmdArgs)
             case .moveWorkspaceToMonitor:
                 result[kind.rawValue] = SubCommandParser(parseWorkspaceToMonitorCmdArgs)
                 // deprecated
@@ -150,6 +156,8 @@ func initSubcommands() -> [String: any SubCommandParserProtocol] {
                 result[kind.rawValue] = SubCommandParser(ReloadConfigCmdArgs.init)
             case .resize:
                 result[kind.rawValue] = SubCommandParser(parseResizeCmdArgs)
+            case .resizeTo:
+                result[kind.rawValue] = SubCommandParser(parseResizeToCmdArgs)
             case .runCallback:
                 result[kind.rawValue] = SubCommandParser(parseRunCallbackCmdArgs)
             case .split:
@@ -168,6 +176,10 @@ func initSubcommands() -> [String: any SubCommandParserProtocol] {
                 result[kind.rawValue] = SubCommandParser(parseTestNotCmdArgs)
             case .tilingPolicy:
                 result[kind.rawValue] = SubCommandParser(parseTilingPolicyCmdArgs)
+            case .toggleGroup:
+                result[kind.rawValue] = SubCommandParser(ToggleGroupCmdArgs.init)
+            case .toggleSpecialWorkspace:
+                result[kind.rawValue] = SubCommandParser(ToggleSpecialWorkspaceCmdArgs.init)
             case .triggerBinding:
                 result[kind.rawValue] = SubCommandParser(parseTriggerBindingCmdArgs)
             case ._true:
@@ -175,10 +187,47 @@ func initSubcommands() -> [String: any SubCommandParserProtocol] {
             case .volume:
                 result[kind.rawValue] = SubCommandParser(VolumeCmdArgs.init)
             case .workspace:
+                // Canonical AeroSpace grammar only. Hyprland forms (e+1, previous, special:*)
+                // are rewritten at import time and via togglespecialworkspace / movetoworkspace
+                // aliases — do not widen `workspace` itself (would steal names like "special").
                 result[kind.rawValue] = SubCommandParser(parseWorkspaceCmdArgs)
             case .workspaceBackAndForth:
                 result[kind.rawValue] = SubCommandParser(WorkspaceBackAndForthCmdArgs.init)
         }
     }
+
+    // Hyprland dispatcher-name aliases (M1). No new CmdKind — pure aliases or small rewrites.
+    // Pure aliases (identical arg grammar)
+    result["killactive"] = SubCommandParser(CloseCmdArgs.init)
+    result["fullscreenstate"] = SubCommandParser(parseFullscreenCmdArgs)
+    result["pin"] = SubCommandParser(parseStickyCmdArgs)
+    result["centerwindow"] = SubCommandParser(CenterWindowCmdArgs.init)
+
+    // Grammar-divergent (normalize Hypr args into existing CmdArgs)
+    result["togglefloating"] = SubCommandParser(parseHyprlandToggleFloatingCmdArgs)
+    result["togglesplit"] = SubCommandParser(parseHyprlandToggleSplitCmdArgs)
+    result["movefocus"] = SubCommandParser(parseHyprlandMoveFocusCmdArgs)
+    result["movewindow"] = SubCommandParser(parseHyprlandMoveWindowCmdArgs)
+    result["swapwindow"] = SubCommandParser(parseHyprlandMoveWindowCmdArgs) // same as movewindow per importer
+    result["focusmonitor"] = SubCommandParser(parseHyprlandFocusMonitorCmdArgs)
+    result["movecurrentworkspacetomonitor"] = SubCommandParser(parseHyprlandMoveCurrentWorkspaceToMonitorCmdArgs)
+    result["resizeactive"] = SubCommandParser(parseHyprlandResizeActiveCmdArgs)
+    result["movetoworkspace"] = SubCommandParser(parseHyprlandMoveToWorkspaceCmdArgs)
+    result["movetoworkspacesilent"] = SubCommandParser(parseHyprlandMoveToWorkspaceCmdArgs)
+    result["cyclenext"] = SubCommandParser(parseHyprlandCycleNextCmdArgs)
+    result["submap"] = SubCommandParser(parseHyprlandSubmapCmdArgs)
+    result["exec"] = SubCommandParser(parseHyprlandExecCmdArgs)
+    // Hyprland group / special workspace (M2)
+    result["togglegroup"] = SubCommandParser(ToggleGroupCmdArgs.init)
+    result["changegroupactive"] = SubCommandParser(parseHyprlandCycleNextCmdArgs) // cycle front of accordion
+    result["togglespecialworkspace"] = SubCommandParser(parseHyprlandToggleSpecialWorkspaceCmdArgs)
+
+    // M5 hyprctl-style query aliases
+    result["clients"] = SubCommandParser(parseClientsCmdArgs)
+    result["workspaces"] = SubCommandParser(parseWorkspacesAliasCmdArgs)
+    result["monitors"] = SubCommandParser(parseMonitorsAliasCmdArgs)
+    result["activewindow"] = SubCommandParser(parseActiveWindowCmdArgs)
+    result["binds"] = SubCommandParser(parseListModesCmdArgs)
+
     return result
 }

@@ -1,22 +1,24 @@
 let subcommandParsers: [String: any SubCommandParserProtocol] = initSubcommands()
 
-protocol SubCommandParserProtocol<T>: Sendable {
-    associatedtype T where T: CmdArgs
-    var _parse: @Sendable (StrArrSlice) -> ParsedCmd<T> { get }
+protocol SubCommandParserProtocol: Sendable {
+    func parse(args: StrArrSlice) -> ParsedCmd<any CmdArgs>
 }
 
-extension SubCommandParserProtocol {
-    func parse(args: StrArrSlice) -> ParsedCmd<any CmdArgs> { _parse(args).map(id) }
-}
+struct SubCommandParser: SubCommandParserProtocol, Sendable {
+    private let _parse: @Sendable (StrArrSlice) -> ParsedCmd<any CmdArgs>
 
-struct SubCommandParser<T: CmdArgs>: SubCommandParserProtocol, Sendable {
-    let _parse: @Sendable (StrArrSlice) -> ParsedCmd<T>
+    init<T: CmdArgs>(_ parser: @escaping @Sendable (StrArrSlice) -> ParsedCmd<T>) {
+        _parse = { args in parser(args).map { $0 as any CmdArgs } }
+    }
 
-    init(_ parser: @escaping @Sendable (StrArrSlice) -> ParsedCmd<T>) {
+    init<T: CmdArgs>(_ raw: @escaping @Sendable (StrArrSlice) -> T) {
+        self.init { args in parseSpecificCmdArgs(raw(args), args) }
+    }
+
+    /// Type-erased parser that may return different concrete `CmdArgs` kinds.
+    init(any parser: @escaping @Sendable (StrArrSlice) -> ParsedCmd<any CmdArgs>) {
         _parse = parser
     }
 
-    init(_ raw: @escaping @Sendable (StrArrSlice) -> T) {
-        _parse = { args in parseSpecificCmdArgs(raw(args), args) }
-    }
+    func parse(args: StrArrSlice) -> ParsedCmd<any CmdArgs> { _parse(args) }
 }
