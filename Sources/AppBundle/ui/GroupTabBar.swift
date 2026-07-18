@@ -104,6 +104,11 @@ private final class GroupTabBarOverlay: NSPanelHud {
         contentView = GroupTabBarContentView()
     }
 
+    /// See StatusBarPanel — AX hit-tests can run off MainActor under focus-follows-mouse.
+    nonisolated override func accessibilityHitTest(_ point: NSPoint) -> Any? { nil }
+
+    nonisolated override func isAccessibilityElement() -> Bool { false }
+
     func coverAllScreens() {
         let union = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }
         guard !union.isNull, union != lastUnion else { return }
@@ -116,11 +121,18 @@ private final class GroupTabBarOverlay: NSPanelHud {
 /// Returning nil for empty regions lets clicks fall through to windows beneath the panel.
 @MainActor
 private final class GroupTabBarContentView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let hit = super.hitTest(point)
-        // Empty chrome: do not capture. Only descendants (tab buttons) receive events.
-        return hit === self ? nil : hit
+    nonisolated override func hitTest(_ point: NSPoint) -> NSView? {
+        guard Thread.isMainThread else { return nil }
+        return MainActor.assumeIsolated {
+            let hit = super.hitTest(point)
+            // Empty chrome: do not capture. Only descendants (tab buttons) receive events.
+            return hit === self ? nil : hit
+        }
     }
+
+    nonisolated override func accessibilityHitTest(_ point: NSPoint) -> Any? { nil }
+
+    nonisolated override func isAccessibilityElement() -> Bool { false }
 }
 
 @MainActor
@@ -155,10 +167,17 @@ private final class GroupTabButton: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     /// Claim the whole button rect so the label does not steal mouseDown.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let local = convert(point, from: superview)
-        return bounds.contains(local) ? self : nil
+    nonisolated override func hitTest(_ point: NSPoint) -> NSView? {
+        guard Thread.isMainThread else { return nil }
+        return MainActor.assumeIsolated {
+            let local = convert(point, from: superview)
+            return bounds.contains(local) ? self : nil
+        }
     }
+
+    nonisolated override func accessibilityHitTest(_ point: NSPoint) -> Any? { nil }
+
+    nonisolated override func isAccessibilityElement() -> Bool { false }
 
     override func mouseDown(with event: NSEvent) {
         onClick?(windowId)

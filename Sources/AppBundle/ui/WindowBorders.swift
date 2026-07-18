@@ -30,6 +30,11 @@ final class WindowBordersOverlay: NSPanelHud {
         contentView = view
     }
 
+    /// Full-screen overlay must stay invisible to AX (focus-follows-mouse); same rationale as StatusBar.
+    nonisolated override func accessibilityHitTest(_ point: NSPoint) -> Any? { nil }
+
+    nonisolated override func isAccessibilityElement() -> Bool { false }
+
     /// Cover the union of all screens so borders on any monitor land in the overlay
     func coverAllScreens() {
         let union = NSScreen.screens.reduce(CGRect.null) { $0.union($1.frame) }

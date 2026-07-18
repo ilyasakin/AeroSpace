@@ -128,13 +128,21 @@ enum SessionPipeline {
         )
         defer { signposter.endInterval("SessionPipeline.light", state) }
 
-        activeRefreshTask?.cancel() // Give priority to light session over pending heavy
-        activeRefreshTask = nil
+        // Focus-follows-mouse fires continuously; canceling heavy here starved layout/discovery
+        // until a workspace switch (or other non-FFM session) finally completed. That matched
+        // "FFM dead until I switch spaces" reports.
+        if !event.isFocusFollowsMouse {
+            activeRefreshTask?.cancel() // Give priority to light session over pending heavy
+            activeRefreshTask = nil
+        }
 
         phaseBegin(clearFramesWritten: plan.clearFramesWritten)
 
         return try await $refreshSessionEvent.withValue(event) {
-            try await phaseSyncFocusFromNative()
+            // Hover is the authority for FFM — don't re-pull native focus first (extra AX + thrash).
+            if !event.isFocusFollowsMouse {
+                try await phaseSyncFocusFromNative()
+            }
             let focusBefore = focus.windowOrNil
 
             await phaseModelHygiene()
@@ -212,6 +220,7 @@ enum SessionPipeline {
     private static func phaseSideUiBorders() {
         WindowBordersManager.shared.refresh()
         GroupTabBarManager.shared.refresh()
+        StatusBarManager.shared.refresh()
     }
 }
 
