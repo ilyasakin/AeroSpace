@@ -230,7 +230,7 @@ final class WindowBordersManager {
         if let applied = window.lastAppliedLayoutPhysicalRect { return applied }
         let id = window.windowId
         if let i = stackIndex[id] { return stack[i].rect }
-        return SkyLight.overlayBounds(id)
+        return WindowServerReads.current.windowBounds(windowId: id, forOverlay: true)
     }
 
     /// A window moved/resized (WindowServer event). This callback fires for EVERY window on the
@@ -241,7 +241,7 @@ final class WindowBordersManager {
     /// 4. Coalesce all events in this run-loop turn into ONE Core Animation transaction
     func handleWindowMoved(windowId: UInt32) {
         guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
-        guard let rect = SkyLight.overlayBounds(windowId) else { return }
+        guard let rect = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true) else { return }
 
         let oldRect: Rect?
         if let i = stackIndex[windowId] {

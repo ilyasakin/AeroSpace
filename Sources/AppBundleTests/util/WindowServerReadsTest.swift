@@ -1,0 +1,136 @@
+@testable import AppBundle
+import XCTest
+
+/// Fixed WindowServer double — no SkyLight / CGWindowList.
+private final class FakeWindowServerReads: WindowServerReadPort {
+    var boundsById: [UInt32: Rect] = [:]
+    var snapshot = OnScreenWindowSnapshot(levels: [:], normalStack: [])
+    var boundsCallCount = 0
+    var snapshotCallCount = 0
+
+    func windowBounds(windowId: UInt32, forOverlay: Bool) -> Rect? {
+        boundsCallCount += 1
+        return boundsById[windowId]
+    }
+
+    func onScreenSnapshot() -> OnScreenWindowSnapshot {
+        snapshotCallCount += 1
+        return snapshot
+    }
+}
+
+@MainActor
+final class WindowServerReadsTest: XCTestCase {
+    override func tearDown() {
+        WindowServerReads.install(nil)
+        super.tearDown()
+    }
+
+    // MARK: resolveFrameRead (production decision table)
+
+    func testStaleWithLastAppliedPrefersLastApplied() {
+        let applied = Rect(topLeftX: 10, topLeftY: 20, width: 300, height: 400)
+        let r = resolveFrameRead(
+            windowId: 1,
+            lastApplied: applied,
+            mayBeStale: true,
+            serverBounds: { _ in
+                XCTFail("server must not be consulted when stale + lastApplied")
+                return nil
+            },
+        )
+        XCTAssertEqual(r, .lastApplied(applied))
+    }
+
+    func testStaleWithoutLastAppliedNeedsAx() {
+        let r = resolveFrameRead(
+            windowId: 1,
+            lastApplied: nil,
+            mayBeStale: true,
+            serverBounds: { _ in
+                XCTFail("server must not be consulted when stale without lastApplied")
+                return Rect(topLeftX: 0, topLeftY: 0, width: 1, height: 1)
+            },
+        )
+        XCTAssertEqual(r, .needAx)
+    }
+
+    func testFreshUsesServerBounds() {
+        let ws = Rect(topLeftX: 5, topLeftY: 6, width: 7, height: 8)
+        let r = resolveFrameRead(
+            windowId: 42,
+            lastApplied: nil,
+            mayBeStale: false,
+            serverBounds: { id in
+                XCTAssertEqual(id, 42)
+                return ws
+            },
+        )
+        XCTAssertEqual(r, .windowServer(ws))
+    }
+
+    func testFreshServerMissNeedsAx() {
+        let r = resolveFrameRead(
+            windowId: 1,
+            lastApplied: Rect(topLeftX: 0, topLeftY: 0, width: 1, height: 1),
+            mayBeStale: false,
+            serverBounds: { _ in nil },
+        )
+        // lastApplied is only used on the stale path; fresh miss goes to AX
+        XCTAssertEqual(r, .needAx)
+    }
+
+    // MARK: Injectable port (real WindowServerReads entry point)
+
+    func testInstallFakeBoundsUsedByCurrentPort() {
+        let fake = FakeWindowServerReads()
+        let fixed = Rect(topLeftX: 100, topLeftY: 200, width: 300, height: 400)
+        fake.boundsById[7] = fixed
+        WindowServerReads.install(fake)
+
+        let got = WindowServerReads.current.windowBounds(windowId: 7, forOverlay: false)
+        XCTAssertEqual(got, fixed)
+        XCTAssertEqual(fake.boundsCallCount, 1)
+
+        // resolveFrameRead wired the same way MacWindow does
+        let resolution = resolveFrameRead(
+            windowId: 7,
+            lastApplied: nil,
+            mayBeStale: false,
+            serverBounds: { WindowServerReads.current.windowBounds(windowId: $0, forOverlay: false) },
+        )
+        XCTAssertEqual(resolution, .windowServer(fixed))
+    }
+
+    func testInstallFakeSnapshotUsedByOnScreenWindowSnapshot() {
+        let fake = FakeWindowServerReads()
+        let rect = Rect(topLeftX: 0, topLeftY: 0, width: 100, height: 100)
+        fake.snapshot = OnScreenWindowSnapshot(
+            levels: [9: .normalWindow, 10: .alwaysOnTopWindow],
+            normalStack: [(9, rect)],
+        )
+        WindowServerReads.install(fake)
+
+        // Production getWindowLevel / borders go through this free function
+        let snap = onScreenWindowSnapshot()
+        XCTAssertEqual(snap.levels[9], .normalWindow)
+        XCTAssertEqual(snap.levels[10], .alwaysOnTopWindow)
+        XCTAssertEqual(snap.normalStack.count, 1)
+        XCTAssertEqual(snap.normalStack[0].id, 9)
+        XCTAssertEqual(snap.normalStack[0].rect, rect)
+        // getWindowLevel uses the same snapshot entry point (another call)
+        XCTAssertEqual(getWindowLevel(for: 10), .alwaysOnTopWindow)
+        _ = onScreenWindowSnapshot()
+        // 1 snap + 1 getWindowLevel + 1 snap = 3; no real CGWindowList involved
+        XCTAssertEqual(fake.snapshotCallCount, 3)
+        XCTAssertGreaterThan(fake.snapshotCallCount, 0)
+    }
+
+    func testInstallNilRestoresProductionPort() {
+        let fake = FakeWindowServerReads()
+        WindowServerReads.install(fake)
+        WindowServerReads.install(nil)
+        // Production type after reset
+        XCTAssertTrue(WindowServerReads.current is ProductionWindowServerReads)
+    }
+}

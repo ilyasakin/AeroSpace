@@ -211,18 +211,16 @@ final class MacWindow: Window {
     }
 
     override func getAxSize(_ cm: CancellationMode) async throws -> CGSize? {
-        // After an AX write this session, WindowServer may still report the old frame. Prefer the
-        // layout rect we just applied (no hop) or fall through to AX (serialized after the write)
-        if skyLightFrameMayBeStale(windowId) {
-            if let applied = lastAppliedLayoutPhysicalRect {
-                return CGSize(width: applied.width, height: applied.height)
-            }
-            return try await macApp.getAxSize(windowId, cm)
+        switch resolveFrameRead(
+            windowId: windowId,
+            lastApplied: lastAppliedLayoutPhysicalRect,
+            mayBeStale: skyLightFrameMayBeStale(windowId),
+            serverBounds: { WindowServerReads.current.windowBounds(windowId: $0, forOverlay: false) },
+        ) {
+            case .lastApplied(let r): return CGSize(width: r.width, height: r.height)
+            case .windowServer(let r): return CGSize(width: r.width, height: r.height)
+            case .needAx: return try await macApp.getAxSize(windowId, cm)
         }
-        if let bounds = SkyLight.windowBounds(windowId) {
-            return CGSize(width: bounds.width, height: bounds.height)
-        }
-        return try await macApp.getAxSize(windowId, cm)
     }
 
     override func setAxFrame(_ topLeft: CGPoint?, _ size: CGSize?) {
@@ -231,12 +229,16 @@ final class MacWindow: Window {
     }
 
     override func getAxRect(_ cm: CancellationMode) async throws -> Rect? {
-        if skyLightFrameMayBeStale(windowId) {
-            if let applied = lastAppliedLayoutPhysicalRect { return applied }
-            return try await macApp.getAxRect(windowId, cm)
+        switch resolveFrameRead(
+            windowId: windowId,
+            lastApplied: lastAppliedLayoutPhysicalRect,
+            mayBeStale: skyLightFrameMayBeStale(windowId),
+            serverBounds: { WindowServerReads.current.windowBounds(windowId: $0, forOverlay: false) },
+        ) {
+            case .lastApplied(let r): return r
+            case .windowServer(let r): return r
+            case .needAx: return try await macApp.getAxRect(windowId, cm)
         }
-        if let bounds = SkyLight.windowBounds(windowId) { return bounds }
-        return try await macApp.getAxRect(windowId, cm)
     }
 }
 

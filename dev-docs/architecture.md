@@ -100,8 +100,21 @@ Load-bearing rules (locked by `SessionPipelineTest` + comments in code):
 2. **Heavy does not clear frames-written** — WindowServer can lag AX writes from the preceding light session.
 3. **Query-only CLI skips layout + heavy** — polling scripts must stay cheap.
 
+### WindowServer read port
+
+Frame and on-screen-list **reads** go through `WindowServerReadPort`
+(`Sources/AppBundle/util/WindowServerReads.swift`):
+
+- Production: `ProductionWindowServerReads` → SkyLight + one CGWindowList scan per session
+  (`productionOnScreenWindowSnapshot`)
+- Tests: `WindowServerReads.install(_:)` supplies fixed bounds/stack without real WS/AX
+- `MacWindow.getAxRect` / `getAxSize` use `resolveFrameRead` (lastApplied when write-stale →
+  port bounds → AX). Borders and `getWindowLevel` use `onScreenWindowSnapshot()` / overlay bounds
+  via the same port.
+
+`TestWindow` implements frame, title, focus, and `isHiddenInCorner` so unit tests never hit
+`Window.die` on those operations.
+
 ### Follow-up work (not done yet)
 
-- Ports for AX / SkyLight / CGWindowList behind narrow protocols (testability)
-- Replace `Window` + `die("Not implemented")` with `MacWindow` + test doubles
 - Immutable/persistent tree (upstream issue #1215) — stability, not OOP for its own sake

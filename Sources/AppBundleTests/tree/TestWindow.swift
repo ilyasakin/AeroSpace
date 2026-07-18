@@ -52,4 +52,7 @@ final class TestWindow: Window, CustomStringConvertible {
     }
 
     override func isMacosFullscreen(_ cm: CancellationMode) async throws -> Bool { isMacosFullscreenForTest }
+
+    /// Test windows are never parked in a monitor corner
+    override var isHiddenInCorner: Bool { false }
 }

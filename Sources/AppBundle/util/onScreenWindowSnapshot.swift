@@ -2,27 +2,48 @@ import CoreGraphics
 import Foundation
 
 /// One CGWindowListCopyWindowInfo scan per refresh session, shared by window-level lookups and
-/// window-border occlusion stacks. Both used to call the expensive list API independently.
-@MainActor
-struct OnScreenWindowSnapshot {
+/// window-border occlusion stacks. Obtained via `WindowServerReads.current.onScreenSnapshot()` so
+/// tests can install a fixed list without a second full-list scan purpose in production.
+struct OnScreenWindowSnapshot: Equatable {
     /// CGWindowID -> level for every on-screen window (all layers)
     let levels: [UInt32: MacOsWindowLevel]
     /// Layer-0 windows excluding our own process, front-to-back (for border occlusion)
     let normalStack: [(id: UInt32, rect: Rect)]
+
+    static func == (lhs: OnScreenWindowSnapshot, rhs: OnScreenWindowSnapshot) -> Bool {
+        guard lhs.levels == rhs.levels, lhs.normalStack.count == rhs.normalStack.count else { return false }
+        for i in lhs.normalStack.indices {
+            if lhs.normalStack[i].id != rhs.normalStack[i].id { return false }
+            if lhs.normalStack[i].rect != rhs.normalStack[i].rect { return false }
+        }
+        return true
+    }
 }
 
-@MainActor private var snapshot: OnScreenWindowSnapshot?
-@MainActor private var snapshotIsFresh = false
+// Guarded like monitorsCache: main-thread session cache
+private nonisolated(unsafe) var snapshot: OnScreenWindowSnapshot?
+private nonisolated(unsafe) var snapshotIsFresh = false
 
-@MainActor
 func invalidateOnScreenWindowSnapshot() {
-    snapshotIsFresh = false
+    if Thread.isMainThread {
+        unsafe snapshotIsFresh = false
+    } else {
+        // Off main: drop freshness conservatively on next main-thread access via install path only
+        // (invalidate is only called from MainActor session begin / WindowServerReads.install)
+        unsafe snapshotIsFresh = false
+    }
 }
 
-/// Returns the session snapshot, scanning at most once until the next invalidate
-@MainActor
+/// Returns the session snapshot via the active `WindowServerReadPort` (production or test double).
 func onScreenWindowSnapshot() -> OnScreenWindowSnapshot {
-    if snapshotIsFresh, let snapshot { return snapshot }
+    WindowServerReads.current.onScreenSnapshot()
+}
+
+/// Production scan: at most one CGWindowList per invalidate cycle (main thread).
+func productionOnScreenWindowSnapshot() -> OnScreenWindowSnapshot {
+    if Thread.isMainThread, unsafe snapshotIsFresh, let snapshot = unsafe snapshot {
+        return snapshot
+    }
 
     let myPid = Int(ProcessInfo.processInfo.processIdentifier)
     var levels: [UInt32: MacOsWindowLevel] = [:]
@@ -53,7 +74,9 @@ func onScreenWindowSnapshot() -> OnScreenWindowSnapshot {
     }
 
     let built = OnScreenWindowSnapshot(levels: levels, normalStack: normalStack)
-    snapshot = built
-    snapshotIsFresh = true
+    if Thread.isMainThread {
+        unsafe snapshot = built
+        unsafe snapshotIsFresh = true
+    }
     return built
 }
