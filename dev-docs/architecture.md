@@ -130,11 +130,12 @@ Immutable, single-linked (downward) path-copying spine for tiling structure:
   handles (`commitTilingTransform` / `commitTilingInsertWindow` / `commitTilingRemoveWindow`).
 
 Live `TreeNode` remains the AX identity layer and is still used by many legacy bind call sites.
-Representative tiling structure changes go through path-copy commit; layout uses
-`currentTilingSpine`, which recaptures on **structure** drift (`structureEquals`: order/nesting/
-window ids — weights ignored so layout-adjusted generations are kept). After layout, window and
-nested-container weights are synced onto live dual-link handles by id / descendant-window-set.
-Dual-link tiling bind/unbind invalidates the generation so swap/move cannot leave a stale spine.
+Representative tiling structure changes go through path-copy commit.
+
+**Generation freshness (dirty-flag):** `currentTilingSpine` trusts a non-nil generation;
+if nil it captures from live. Dual-link tiling bind/unbind and tiling `setWeight` invalidate.
+Layout re-publishes the generation after applying weights to live (invalidation suppressed during
+that sync). No equality-based freshness heuristics.
 
 ### Follow-up work (not done yet)
 

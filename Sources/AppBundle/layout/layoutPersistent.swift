@@ -8,14 +8,18 @@ import Common
 /// geometry or weight distribution. Accordion MRU consults live focus metadata (most-recent
 /// window id) only to pick which spine sibling is "front."
 ///
-/// Structural mutations that go through `commitTilingTransform` update the generation first;
-/// layout reads that generation (or recaptures if membership drifted).
+/// Structural mutations that go through `commitTilingTransform` publish a generation.
+/// Dual-link bind/unbind/`setWeight` invalidate it. Layout: if gen present trust it; if nil capture.
 
 extension Workspace {
     /// Last tiling spine used for layout / commits (updated each layout or commit).
     /// nonisolated(unsafe): dual-link bind/unbind may invalidate off the typed MainActor boundary
     /// while still running on the main thread under AeroSpace's session model.
     private nonisolated(unsafe) static var _tilingSpineByName: [String: PersistentTilingNode] = [:]
+
+    /// When true, `setWeight` must not invalidate the generation (used while syncing spine → live
+    /// after layout so the published gen is not wiped mid-walk).
+    nonisolated(unsafe) static var suppressTilingGenerationInvalidation = false
 
     var tilingStructureGeneration: PersistentTilingNode? {
         get { unsafe Self._tilingSpineByName[name] }
@@ -33,8 +37,9 @@ extension Workspace {
         unsafe _tilingSpineByName.removeAll(keepingCapacity: true)
     }
 
-    /// Dual-link bind/unbind must clear the published spine so layout recaptures live order.
+    /// Dual-link structure/weight mutation: clear published spine so next layout recaptures live.
     func invalidateTilingStructureGeneration() {
+        if unsafe Self.suppressTilingGenerationInvalidation { return }
         tilingStructureGeneration = nil
     }
 
@@ -55,7 +60,7 @@ extension Workspace {
         lastAppliedLayoutPhysicalRect = physicalRect
         lastAppliedLayoutVirtualRect = rect
 
-        // Prefer committed generation; recapture only on membership drift
+        // Dirty-flag: trust published gen; capture only when nil
         let spine = currentTilingSpine()
         let mruWindowId = rootTilingContainer.mostRecentWindowRecursive?.windowId
 
@@ -68,10 +73,11 @@ extension Workspace {
             context: context,
             mruWindowId: mruWindowId,
         )
-        // Publish weight-adjusted spine so the next pass keeps structure+weights
-        tilingStructureGeneration = laidOut
-        // Sync live dual-link weights (windows + nested containers) for mouse helpers / capture
+        // Sync live dual-link weights without invalidating, then publish generation once
+        unsafe Self.suppressTilingGenerationInvalidation = true
         applyWeightsFromSpine(laidOut, live: rootTilingContainer, parentOrientation: nil)
+        unsafe Self.suppressTilingGenerationInvalidation = false
+        tilingStructureGeneration = laidOut
 
         try await layoutFloatingChildren(context: context)
     }

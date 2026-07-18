@@ -42,7 +42,11 @@ open class TreeNode: Equatable, AeroAny {
                 if parent.layout != .tiles {
                     die("Weight can be changed only for nodes whose parent has 'tiles' layout")
                 }
+                guard adaptiveWeight != newValue else { return }
                 adaptiveWeight = newValue
+                // Dual-link weight change affects layout geometry — drop published spine
+                // (suppressed while layout syncs spine weights onto live handles)
+                nodeWorkspace?.invalidateTilingStructureGeneration()
             default:
                 die("Can't change weight")
         }

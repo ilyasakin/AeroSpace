@@ -66,15 +66,14 @@ extension Workspace {
         check(spine.restore(parent: self, index: INDEX_BIND_LAST), "Failed to materialize tiling spine")
     }
 
-    /// Spine for layout. Recapture when **structure** drifts (order/nesting/window ids), not when
-    /// only weights differ. After layout the published generation has adjusted weights; live
-    /// dual-link container weights may lag until synced — full `==` would thrash and mix old
-    /// container weights with adjusted leaf weights on nested trees.
+    /// Dirty-flag protocol: if a generation is published, trust it. If nil, capture from live
+    /// dual-link tree. Dual-link structure/weight mutations must call
+    /// `invalidateTilingStructureGeneration()` so the next layout recaptures. No equality guessing.
     func currentTilingSpine() -> PersistentTilingNode {
-        let captured = PersistentTilingNode.capture(rootTilingContainer)
-        if let gen = tilingStructureGeneration, gen.structureEquals(captured) {
-            return gen // keep layout-adjusted weights
+        if let gen = tilingStructureGeneration {
+            return gen
         }
+        let captured = PersistentTilingNode.capture(rootTilingContainer)
         tilingStructureGeneration = captured
         return captured
     }
