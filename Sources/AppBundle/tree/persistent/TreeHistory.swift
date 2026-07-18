@@ -32,6 +32,8 @@ enum TreeHistory {
         if ring.count > capacity {
             ring.removeFirst(ring.count - capacity)
         }
+        // Persist across AeroSpace restarts (apps stay open → window ids remain valid).
+        SessionLayoutStore.scheduleSave()
     }
 
     /// All recorded generations (oldest first).

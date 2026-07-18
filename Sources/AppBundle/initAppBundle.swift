@@ -34,8 +34,13 @@ import Foundation
             assumeCancellable: false,
             layoutWorkspaces: false,
         )
+        // After discovery: restore last session tiling (if window ids still match).
+        let restoredSession = SessionLayoutStore.restoreIfPossible()
         try await runLightSession(.startup, .forceRun) {
-            smartLayoutAtStartup()
+            if !restoredSession {
+                // Only invent a layout when we have no saved session to apply.
+                smartLayoutAtStartup()
+            }
             _ = await config.afterStartupCommand.run(.defaultEnv, .emptyStdin)
         }
     }
