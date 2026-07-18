@@ -22,11 +22,16 @@ private func getStubWorkspace(forPoint point: CGPoint) -> Workspace {
     {
         return prev
     }
-    if let candidate = Workspace.allUnsorted
-        .first(where: { !$0.isVisible && $0.workspaceMonitor.rect.topLeftCorner == point })
+    // Prefer the alphabetically first match (same as the old Workspace.all.first(where:) path).
+    // Scan allUnsorted so we don't re-sort the whole set; still O(n) and stable if two parked
+    // workspaces share a monitor top-left corner.
+    var best: Workspace?
+    for candidate in Workspace.allUnsorted
+        where !candidate.isVisible && candidate.workspaceMonitor.rect.topLeftCorner == point
     {
-        return candidate
+        if best.map({ candidate < $0 }) ?? true { best = candidate }
     }
+    if let best { return best }
     return (1 ... Int.max).lazy
         .map { Workspace.get(byName: String($0)) }
         .first { $0.isEffectivelyEmpty && !$0.isVisible && !config.persistentWorkspaces.contains($0.name) && $0.forceAssignedMonitor == nil }
