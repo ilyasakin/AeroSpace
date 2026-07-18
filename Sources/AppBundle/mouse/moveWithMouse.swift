@@ -79,6 +79,17 @@ private func moveTilingWindow(_ window: Window) {
 func swapWindows(mruDominant window1: Window, _ window2: Window) {
     if window1 == window2 { return }
 
+    // Prefer path-copy commit when both are tiling leaves on the same workspace
+    if let ws = window1.nodeWorkspace,
+       ws === window2.nodeWorkspace,
+       window1.parent is TilingContainer,
+       window2.parent is TilingContainer,
+       ws.commitTilingSwap(id1: window1.windowId, id2: window2.windowId)
+    {
+        return
+    }
+
+    // Fallback: dual-link swap (different workspaces / non-tiling)
     let binding2 = window2.unbindFromParent()
     let binding1 = window1.unbindFromParent()
 

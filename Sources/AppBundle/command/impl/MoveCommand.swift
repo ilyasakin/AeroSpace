@@ -27,7 +27,12 @@ struct MoveCommand: Command {
                     switch parent.children[indexOfSiblingTarget].tilingTreeNodeCasesOrDie() {
                         case .tilingContainer(let topLevelSiblingTargetContainer):
                             return deepMoveIn(window: currentWindow, into: topLevelSiblingTargetContainer, moveDirection: direction, io)
-                        case .window: // "swap windows"
+                        case .window: // "swap windows" / sibling reorder via path-copy when possible
+                            if let ws = currentWindow.nodeWorkspace,
+                               ws.commitTilingMoveWindow(currentWindow.windowId, toIndexInParent: indexOfSiblingTarget)
+                            {
+                                return .succ
+                            }
                             let prevBinding = currentWindow.unbindFromParent()
                             currentWindow.bind(to: parent, adaptiveWeight: prevBinding.adaptiveWeight, index: indexOfSiblingTarget)
                             return .succ

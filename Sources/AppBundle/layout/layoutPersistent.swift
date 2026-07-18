@@ -337,12 +337,4 @@ private func layoutPersistentAccordion(
     return .container(orientation: orientation, layout: layout, weight: weight, children: newChildren)
 }
 
-extension PersistentTilingNode {
-    /// Shallow weight update (does not recurse into container children).
-    fileprivate func withWeight(_ newWeight: CGFloat) -> PersistentTilingNode {
-        switch self {
-            case .window(let id, _): .window(id: id, weight: newWeight)
-            case .container(let o, let l, _, let c): .container(orientation: o, layout: l, weight: newWeight, children: c)
-        }
-    }
-}
+

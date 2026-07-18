@@ -22,20 +22,39 @@ final class MacWindow: Window {
     static func getOrRegister(windowId: UInt32, macApp: MacApp) async throws -> MacWindow {
         if let existing = allWindowsMap[windowId] { return existing }
         let rect = try await macApp.getAxRect(windowId, .cancellable)
-        let data = try await unbindAndGetBindingDataForNewWindow(
-            windowId,
-            macApp,
-            isStartup
-                ? (rect?.center.monitorApproximation ?? mainMonitor).activeWorkspace
-                : focus.workspace,
-            window: nil,
-            .cancellable,
-        )
+        let workspace = isStartup
+            ? (rect?.center.monitorApproximation ?? mainMonitor).activeWorkspace
+            : focus.workspace
+        let windowLevel = getWindowLevel(for: windowId)
+        let windowType = try await macApp.resolveWindowType(windowId, windowLevel, .cancellable)
 
         // atomic synchronous section
         if let existing = allWindowsMap[windowId] { return existing }
-        let window = MacWindow(windowId, macApp, lastFloatingSize: rect?.size, parent: data.parent, adaptiveWeight: data.adaptiveWeight, index: data.index)
-        allWindowsMap[windowId] = window
+
+        let window: MacWindow
+        switch windowType {
+            case .popup:
+                window = MacWindow(
+                    windowId, macApp, lastFloatingSize: rect?.size,
+                    parent: macosPopupWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST,
+                )
+            case .dialog:
+                window = MacWindow(
+                    windowId, macApp, lastFloatingSize: rect?.size,
+                    parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST,
+                )
+            case .window:
+                // Park floating first; path-copy place into tiling spine then materialize (dual-link rebuilt)
+                window = MacWindow(
+                    windowId, macApp, lastFloatingSize: rect?.size,
+                    parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST,
+                )
+                allWindowsMap[windowId] = window
+                _ = workspace.commitTilingPlaceNewWindow(id: windowId)
+        }
+        if windowType != .window {
+            allWindowsMap[windowId] = window
+        }
 
         try await debugWindowsIfRecording(window, .cancellable)
         if try await !restoreClosedWindowsCacheIfNeeded(newlyDetectedWindow: window) {
@@ -245,71 +264,24 @@ final class MacWindow: Window {
 extension Window {
     @MainActor
     func relayoutWindow(on workspace: Workspace, _ cm: CancellationMode, forceTile: Bool = false) async throws {
-        let data = forceTile
-            ? unbindAndGetBindingDataForNewTilingWindow(workspace, window: self)
-            : try await unbindAndGetBindingDataForNewWindow(self.asMacWindow().windowId, self.asMacWindow().macApp, workspace, window: self, cm)
-        bind(to: data.parent, adaptiveWeight: data.adaptiveWeight, index: data.index)
-    }
-}
-
-// The function is private because it's unsafe. It leaves the window in unbound state
-@MainActor
-private func unbindAndGetBindingDataForNewWindow(_ windowId: UInt32, _ macApp: MacApp, _ workspace: Workspace, window: Window?, _ cm: CancellationMode) async throws -> BindingData {
-    let windowLevel = getWindowLevel(for: windowId)
-    return switch try await macApp.resolveWindowType(windowId, windowLevel, cm) {
-        case .popup: BindingData(parent: macosPopupWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
-        case .dialog: BindingData(parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
-        case .window: unbindAndGetBindingDataForNewTilingWindow(workspace, window: window)
-    }
-}
-
-// The function is private because it's unsafe. It leaves the window in unbound state
-@MainActor
-private func unbindAndGetBindingDataForNewTilingWindow(_ workspace: Workspace, window: Window?) -> BindingData {
-    window?.unbindFromParent() // It's important to unbind to get correct data from below
-
-    // Dwindle splits the tile of the *focused* window. MRU is only a fallback: bind()
-    // auto-marks newly bound windows as most-recent, so MRU diverges from focus whenever
-    // a window appears without taking focus
-    let focusedTilingWindow: Window? = focus.windowOrNil?.takeIf { $0 != window && $0.nodeWorkspace == workspace && $0.parent is TilingContainer }
-    if workspace.effectiveTilingPolicy == .dwindle,
-       let target = focusedTilingWindow ?? workspace.rootTilingContainer.mostRecentWindowRecursive,
-       target != window,
-       let targetBindingParent = target.parent as? TilingContainer
-    {
-        // Binary-split the target tile. Orientation follows the tile's aspect ratio
-        // (wider -> side by side); fall back to alternating with the parent when the
-        // tile was never laid out
-        let rect = target.lastAppliedLayoutPhysicalRect
-        let splitHorizontally = rect.map { $0.width > $0.height } ?? (targetBindingParent.orientation == .v)
-        let ratio = CGFloat(config.dwindleSplitPercent) / 100
-        _ = targetBindingParent // silence unused warning if asserts are compiled out
-        let targetBinding = target.unbindFromParent()
-        let wrapper = TilingContainer(
-            parent: targetBinding.parent,
-            adaptiveWeight: targetBinding.adaptiveWeight,
-            splitHorizontally ? .h : .v,
-            .tiles,
-            index: targetBinding.index,
-        )
-        target.bind(to: wrapper, adaptiveWeight: 2 * ratio, index: 0)
-        target.markAsMostRecentChild()
-        return BindingData(parent: wrapper, adaptiveWeight: 2 * (1 - ratio), index: INDEX_BIND_LAST)
-    }
-
-    let mruWindow = workspace.mostRecentWindowRecursive
-    if let mruWindow, let tilingParent = mruWindow.parent as? TilingContainer {
-        return BindingData(
-            parent: tilingParent,
-            adaptiveWeight: WEIGHT_AUTO,
-            index: mruWindow.ownIndex.orDie() + 1,
-        )
-    } else {
-        return BindingData(
-            parent: workspace.rootTilingContainer,
-            adaptiveWeight: WEIGHT_AUTO,
-            index: INDEX_BIND_LAST,
-        )
+        if forceTile {
+            // Path-copy place into tiling spine (unbind via materialize)
+            bindAsFloatingWindow(to: workspace)
+            _ = workspace.commitTilingPlaceNewWindow(id: windowId)
+            return
+        }
+        let mac = asMacWindow()
+        let windowLevel = getWindowLevel(for: windowId)
+        let windowType = try await mac.macApp.resolveWindowType(windowId, windowLevel, cm)
+        switch windowType {
+            case .popup:
+                bind(to: macosPopupWindowsContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
+            case .dialog:
+                bindAsFloatingWindow(to: workspace)
+            case .window:
+                bindAsFloatingWindow(to: workspace)
+                _ = workspace.commitTilingPlaceNewWindow(id: windowId)
+        }
     }
 }
 

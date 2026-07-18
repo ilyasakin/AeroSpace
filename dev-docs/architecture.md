@@ -126,11 +126,13 @@ Immutable, single-linked (downward) path-copying spine for tiling structure:
 - **`layoutPersistent.swift`** — tiling layout walks the spine generation only for structure/weights;
   windows resolved by id for AX. No `liveChildren[i]` geometry/weight pairing. Accordion MRU uses
   live most-recent **window id** only. Floating still uses the live tree.
-- **`TilingStructureCommit.swift`** — path-copy-first: transform generation → materialize live
-  handles (`commitTilingTransform` / `commitTilingInsertWindow` / `commitTilingRemoveWindow`).
+- **`TilingStructureCommit.swift`** — path-copy-first commits:
+  - `commitTilingTransform` / insert / remove → materialize live tree from spine
+  - `commitTilingPlaceNewWindow` — dwindle or MRU insert (used by new tiling windows + `relayoutWindow`)
+  - `commitTilingSwap` / `commitTilingMoveWindow` — path-copy gen, dual-link apply in place
 
-Live `TreeNode` remains the AX identity layer and is still used by many legacy bind call sites.
-Representative tiling structure changes go through path-copy commit.
+Live `TreeNode` remains the AX identity layer. New tiling placement, swap, and sibling move go
+through path-copy generation updates; layout trusts the dirty-flag generation.
 
 **Generation freshness (dirty-flag):** `currentTilingSpine` trusts a non-nil generation;
 if nil it captures from live. Dual-link tiling bind/unbind and tiling `setWeight` invalidate.
@@ -139,5 +141,5 @@ that sync). No equality-based freshness heuristics.
 
 ### Follow-up work (not done yet)
 
-- Route remaining legacy dual-link tiling binds (e.g. dwindle insert) through `commitTilingTransform`
-- Optional: drop dual-link storage entirely once all mutators use path-copy commits
+- Optional: drop dual-link storage entirely (all mutators already publish/invalidate generation)
+- deepMoveIn / join-with / split still dual-link (invalidate gen; layout recaptures)

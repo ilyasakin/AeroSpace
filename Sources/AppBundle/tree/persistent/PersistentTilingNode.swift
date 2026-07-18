@@ -187,6 +187,83 @@ extension PersistentTilingNode {
                 return nil
         }
     }
+
+    /// Shallow weight update (does not recurse into container children).
+    func withWeight(_ newWeight: CGFloat) -> PersistentTilingNode {
+        switch self {
+            case .window(let id, _): .window(id: id, weight: newWeight)
+            case .container(let o, let l, _, let c): .container(orientation: o, layout: l, weight: newWeight, children: c)
+        }
+    }
+
+    /// Dwindle: replace target window leaf with a binary split container holding target + new window.
+    func dwindleSplit(
+        targetId: UInt32,
+        newId: UInt32,
+        splitHorizontal: Bool,
+        ratio: CGFloat,
+    ) -> PersistentTilingNode? {
+        guard let path = path(ofWindowId: targetId),
+              let target = node(at: path),
+              case .window(_, let tw) = target
+        else { return nil }
+        let wrapper = PersistentTilingNode.container(
+            orientation: splitHorizontal ? .h : .v,
+            layout: .tiles,
+            weight: tw,
+            children: [
+                .window(id: targetId, weight: 2 * ratio),
+                .window(id: newId, weight: 2 * (1 - ratio)),
+            ],
+        )
+        return updating(at: path, with: wrapper)
+    }
+
+    /// Insert new window after `besideId` in its parent container, or append at root if unknown.
+    func insertWindowBeside(besideId: UInt32?, newId: UInt32, weight: CGFloat) -> PersistentTilingNode? {
+        if let besideId, let mruPath = path(ofWindowId: besideId), !mruPath.isRoot,
+           let index = mruPath.indices.last
+        {
+            return inserting(
+                child: .window(id: newId, weight: weight),
+                at: index + 1,
+                intoContainerAt: mruPath.dropLast,
+            )
+        }
+        return inserting(child: .window(id: newId, weight: weight), at: INDEX_BIND_LAST, intoContainerAt: .root)
+    }
+
+    /// Swap two window leaves. Slot weights stay with the path (same as dual-link binding swap).
+    func swappingWindows(id1: UInt32, id2: UInt32) -> PersistentTilingNode? {
+        guard id1 != id2,
+              let p1 = path(ofWindowId: id1),
+              let p2 = path(ofWindowId: id2),
+              let n1 = node(at: p1),
+              let n2 = node(at: p2),
+              case .window(_, let w1) = n1,
+              case .window(_, let w2) = n2
+        else { return nil }
+        // Dual-link swap: each path keeps its adaptiveWeight; window ids cross.
+        guard let mid = updating(at: p1, with: .window(id: id2, weight: w1)) else { return nil }
+        return mid.updating(at: p2, with: .window(id: id1, weight: w2))
+    }
+
+    /// Move window to a new index in its current parent (sibling reorder).
+    func movingWindow(_ id: UInt32, toIndexInParent newIndex: Int) -> PersistentTilingNode? {
+        guard let path = path(ofWindowId: id), !path.isRoot,
+              let oldIndex = path.indices.last,
+              let removed = removing(at: path)
+        else { return nil }
+        var insertAt = newIndex
+        // After removal, indices after oldIndex shift down
+        if newIndex > oldIndex { insertAt = newIndex - 1 }
+        if newIndex == INDEX_BIND_LAST { insertAt = INDEX_BIND_LAST }
+        return removed.root.inserting(
+            child: removed.removed,
+            at: insertAt,
+            intoContainerAt: path.dropLast,
+        )
+    }
 }
 
 
