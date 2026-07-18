@@ -90,4 +90,44 @@ final class TilingStructureCommitTest: XCTestCase {
         XCTAssertNotNil(rect)
         XCTAssertGreaterThan(rect!.width * rect!.height, 0)
     }
+
+    /// Regression: dual-link reorder with the same window set must not keep a stale spine.
+    /// After layout publishes generation, swap via dual-link bind and layout again — geometry
+    /// must follow the live order (not undo the swap).
+    func testDualLinkReorderThenLayoutFollowsLiveStructure() async throws {
+        let ws = focus.workspace
+        let a = TestWindow.new(id: 501, parent: ws.floatingWindowsContainer)
+        let b = TestWindow.new(id: 502, parent: ws.floatingWindowsContainer)
+        XCTAssertTrue(ws.commitTilingInsertWindow(id: 501, weight: 1))
+        XCTAssertTrue(ws.commitTilingInsertWindow(id: 502, weight: 1))
+        try await ws.layoutWorkspace()
+        // Generation published for A|B
+        XCTAssertNotNil(ws.tilingStructureGeneration)
+
+        // Dual-link swap → B|A (same window ids)
+        let root = ws.rootTilingContainer
+        a.unbindFromParent()
+        b.unbindFromParent()
+        b.bind(to: root, adaptiveWeight: 1, index: 0)
+        a.bind(to: root, adaptiveWeight: 1, index: 1)
+        // Dual-link mutation must invalidate (or full-structure compare must recapture)
+        XCTAssertEqual(
+            ws.rootTilingContainer.children.compactMap { ($0 as? Window)?.windowId },
+            [502, 501],
+        )
+
+        try await ws.layoutWorkspace()
+        let spine = try XCTUnwrap(ws.tilingStructureGeneration)
+        // Spine order must match live B|A, not stale A|B
+        XCTAssertEqual(spine.windowIds, [502, 501])
+
+        let rb = try await b.getAxRect(.nonCancellable)
+        let ra = try await a.getAxRect(.nonCancellable)
+        XCTAssertNotNil(rb)
+        XCTAssertNotNil(ra)
+        // Horizontal root: first child is left of second
+        if ws.rootTilingContainer.orientation == .h {
+            XCTAssertLessThan(rb!.topLeftX, ra!.topLeftX, "B should be left of A after swap+layout")
+        }
+    }
 }

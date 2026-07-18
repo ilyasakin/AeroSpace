@@ -13,24 +13,29 @@ import Common
 
 extension Workspace {
     /// Last tiling spine used for layout / commits (updated each layout or commit).
-    @MainActor private static var _tilingSpineByName: [String: PersistentTilingNode] = [:]
+    /// nonisolated(unsafe): dual-link bind/unbind may invalidate off the typed MainActor boundary
+    /// while still running on the main thread under AeroSpace's session model.
+    private nonisolated(unsafe) static var _tilingSpineByName: [String: PersistentTilingNode] = [:]
 
-    @MainActor
     var tilingStructureGeneration: PersistentTilingNode? {
-        get { Self._tilingSpineByName[name] }
+        get { unsafe Self._tilingSpineByName[name] }
         set {
             if let newValue {
-                Self._tilingSpineByName[name] = newValue
+                unsafe Self._tilingSpineByName[name] = newValue
             } else {
-                Self._tilingSpineByName.removeValue(forKey: name)
+                unsafe Self._tilingSpineByName.removeValue(forKey: name)
             }
         }
     }
 
     /// Drop cached spines (tests / workspace GC hygiene)
-    @MainActor
     static func clearTilingStructureGenerations() {
-        _tilingSpineByName.removeAll(keepingCapacity: true)
+        unsafe _tilingSpineByName.removeAll(keepingCapacity: true)
+    }
+
+    /// Dual-link bind/unbind must clear the published spine so layout recaptures live order.
+    func invalidateTilingStructureGeneration() {
+        tilingStructureGeneration = nil
     }
 
     @MainActor

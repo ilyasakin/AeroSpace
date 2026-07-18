@@ -93,6 +93,8 @@ open class TreeNode: Equatable, AeroAny {
         // 2. Misbehaved apps that abuse real window as popups https://github.com/nikitabobko/AeroSpace/issues/106 (the
         //    last appeared window, is not necessarily the one that has the focus)
         markAsMostRecentChild()
+        // Dual-link structural change: drop path-copy generation so layout cannot use a stale spine
+        invalidateTilingGenerationAfterDualLinkMutation(oldParent: result?.parent, newParent: newParent)
         return result
     }
 
@@ -101,10 +103,30 @@ open class TreeNode: Equatable, AeroAny {
 
         let index = _parent._children.remove(element: self) ?? dieT("Can't find child in its parent")
         check(_parent._mruChildren.remove(self))
+        let oldParent = _parent
         self._parent = nil
         unboundStacktrace = getStringStacktrace()
+        invalidateTilingGenerationAfterDualLinkMutation(oldParent: oldParent, newParent: nil)
 
         return BindingData(parent: _parent, adaptiveWeight: adaptiveWeight, index: index)
+    }
+
+    /// Clear workspace tiling generation when dual-link bind/unbind touches tiling structure.
+    private func invalidateTilingGenerationAfterDualLinkMutation(
+        oldParent: NonLeafTreeNodeObject?,
+        newParent: NonLeafTreeNodeObject?,
+    ) {
+        // Only tiling dual-link edges. Binding floating/shim containers to a Workspace must not
+        // clear the spine (layout does that after publishing the generation).
+        let touchesTiling =
+            oldParent is TilingContainer || newParent is TilingContainer ||
+            self is TilingContainer
+        guard touchesTiling else { return }
+        // Prefer new parent's workspace, then old, then self
+        let ws = (newParent as? TreeNode)?.nodeWorkspace
+            ?? (oldParent as? TreeNode)?.nodeWorkspace
+            ?? nodeWorkspace
+        ws?.invalidateTilingStructureGeneration()
     }
 
     func markAsMostRecentChild() {
