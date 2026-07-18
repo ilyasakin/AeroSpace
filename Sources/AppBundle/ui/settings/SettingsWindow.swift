@@ -268,17 +268,48 @@ struct BarSettingsTab: View {
     }
 
     @ViewBuilder private func colorField(_ title: String, key: String, get: @escaping (Config) -> String) -> some View {
-        HStack {
+        HStack(spacing: 12) {
             Text(title)
             Spacer()
-            TextField(
-                "#rrggbb",
-                text: model.stringChoiceBinding(["bar"], key, get: get),
+            // Native color well — no hex typing. Supports opacity (stored as #RRGGBBAA).
+            ColorPicker(
+                "",
+                selection: barColorBinding(key: key, get: get),
+                supportsOpacity: true,
             )
-            .frame(width: 100)
-            .multilineTextAlignment(.trailing)
-            .font(.system(.body, design: .monospaced))
+            .labelsHidden()
+            .frame(width: 44, height: 28)
         }
+    }
+
+    /// Binding from config hex (`#RRGGBB` / `#RRGGBBAA`) ↔ SwiftUI `Color` for ColorPicker.
+    private func barColorBinding(key: String, get: @escaping (Config) -> String) -> Binding<Color> {
+        Binding(
+            get: {
+                let hex = {
+                    if let raw = TomlPatcher.getRawValue(model.text, table: ["bar"], key: key) {
+                        return parseTomlStringOrStringArray(raw).first ?? get(model.parsedConfig)
+                    }
+                    return get(model.parsedConfig)
+                }()
+                if let ns = NSColor(hex: hex) {
+                    return Color(nsColor: ns)
+                }
+                return Color.gray
+            },
+            set: { newColor in
+                let ns = NSColor(newColor)
+                let hex = ns.statusBarHexString()
+                model.apply {
+                    TomlPatcher.setValue(
+                        $0,
+                        table: ["bar"],
+                        key: key,
+                        rawValue: TomlPatcher.serialize(string: hex),
+                    )
+                }
+            },
+        )
     }
 }
 

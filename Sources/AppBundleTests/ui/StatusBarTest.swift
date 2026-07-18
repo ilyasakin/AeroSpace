@@ -96,6 +96,19 @@ final class StatusBarNativeModulesTest: XCTestCase {
         assertTrue(abs(a - 1) < 0.01)
     }
 
+    func testStatusBarHexFromComponents() {
+        assertEquals(statusBarHexFromComponents(r: 255, g: 0, b: 0), "#FF0000")
+        assertEquals(statusBarHexFromComponents(r: 0x1E, g: 0x1E, b: 0x2E), "#1E1E2E")
+        // Opaque alpha is omitted
+        assertEquals(statusBarHexFromComponents(r: 10, g: 20, b: 30, a: 255), "#0A141E")
+        // Transparent uses RRGGBBAA
+        assertEquals(statusBarHexFromComponents(r: 255, g: 0, b: 0, a: 128), "#FF000080")
+        // Round-trip via NSColor
+        let ns = NSColor(hex: "#89B4FA80")
+        assertNotNil(ns)
+        assertEquals(ns!.statusBarHexString(), "#89B4FA80")
+    }
+
     func testVolumeText() {
         assertEquals(StatusBarVolume.text(from: .init(percent: 40, isMuted: false)), "🔉 40%")
         assertEquals(StatusBarVolume.text(from: .init(percent: 0, isMuted: true)), "🔇 mute")

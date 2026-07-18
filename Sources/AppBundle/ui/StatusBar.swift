@@ -832,4 +832,37 @@ extension NSColor {
             alpha: CGFloat(a) / 255,
         )
     }
+
+    /// Serialize to `#RRGGBB` or `#RRGGBBAA` (alpha omitted when fully opaque).
+    func statusBarHexString() -> String {
+        guard let rgb = usingColorSpace(.sRGB) ?? usingColorSpace(.deviceRGB) else {
+            return "#808080"
+        }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        rgb.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return statusBarHexFromComponents(
+            r: Int((r * 255).rounded().clamped(to: 0 ... 255)),
+            g: Int((g * 255).rounded().clamped(to: 0 ... 255)),
+            b: Int((b * 255).rounded().clamped(to: 0 ... 255)),
+            a: Int((a * 255).rounded().clamped(to: 0 ... 255)),
+        )
+    }
+}
+
+/// Pure hex encoder for bar config / Settings color well (unit-testable).
+func statusBarHexFromComponents(r: Int, g: Int, b: Int, a: Int = 255) -> String {
+    let r = min(255, max(0, r))
+    let g = min(255, max(0, g))
+    let b = min(255, max(0, b))
+    let a = min(255, max(0, a))
+    if a >= 255 {
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+    return String(format: "#%02X%02X%02X%02X", r, g, b, a)
+}
+
+private extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
+    }
 }
