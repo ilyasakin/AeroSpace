@@ -1,0 +1,43 @@
+= aerospace-move-to(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-move-to
+// tag::purpose[]
+:manpurpose: Place a floating window at an absolute top-left position
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace move-to [-h|--help] [--window-id <window-id>] <x> <y>
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+If the window is tiled, it is floated first (Hyprland `move` placement implies floating),
+then the AX top-left is set to `(x, y)`.
+
+// =========================================================== Options
+include::util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+// =========================================================== Arguments
+include::util/conditional-arguments-header.adoc[]
+
+<x>:: Absolute horizontal position (global coordinates).
+
+<y>:: Absolute vertical position (global coordinates).
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

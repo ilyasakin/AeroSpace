@@ -1,0 +1,44 @@
+= aerospace-resize-to(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-resize-to
+// tag::purpose[]
+:manpurpose: Set absolute pixel size of the focused/target window
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace resize-to [-h|--help] [--window-id <window-id>] <width> <height>
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+For a **floating** window, sets the AX size directly.
+For a **tiled** window, translates the pixel delta into a weight change (same approach as
+`resize` for tiled nodes) on width and height when possible.
+
+// =========================================================== Options
+include::util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+// =========================================================== Arguments
+include::util/conditional-arguments-header.adoc[]
+
+<width>:: Absolute width in pixels.
+
+<height>:: Absolute height in pixels.
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]
