@@ -83,7 +83,7 @@ extension Workspace {
     }
 
     @MainActor
-    fileprivate func layoutFloatingChildren(context: LayoutContext) async throws {
+    private func layoutFloatingChildren(context: LayoutContext) async throws {
         for window in floatingWindows {
             window.lastAppliedLayoutPhysicalRect = nil
             window.lastAppliedLayoutVirtualRect = nil
@@ -204,8 +204,159 @@ private func layoutPersistentNode(
                         context: context,
                         mruWindowId: mruWindowId,
                     )
+                case .master:
+                    return try await layoutPersistentMaster(
+                        orientation: orientation,
+                        layout: layout,
+                        weight: weight,
+                        children: children,
+                        point: point,
+                        width: width,
+                        height: height,
+                        virtual: virtual,
+                        context: context,
+                        mruWindowId: mruWindowId,
+                    )
             }
     }
+}
+
+/// Pure geometry for master layout: master (index 0) + stack rects for the rest.
+///
+/// Primary split is **master weight vs average stack weight** (stack treated as one pane), so equal
+/// weights always yield ~50/50 regardless of stack count. Stack children then share the secondary
+/// pane by their own weights (tiles-style). `innerGap` applies only to physical layout; pass 0 for
+/// virtual rects (gaps-as-zero contract, same as tiles).
+func masterLayoutChildRects(
+    orientation: Orientation,
+    childWeights: [CGFloat],
+    rect: Rect,
+    innerGap: CGFloat,
+) -> [Rect] {
+    guard !childWeights.isEmpty else { return [] }
+    if childWeights.count == 1 {
+        return [rect]
+    }
+    let masterWeight = max(childWeights[0], 0)
+    let stackWeights = Array(childWeights.dropFirst())
+    let stackWeightSum = stackWeights.reduce(CGFloat(0), +)
+    // Stack pane weight = average of stack children (not sum). Equal weights → 50/50 forever.
+    let stackPaneWeight = max(stackWeightSum / CGFloat(stackWeights.count), 0)
+    let primaryTotal = max(masterWeight + stackPaneWeight, 1)
+    let primarySpan = orientation == .h ? rect.width : rect.height
+    let gap = max(innerGap, 0)
+    let usable = max(primarySpan - gap, 0)
+    let masterSpan = usable * (masterWeight / primaryTotal)
+    let stackSpan = usable - masterSpan
+
+    let masterRect: Rect
+    let stackRect: Rect
+    switch orientation {
+        case .h:
+            masterRect = Rect(topLeftX: rect.topLeftX, topLeftY: rect.topLeftY, width: masterSpan, height: rect.height)
+            stackRect = Rect(
+                topLeftX: rect.topLeftX + masterSpan + gap,
+                topLeftY: rect.topLeftY,
+                width: stackSpan,
+                height: rect.height,
+            )
+        case .v:
+            masterRect = Rect(topLeftX: rect.topLeftX, topLeftY: rect.topLeftY, width: rect.width, height: masterSpan)
+            stackRect = Rect(
+                topLeftX: rect.topLeftX,
+                topLeftY: rect.topLeftY + masterSpan + gap,
+                width: rect.width,
+                height: stackSpan,
+            )
+    }
+
+    var result: [Rect] = [masterRect]
+    // Stack along the opposite orientation using proportional weights
+    let stackOrientation = orientation.opposite
+    let stackPrimary = stackOrientation == .h ? stackRect.width : stackRect.height
+    let stackWeightTotal = max(stackWeightSum, 1)
+    let stackGapTotal = gap * CGFloat(max(stackWeights.count - 1, 0))
+    let stackUsable = max(stackPrimary - stackGapTotal, 0)
+    var cursor = stackRect.topLeftCorner
+    for (i, w) in stackWeights.enumerated() {
+        let childSpan = stackUsable * (w / stackWeightTotal)
+        let childRect: Rect = switch stackOrientation {
+            case .h: Rect(topLeftX: cursor.x, topLeftY: cursor.y, width: childSpan, height: stackRect.height)
+            case .v: Rect(topLeftX: cursor.x, topLeftY: cursor.y, width: stackRect.width, height: childSpan)
+        }
+        result.append(childRect)
+        if i < stackWeights.count - 1 {
+            cursor = stackOrientation == .h
+                ? cursor.addingXOffset(childSpan + gap)
+                : cursor.addingYOffset(childSpan + gap)
+        }
+    }
+    return result
+}
+
+@MainActor
+private func layoutPersistentMaster(
+    orientation: Orientation,
+    layout: Layout,
+    weight: CGFloat,
+    children: [PersistentTilingNode],
+    point: CGPoint,
+    width: CGFloat,
+    height: CGFloat,
+    virtual: Rect,
+    context: LayoutContext,
+    mruWindowId: UInt32?,
+) async throws -> PersistentTilingNode {
+    guard !children.isEmpty else {
+        return .container(orientation: orientation, layout: layout, weight: weight, children: children)
+    }
+    if children.count == 1 {
+        let laidOut = try await layoutPersistentNode(
+            children[0],
+            point: point,
+            width: width,
+            height: height,
+            virtual: virtual,
+            context: context,
+            mruWindowId: mruWindowId,
+        )
+        return .container(orientation: orientation, layout: layout, weight: weight, children: [laidOut])
+    }
+
+    let rawGap = context.resolvedGaps.inner.get(orientation).toDouble()
+    let weights = children.map(\.weight)
+    let physical = Rect(topLeftX: point.x, topLeftY: point.y, width: width, height: height)
+    let rects = masterLayoutChildRects(
+        orientation: orientation,
+        childWeights: weights,
+        rect: physical,
+        innerGap: rawGap,
+    )
+    // Virtual = geometry as if gaps were zero (matches tiles contract / mouse-resize baseline)
+    let virtualRects = masterLayoutChildRects(
+        orientation: orientation,
+        childWeights: weights,
+        rect: virtual,
+        innerGap: 0,
+    )
+
+    var newChildren: [PersistentTilingNode] = []
+    newChildren.reserveCapacity(children.count)
+    for (i, child) in children.enumerated() {
+        let r = rects[i]
+        let v = virtualRects[i]
+        let laidOut = try await layoutPersistentNode(
+            child,
+            point: r.topLeftCorner,
+            width: r.width,
+            height: r.height,
+            virtual: v,
+            context: context,
+            mruWindowId: mruWindowId,
+        )
+        newChildren.append(laidOut)
+    }
+    return .container(orientation: orientation, layout: layout, weight: weight, children: newChildren)
 }
 
 @MainActor
@@ -309,10 +460,9 @@ private func layoutPersistentAccordion(
             case mruIndex + 1: (2 * padding, 0)
             default: (padding, padding)
         }
-        let laidOut: PersistentTilingNode
-        switch orientation {
+        let laidOut: PersistentTilingNode = switch orientation {
             case .h:
-                laidOut = try await layoutPersistentNode(
+                try await layoutPersistentNode(
                     child,
                     point: point + CGPoint(x: lPadding, y: 0),
                     width: width - rPadding - lPadding,
@@ -322,7 +472,7 @@ private func layoutPersistentAccordion(
                     mruWindowId: mruWindowId,
                 )
             case .v:
-                laidOut = try await layoutPersistentNode(
+                try await layoutPersistentNode(
                     child,
                     point: point + CGPoint(x: 0, y: lPadding),
                     width: width,

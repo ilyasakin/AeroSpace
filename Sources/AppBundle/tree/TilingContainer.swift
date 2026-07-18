@@ -58,6 +58,8 @@ extension TilingContainer {
 enum Layout: String, Sendable, Hashable, Equatable {
     case tiles
     case accordion
+    /// Index-0 is master; remaining children stack in the secondary area (Hyprland master layout).
+    case master
 }
 
 extension String {

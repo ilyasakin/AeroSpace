@@ -141,7 +141,7 @@ struct FocusCommand: Command {
             guard let _tilingParent = target.parent as? TilingContainer else { continue }
             tilingParent = _tilingParent
             index = switch tilingParent.layout {
-                case .tiles:
+                case .tiles, .master:
                     center.getProjection(tilingParent.orientation) >= targetCenter.getProjection(tilingParent.orientation)
                         ? target.ownIndex.orDie() + 1
                         : target.ownIndex.orDie()
