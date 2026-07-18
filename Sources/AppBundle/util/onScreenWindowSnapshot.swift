@@ -7,7 +7,9 @@ import Foundation
 struct OnScreenWindowSnapshot: Equatable {
     /// CGWindowID -> level for every on-screen window (all layers)
     let levels: [UInt32: MacOsWindowLevel]
-    /// Layer-0 windows excluding our own process, front-to-back (for border occlusion)
+    /// Layer-0 (normal) windows, front-to-back — the occluders for window borders. Our own floating
+    /// overlays (border overlay, tab bar, HUDs) are layer >0 so they're excluded by the level check;
+    /// our own *normal* windows (the Settings window) are kept so borders clip correctly under them
     let normalStack: [(id: UInt32, rect: Rect)]
 
     static func == (lhs: OnScreenWindowSnapshot, rhs: OnScreenWindowSnapshot) -> Bool {
@@ -45,7 +47,6 @@ func productionOnScreenWindowSnapshot() -> OnScreenWindowSnapshot {
         return snapshot
     }
 
-    let myPid = Int(ProcessInfo.processInfo.processIdentifier)
     var levels: [UInt32: MacOsWindowLevel] = [:]
     var normalStack: [(id: UInt32, rect: Rect)] = []
 
@@ -59,8 +60,9 @@ func productionOnScreenWindowSnapshot() -> OnScreenWindowSnapshot {
             let layer = (w[kCGWindowLayer as String] as? Int) ?? -1
             levels[id] = .new(windowLevel: layer)
 
+            // Only layer 0 (normal windows). This already excludes our floating overlays; we do NOT
+            // filter by our own pid, or the Settings window wouldn't clip the borders beneath it
             guard layer == 0,
-                  (w[kCGWindowOwnerPID as String] as? Int) != myPid,
                   let b = w[kCGWindowBounds as String] as? [String: Any]
             else { continue }
             let rect = Rect(
