@@ -12,13 +12,46 @@ rm -rf .debug && mkdir .debug
 cp -r .build/debug/aerospace .debug
 cp -r .build/debug/AeroSpaceApp .debug
 
+# Always package a real .app so Accessibility (TCC) keys off bobko.aerospace.debug.
+# Launching the bare AeroSpaceApp binary uses identifier "AeroSpaceApp" and breaks AX grants.
+APP=".debug/AeroSpaceDebug.app"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cat > "$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>AeroSpaceApp</string>
+	<key>CFBundleIdentifier</key>
+	<string>bobko.aerospace.debug</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>AeroSpace-Debug</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0-SNAPSHOT</string>
+	<key>CFBundleVersion</key>
+	<string>0.0.0-SNAPSHOT</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
+PLIST
+cp -f .debug/AeroSpaceApp "$APP/Contents/MacOS/AeroSpaceApp"
+
 # Sign with the stable self-signed identity if it exists, so the Accessibility grant survives
 # rebuilds instead of being reset every time (see ./setup-debug-codesigning.sh). No-op otherwise.
 DEBUG_SIGN_IDENTITY="AeroSpace Debug Self-Signed"
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$DEBUG_SIGN_IDENTITY"; then
     codesign --force --sign "$DEBUG_SIGN_IDENTITY" .debug/AeroSpaceApp
-    if [ -d .debug/AeroSpaceDebug.app ]; then
-        cp -f .debug/AeroSpaceApp .debug/AeroSpaceDebug.app/Contents/MacOS/AeroSpaceApp
-        codesign --force --sign "$DEBUG_SIGN_IDENTITY" .debug/AeroSpaceDebug.app
-    fi
+    codesign --force --sign "$DEBUG_SIGN_IDENTITY" --deep "$APP"
 fi
