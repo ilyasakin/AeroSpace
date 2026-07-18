@@ -22,6 +22,7 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             TabView {
                 GeneralSettingsTab().tabItem { Label("General", systemImage: "gearshape") }
+                BarSettingsTab().tabItem { Label("Status Bar", systemImage: "menubar.rectangle") }
                 LayoutSettingsTab().tabItem { Label("Layout", systemImage: "rectangle.split.2x1") }
                 WorkspacesSettingsTab().tabItem { Label("Workspaces", systemImage: "square.grid.2x2") }
                 KeybindingsSettingsTab().tabItem { Label("Keybindings", systemImage: "keyboard") }
@@ -133,6 +134,193 @@ struct GeneralSettingsTab: View {
             Text(title)
             CommandListEditor(text: model.commandListBinding(key), height: 40)
         }
+    }
+}
+
+// MARK: - Status Bar tab
+
+struct BarSettingsTab: View {
+    @EnvironmentObject var model: ConfigSettingsModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                SettingsSection(title: "Status bar") {
+                    Toggle("Show status bar", isOn: model.boolBinding(["bar"], "enabled", get: \.statusBar.enabled))
+                    Text("Sits below the macOS menu bar on each monitor. Not a menu-bar replacement. Linux bars (polybar/i3status) do not run on macOS.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if model.parsedConfig.statusBar.enabled || barEnabledInFile {
+                    SettingsSection(title: "Size") {
+                        HStack {
+                            Text("Height")
+                            Spacer()
+                            IntField(value: model.intBinding(["bar"], "height", get: \.statusBar.height))
+                        }
+                        HStack {
+                            Text("Font size")
+                            Spacer()
+                            IntField(value: model.intBinding(["bar"], "font-size", get: \.statusBar.fontSize))
+                        }
+                    }
+
+                    SettingsSection(title: "Left modules") {
+                        Text("Click to enable/disable. Drag enabled rows to reorder (left → right on the bar).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        BarModulePicker(
+                            selected: modules(for: "modules-left", fallback: \.statusBar.modulesLeft),
+                            onChange: { model.setStringArray(["bar"], "modules-left", $0) },
+                        )
+                    }
+
+                    SettingsSection(title: "Right modules") {
+                        Text("Click to enable/disable. Drag enabled rows to reorder (left → right in the right cluster).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        BarModulePicker(
+                            selected: modules(for: "modules-right", fallback: \.statusBar.modulesRight),
+                            onChange: { model.setStringArray(["bar"], "modules-right", $0) },
+                        )
+                    }
+
+                    SettingsSection(title: "External status command (optional)") {
+                        Text("argv of an i3bar-protocol process — one argument per line (executable first).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        CommandListEditor(
+                            text: model.stringArrayBinding(["bar"], "status-command", get: \.statusBar.statusCommand),
+                            height: 48,
+                            suggestCommands: false,
+                        )
+                    }
+
+                    SettingsSection(title: "Colors") {
+                        colorField("Background", key: "background", get: \.statusBar.background)
+                        colorField("Foreground", key: "foreground", get: \.statusBar.foreground)
+                        colorField("Focused background", key: "focused-background", get: \.statusBar.focusedBackground)
+                        colorField("Focused foreground", key: "focused-foreground", get: \.statusBar.focusedForeground)
+                    }
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    /// True when the Settings TOML already has `bar.enabled = true` (covers the frame before reparse).
+    private var barEnabledInFile: Bool {
+        if let raw = TomlPatcher.getRawValue(model.text, table: ["bar"], key: "enabled") {
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+        }
+        return model.parsedConfig.statusBar.enabled
+    }
+
+    private func modules(for key: String, fallback: (Config) -> [String]) -> [String] {
+        if let raw = TomlPatcher.getRawValue(model.text, table: ["bar"], key: key) {
+            return parseTomlStringOrStringArray(raw)
+        }
+        return fallback(model.parsedConfig)
+    }
+
+    @ViewBuilder private func colorField(_ title: String, key: String, get: @escaping (Config) -> String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField(
+                "#rrggbb",
+                text: model.stringChoiceBinding(["bar"], key, get: get),
+            )
+            .frame(width: 100)
+            .multilineTextAlignment(.trailing)
+            .font(.system(.body, design: .monospaced))
+        }
+    }
+}
+
+/// Classic toggle list for modules, with drag-to-reorder on the enabled set.
+struct BarModulePicker: View {
+    let selected: [String]
+    let onChange: ([String]) -> Void
+
+    private var catalog: [StatusBarBuiltinModule] { StatusBarBuiltinModule.allCases }
+    private var available: [StatusBarBuiltinModule] {
+        catalog.filter { !selected.contains($0.rawValue) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Enabled modules — drag to reorder; click to disable
+            if !selected.isEmpty {
+                List {
+                    ForEach(Array(selected.enumerated()), id: \.offset) { index, id in
+                        moduleRow(
+                            id: id,
+                            enabled: true,
+                            order: index + 1,
+                            showDragHandle: true,
+                        ) {
+                            onChange(selected.filter { $0 != id })
+                        }
+                    }
+                    .onMove { source, dest in
+                        var next = selected
+                        next.move(fromOffsets: source, toOffset: dest)
+                        onChange(next)
+                    }
+                }
+                .listStyle(.bordered(alternatesRowBackgrounds: true))
+                .frame(minHeight: CGFloat(max(36, selected.count * 28 + 12)), maxHeight: 160)
+            }
+
+            // Disabled / available — click to enable (appended, same as before)
+            ForEach(available, id: \.rawValue) { mod in
+                moduleRow(
+                    id: mod.rawValue,
+                    enabled: false,
+                    order: nil,
+                    showDragHandle: false,
+                ) {
+                    onChange(selected + [mod.rawValue])
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func moduleRow(
+        id: String,
+        enabled: Bool,
+        order: Int?,
+        showDragHandle: Bool,
+        action: @escaping () -> Void,
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if showDragHandle {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: enabled ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(enabled ? Color.accentColor : Color.secondary)
+                Text(StatusBarBuiltinModule(rawValue: id)?.title ?? id)
+                    .font(.body)
+                Text(id)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if let order {
+                    Text("#\(order)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
     }
 }
 

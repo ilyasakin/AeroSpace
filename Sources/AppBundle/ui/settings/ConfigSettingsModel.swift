@@ -22,29 +22,15 @@ final class ConfigSettingsModel: ObservableObject {
     /// GUI edits are validated before writing) or the file couldn't be read/written
     @Published var lastError: String? = nil
 
-    var editedUrl: URL? {
-        switch findCustomConfigUrl() {
-            case .file(let url): url
-            case .noCustomConfigExists, .ambiguousConfigError: nil
-        }
-    }
+    /// Always a native TOML path — never an i3/Hyprland primary. When the live WM runs a Linux
+    /// dialect, Settings edits the TOML sidecar (`~/.config/aerospace/aerospace.toml`).
+    var editedUrl: URL? { settingsTomlUrl() }
 
-    /// (Re-)reads the config from disk into the model. Creates ~/.aerospace.toml from the
-    /// bundled default config if the user has no config file yet (same behavior as "Open config")
+    /// (Re-)reads the Settings TOML from disk. Creates a native TOML file if missing
+    /// (full default config when no Linux primary; empty sidecar stub when i3/Hypr is live).
     func load() {
         lastError = nil
-        let url: URL
-        switch findCustomConfigUrl() {
-            case .file(let existing):
-                url = existing
-            case .noCustomConfigExists:
-                let fallback = FileManager.default.homeDirectoryForCurrentUser.appending(path: configDotfileName)
-                _ = try? FileManager.default.copyItem(atPath: defaultConfigUrl.path, toPath: fallback.path)
-                url = fallback
-            case .ambiguousConfigError(let candidates):
-                lastError = "Ambiguous config: several config files found:\n" + candidates.map(\.path).joined(separator: "\n")
-                return
-        }
+        let url = ensureSettingsTomlFile()
         configPath = url.path
         do {
             text = try String(contentsOf: url, encoding: .utf8)
@@ -99,10 +85,14 @@ final class ConfigSettingsModel: ObservableObject {
         lastError = nil
         text = newText
         reparse()
+        // Notify SwiftUI immediately — bindings read text/parsedConfig.
+        objectWillChange.send()
         Task.startUnstructured { @MainActor in
             guard let token: RunSessionGuard = .isServerEnabled else { return }
             try await runLightSession(.menuBarButton, token) {
                 _ = await reloadConfig_nonCancellable(args: ReloadConfigCmdArgs(rawArgs: []).copy(\.noGui, true))
+                // Bar modules/layout must refresh even if the light session skipped a full redraw.
+                StatusBarManager.shared.refresh()
             }
         }
     }
@@ -136,6 +126,49 @@ final class ConfigSettingsModel: ObservableObject {
         )
     }
 
+    /// Array-of-strings config key (e.g. bar.modules-left). One entry per line in the editor.
+    /// Reads the raw TOML when present so GUI and file stay in lockstep; falls back to the
+    /// effective parsed defaults when the key is still missing from the file.
+    func stringArrayBinding(_ table: [String], _ key: String, get: @escaping (Config) -> [String]) -> Binding<String> {
+        Binding(
+            get: { [weak self] in
+                guard let self else { return "" }
+                if let raw = TomlPatcher.getRawValue(self.text, table: table, key: key) {
+                    return parseTomlStringOrStringArray(raw).joined(separator: "\n")
+                }
+                return get(self.parsedConfig).joined(separator: "\n")
+            },
+            set: { [weak self] newValue in
+                let items = newValue
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                // Always write an explicit array (including `[]`) — removing the key would
+                // resurrect Config defaults and look like the edit "reset".
+                self?.apply {
+                    TomlPatcher.setValue(
+                        $0,
+                        table: table,
+                        key: key,
+                        rawValue: TomlPatcher.serialize(stringArray: items),
+                    )
+                }
+            },
+        )
+    }
+
+    /// Replace a string-array key immediately (used by module chips that commit on click).
+    func setStringArray(_ table: [String], _ key: String, _ items: [String]) {
+        apply {
+            TomlPatcher.setValue(
+                $0,
+                table: table,
+                key: key,
+                rawValue: TomlPatcher.serialize(stringArray: items),
+            )
+        }
+    }
+
     /// Multi-command config callbacks (after-startup-command, on-focus-changed, ...) edited
     /// as one command per line. Empty text removes the key
     func commandListBinding(_ key: String) -> Binding<String> {
@@ -157,6 +190,52 @@ final class ConfigSettingsModel: ObservableObject {
             },
         )
     }
+}
+
+// MARK: - Settings always edits native TOML (or sidecar)
+
+/// Prefer existing native TOML paths; never return an i3/Hyprland primary.
+@MainActor
+func settingsTomlUrl() -> URL {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let dot = home.appending(path: configDotfileName)
+    let xdg = aerospaceTomlSidecarUrl()
+    if FileManager.default.fileExists(atPath: dot.path) { return dot }
+    if FileManager.default.fileExists(atPath: xdg.path) { return xdg }
+    // Prefer XDG path for new files (sidecar-friendly when a Linux config is primary).
+    return xdg
+}
+
+@MainActor
+private func ensureSettingsTomlFile() -> URL {
+    let url = settingsTomlUrl()
+    if FileManager.default.fileExists(atPath: url.path) {
+        return url
+    }
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    // If the live primary is already a Linux dialect, start a minimal sidecar (overlay).
+    // Otherwise seed the full default native config (same as historical Settings behavior).
+    let primaryIsLinux: Bool = {
+        guard case .file(let primary) = findCustomConfigUrl() else { return false }
+        let fmt = detectConfigFormat(
+            text: (try? String(contentsOf: primary, encoding: .utf8)) ?? "",
+            url: primary,
+        )
+        return fmt == .i3 || fmt == .hyprland
+    }()
+    if primaryIsLinux {
+        let stub = """
+            # AeroSpace TOML sidecar — macOS extras overlaid on your i3/Hyprland config.
+            # Edited by Settings. Keys here override the primary Linux config.
+
+            [bar]
+            enabled = false
+            """
+        try? stub.write(to: url, atomically: true, encoding: .utf8)
+    } else {
+        try? FileManager.default.copyItem(at: defaultConfigUrl, to: url)
+    }
+    return url
 }
 
 /// Best-effort reader for raw TOML values that are either a string or an array of strings.

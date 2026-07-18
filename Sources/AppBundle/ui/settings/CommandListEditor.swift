@@ -12,6 +12,8 @@ struct CommandListEditor: View {
     /// The model binding: get() yields the normalized command list, set() commits + reloads
     let text: Binding<String>
     var height: CGFloat = 48
+    /// When false, hide command-name IntelliSense (module lists, argv editors, etc.).
+    var suggestCommands: Bool = true
 
     @State private var draft: String = ""
     /// The model value the draft was last synced from, to tell user edits from external changes
@@ -35,7 +37,7 @@ struct CommandListEditor: View {
             // Not gated on `focused`: clicking a suggestion blurs the editor, and hiding the list
             // on that blur would swallow the click. The list empties itself once the token is a
             // complete command name
-            if !suggestions.isEmpty {
+            if suggestCommands, !suggestions.isEmpty {
                 completionList
             }
         }
@@ -43,12 +45,16 @@ struct CommandListEditor: View {
             draft = text.wrappedValue
             lastSynced = text.wrappedValue
         }
+        // Closing the Settings window / switching tabs often skips FocusState blur — still save.
+        .onDisappear { commit() }
         .onChange(of: text.wrappedValue) { newValue in
             // External change (reload, another tab). Only replace an untouched draft
-            if draft == lastSynced {
+            if !focused, draft == lastSynced {
                 draft = newValue
             }
-            lastSynced = newValue
+            if !focused {
+                lastSynced = newValue
+            }
         }
     }
 

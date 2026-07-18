@@ -65,6 +65,7 @@ struct Config: ConvenienceMutable {
 
     var gaps: Gaps = .zero
     var windowBorders: WindowBorders = .disabled
+    var statusBar: StatusBarConfig = .disabled
     var workspaceToMonitorForceAssignment: [String: [MonitorDescription]] = [:]
     var modes: [String: Mode] = [:]
     var onWindowDetected: [WindowDetectedCallback] = []
