@@ -367,7 +367,8 @@ final class LayoutCommandTest: XCTestCase {
 
         await parseCommand("layout floating").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertTrue(w2.isFloating)
-        assertFalse(w2.isAlwaysOnTop, "floating must not lock always-on-top (blocks tile interaction)")
+        // Floating must not lock always-on-top (that only re-raises and blocks tile interaction).
+        assertFalse(w2.isAlwaysOnTop)
         assertNotNil(w2.floatingRestoreSlot)
         // Remaining tiles keep order 1, 3
         assertEquals(
