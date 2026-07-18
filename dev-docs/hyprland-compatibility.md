@@ -30,6 +30,24 @@ like Hyprland.
 
 ---
 
+## Implementation briefs (handoff-ready work orders)
+
+Each milestone has a self-contained brief — decisions resolved, integration points grounded, inlined
+specs/tables, per-task acceptance criteria, and repo guardrails. Hand one brief to one agent.
+
+| Milestone | Brief | Depends on |
+|-----------|-------|-----------|
+| M1 — runtime hypr config + dispatchers | [`hyprland-m1-brief.md`](hyprland-m1-brief.md) | — |
+| M2 — master layout · scratchpad · groups · workspace rules | [`hyprland-m2-brief.md`](hyprland-m2-brief.md) | — (parallel to M1) |
+| M3 — `windowrulev2` runtime + geometry actions | [`hyprland-m3-brief.md`](hyprland-m3-brief.md) | M1 (routing) |
+| M4 — gradient/glow borders · tab bar · opacity spike | [`hyprland-m4-brief.md`](hyprland-m4-brief.md) | M2 (tab bar → groups) |
+| M5 — `hyprctl`-style CLI/IPC | [`hyprland-m5-brief.md`](hyprland-m5-brief.md) | — |
+
+Start with **M1** (day-one convert, low risk). M2 and M5 can run in parallel. This file is the
+roadmap/context; the briefs are the work orders.
+
+---
+
 ## Milestones (ROI order)
 
 ### M1 — Runtime Hyprland config + dispatcher + keybind compatibility  ← **start here**
