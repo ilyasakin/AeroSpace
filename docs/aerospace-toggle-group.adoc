@@ -1,0 +1,40 @@
+= aerospace-toggle-group(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-toggle-group
+// tag::purpose[]
+:manpurpose: Wrap the focused tiled window in an accordion group, or unwrap it
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace toggle-group [-h|--help] [--window-id <window-id>]
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+If the focused window's parent is not already an accordion group, the window is wrapped
+in a new accordion `TilingContainer`. If it already is, the group is unwrapped back to
+tiles (children re-bound to the grandparent).
+
+Hyprland `togglegroup` maps to this command. Group tab chrome is separate (see window UI);
+this command only changes tree structure and layout.
+
+// =========================================================== Options
+include::util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

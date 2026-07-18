@@ -1,0 +1,42 @@
+= aerospace-toggle-special-workspace(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-toggle-special-workspace
+// tag::purpose[]
+:manpurpose: Swap-toggle a named special/scratch workspace on the focused monitor
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace toggle-special-workspace [-h|--help] [--] <workspace>
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+If the named workspace is not the focused monitor's active workspace, it is summoned
+(same swap semantics as `summon-workspace`) and the previous workspace is remembered.
+A second invocation returns to the remembered workspace.
+
+This is the Hyprland `togglespecialworkspace` equivalent. One workspace is visible per
+monitor at all times (not a floating overlay).
+
+// =========================================================== Options
+include::util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+// =========================================================== Arguments
+include::util/conditional-arguments-header.adoc[]
+
+<workspace>:: Name of the special/scratch workspace to toggle.
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

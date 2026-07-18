@@ -13,7 +13,15 @@ extension Workspace {
 
 extension TilingContainer {
     @MainActor fileprivate func unbindEmptyAndAutoFlatten(forceFlattenSingleChild: Bool = false) {
-        if let child = children.singleOrNil(), (config.enableNormalizationFlattenContainers || forceFlattenSingleChild) && (child is TilingContainer || !isRootContainer) {
+        // Accordion groups (toggle-group) must survive as single-child containers until a second
+        // member is absorbed or the user unwraps. Flattening them would make toggle-group a no-op
+        // under enable-normalization-flatten-containers (the default).
+        let mayFlattenSingleChild = layout != .accordion
+            && (config.enableNormalizationFlattenContainers || forceFlattenSingleChild)
+        if let child = children.singleOrNil(),
+           mayFlattenSingleChild
+           && (child is TilingContainer || !isRootContainer)
+        {
             child.unbindFromParent()
             let mru = parent?.mostRecentChild
             let previousBinding = unbindFromParent()

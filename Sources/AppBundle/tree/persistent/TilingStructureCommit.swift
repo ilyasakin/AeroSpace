@@ -47,6 +47,10 @@ extension Workspace {
 
     /// Place a newly detected / re-tiled window into the tiling spine (dwindle or beside MRU).
     /// Path-copy first; live dual-link is rebuilt by materialize. Window handle must already exist.
+    ///
+    /// If the placement target sits in an accordion **group** (`toggle-group`), the new window is
+    /// absorbed into that group (Hyprland togglegroup "next window joins the group") instead of
+    /// dwindling or splitting outside it.
     @discardableResult
     func commitTilingPlaceNewWindow(id: UInt32) -> Bool {
         let focusedTiling: Window? = focus.windowOrNil?.takeIf {
@@ -54,6 +58,22 @@ extension Workspace {
         }
         let mru = rootTilingContainer.mostRecentWindowRecursive
         let target = focusedTiling ?? mru
+
+        // Absorb into accordion group when focus/MRU is a group member
+        if let target,
+           target.windowId != id,
+           let group = target.parent as? TilingContainer,
+           group.layout == .accordion
+        {
+            let absorbId = target.windowId
+            let ok = commitTilingTransform { spine in
+                spine.insertWindowBeside(besideId: absorbId, newId: id, weight: 1)
+            }
+            if ok {
+                Window.get(byId: absorbId)?.markAsMostRecentChild()
+            }
+            return ok
+        }
 
         if effectiveTilingPolicy == .dwindle,
            let target,
@@ -151,5 +171,4 @@ extension Workspace {
         tilingStructureGeneration = captured
         return captured
     }
-
 }
