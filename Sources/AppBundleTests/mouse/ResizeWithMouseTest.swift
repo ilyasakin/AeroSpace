@@ -77,9 +77,43 @@ final class ResizeWithMouseTest: XCTestCase {
         // Weight-before is virtual width 500; +100 physical growth → 600 / 400.
         XCTAssertEqual(left.hWeight, 600, accuracy: 0.1)
         XCTAssertEqual(right.hWeight, 400, accuracy: 0.1)
-        // Baseline must survive the resize tick (move path used to clear it).
-        XCTAssertNotNil(left.lastAppliedLayoutPhysicalRect)
-        XCTAssertEqual(left.lastAppliedLayoutPhysicalRect?.width, 500)
+        // Drag-start baseline is frozen; lastApplied may be updated by layout later.
+        XCTAssertEqual(mouseResizePhysicalBaseline(for: left)?.width, 500)
+    }
+
+    func testMouseResizeBaselineStaysFixedWhenLastAppliedUpdates() {
+        let w = TestWindow.new(
+            id: 9,
+            parent: Workspace.get(byName: name).rootTilingContainer,
+            adaptiveWeight: 1,
+            rect: Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400),
+        )
+        w.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400)
+        let b1 = mouseResizePhysicalBaseline(for: w)
+        XCTAssertEqual(b1?.width, 400)
+        // Layout mid-drag would update lastApplied; baseline must not follow.
+        w.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 550, height: 400)
+        let b2 = mouseResizePhysicalBaseline(for: w)
+        XCTAssertEqual(b2?.width, 400)
+        XCTAssertEqual(mouseResizePhysicalBaselineIfSet(for: w)?.width, 400)
+    }
+
+    func testNominalRefreshHzPrefersScreenMaximumFramesPerSecond() {
+        // Build a dummy CVDisplayLink on the main display for the fallback path.
+        var link: CVDisplayLink?
+        XCTAssertEqual(CVDisplayLinkCreateWithCGDisplay(CGMainDisplayID(), &link), kCVReturnSuccess)
+        guard let link else {
+            XCTFail("CVDisplayLinkCreateWithCGDisplay failed")
+            return
+        }
+        defer { /* link is not started */ }
+        let screen = nsScreen(forDisplayId: CGMainDisplayID())
+        let hz = nominalRefreshHz(displayLink: link, screen: screen)
+        XCTAssertGreaterThanOrEqual(hz, 30)
+        XCTAssertLessThanOrEqual(hz, 500)
+        if let screen, screen.maximumFramesPerSecond > 0 {
+            XCTAssertEqual(hz, Double(screen.maximumFramesPerSecond), accuracy: 0.5)
+        }
     }
 
     func testResizeLikeMovedPathDoesNotClearBaselineOrSwap() async throws {

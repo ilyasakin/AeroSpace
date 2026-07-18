@@ -107,6 +107,19 @@ final class WindowServerReadsTest: XCTestCase {
         XCTAssertEqual(r, applied)
     }
 
+    /// Sibling borders after layout write: must not paint lagging WS (wrong edges for a frame).
+    func testBorderStaleIgnoresLaggingLiveEvenWhenLivePresent() {
+        let applied = Rect(topLeftX: 500, topLeftY: 0, width: 400, height: 800)
+        let laggingLive = Rect(topLeftX: 480, topLeftY: 0, width: 420, height: 800)
+        let r = resolveBorderRect(
+            lastApplied: applied,
+            mayBeStale: true,
+            liveBounds: laggingLive,
+            stackRect: laggingLive,
+        )
+        XCTAssertEqual(r, applied)
+    }
+
     func testBorderFallsBackStackThenLastApplied() {
         let applied = Rect(topLeftX: 1, topLeftY: 2, width: 3, height: 4)
         let stack = Rect(topLeftX: 5, topLeftY: 6, width: 7, height: 8)

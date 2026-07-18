@@ -25,7 +25,8 @@ import Common
 /// - **Query-only light**: list/echo/test — skip layout and follow-up heavy.
 /// - **FFM light**: no layout, no borders/status, no heavy cancel; tray only if tray fingerprint changes.
 /// - **Mouse-manipulate light**: layout only (live tiling); no side-UI rebuild, no follow-up heavy
-///   (borders track via WindowServer; mouse-up runs one complete heavy).
+///   (borders track via WindowServer; mouse-up runs one complete heavy). High-frequency: no focus
+///   AX, no hygiene, no heavy-cancel, no session-cache thrash — sibling frames stay smooth.
 @MainActor
 enum SessionPipeline {
     /// Policy knobs for one session. Built from the event; not free-form at call sites.
@@ -50,6 +51,14 @@ enum SessionPipeline {
         var sideUiTray: Bool = true
         /// Tray leaf-walk only when needed (FFM uses cheap fingerprint gate)
         var trayFullLeafWalk: Bool = true
+        /// Skip native-focus AX + model hygiene (FFM + mouse-drag hot path)
+        var skipFocusAndHygiene: Bool = false
+        /// Do not cancel in-flight heavy discovery (FFM + mouse-drag)
+        var skipHeavyCancel: Bool = false
+        /// Invalidate window-level / monitors caches at session start (skip on high-frequency)
+        var invalidateSessionCaches: Bool = true
+        /// Layout only visible workspaces (skip hide-in-corner). Mouse-drag only.
+        var layoutVisibleOnly: Bool = false
     }
 
     // MARK: - Plan
@@ -78,12 +87,14 @@ enum SessionPipeline {
         let isFfm = event.isFocusFollowsMouse
         let queryOrFfm = event.isQueryOnly || isFfm
         let drag = mouseManipulate && event.isAx
+        let highFreq = isFfm || drag
         return Plan(
-            clearFramesWritten: !isFfm, // FFM is high-frequency; skip cache churn
+            // High-frequency paths must not churn framesWritten / session caches every event.
+            clearFramesWritten: !highFreq,
             optimisticLayout: false,
             discoverWindows: false,
             normalizeNativeState: false,
-            layout: !queryOrFfm, // drag still layouts for live tiling
+            layout: !queryOrFfm, // drag still layouts for live tiling siblings
             // Pure focus/geometry lights: no rediscovery. Create/destroy use direct heavy.
             // Drag: no follow-up (mouse-up schedules one complete heavy).
             scheduleFollowUpHeavy: !queryOrFfm && !drag && event.needsDiscoveryFollowUp,
@@ -94,6 +105,11 @@ enum SessionPipeline {
             // Drag: tray idle until mouse-up. FFM: tray only if focus/workspace fingerprint changes.
             sideUiTray: !drag,
             trayFullLeafWalk: !isFfm,
+            skipFocusAndHygiene: highFreq,
+            skipHeavyCancel: highFreq,
+            invalidateSessionCaches: !highFreq,
+            // Drag: only paint visible tiles — hide-in-corner of other spaces is idle work.
+            layoutVisibleOnly: drag,
         )
     }
 
@@ -119,7 +135,7 @@ enum SessionPipeline {
         let res = await Result {
             try await $refreshSessionEvent.withValue(event) {
                 try await phaseSyncFocusFromNative()
-                if plan.optimisticLayout { try await phaseLayout() }
+                if plan.optimisticLayout { try await phaseLayout(visibleOnly: false) }
 
                 await phaseModelHygiene()
                 if plan.discoverWindows { try await phaseDiscoverWindows() }
@@ -131,7 +147,7 @@ enum SessionPipeline {
                 }
 
                 if plan.normalizeNativeState { try await phaseNormalizeNativeState() }
-                if plan.layout { try await phaseLayout() }
+                if plan.layout { try await phaseLayout(visibleOnly: false) }
                 // Immutable structural snapshot after layout (lock-screen / #1215 history)
                 TreeHistory.recordLive()
                 if plan.sideUiBorders {
@@ -161,31 +177,34 @@ enum SessionPipeline {
         )
         defer { signposter.endInterval("SessionPipeline.light", state) }
 
-        // Focus-follows-mouse must not cancel heavy (starves discovery until a non-FFM session).
+        // Focus-follows-mouse and mouse-drag must not cancel heavy (starves discovery; thrash).
         // Other lights may cancel a pending heavy for priority — but then we re-queue discovery
         // after the light if nothing else schedules follow-up (see sessionShouldRescheduleCancelledDiscovery).
         // noteHeavyCancelledByLightSession also bumps generation so a mid-flight heavy that
         // swallows CancellationError cannot clear discoveryHeavyPending on return.
-        if !event.isFocusFollowsMouse {
+        if !plan.skipHeavyCancel {
             noteHeavyCancelledByLightSession()
         }
 
-        phaseBegin(clearFramesWritten: plan.clearFramesWritten)
+        phaseBegin(
+            clearFramesWritten: plan.clearFramesWritten,
+            invalidateSessionCaches: plan.invalidateSessionCaches,
+        )
 
         return try await $refreshSessionEvent.withValue(event) {
-            // Hover is the authority for FFM — don't re-pull native focus first (extra AX + thrash).
-            if !event.isFocusFollowsMouse {
+            // Hover/drag: skip native-focus AX + hygiene thrash; body owns the mutation.
+            if !plan.skipFocusAndHygiene {
                 try await phaseSyncFocusFromNative()
             }
             let focusBefore = focus.windowOrNil
 
-            // FFM: single hygiene pass after body (focus already set in body). Full light sessions
-            // still bookend body so callbacks see before/after.
-            if !event.isFocusFollowsMouse {
+            if !plan.skipFocusAndHygiene {
                 await phaseModelHygiene()
             }
             let result = try await body()
-            await phaseModelHygiene()
+            if !plan.skipFocusAndHygiene {
+                await phaseModelHygiene()
+            }
 
             let focusAfter = focus.windowOrNil
 
@@ -193,7 +212,12 @@ enum SessionPipeline {
                 phaseSideUiTrayAndSecureInput(fullLeafWalk: plan.trayFullLeafWalk)
             }
             if plan.layout {
-                try await phaseLayout()
+                try await phaseLayout(visibleOnly: plan.layoutVisibleOnly)
+                // Drag skips sideUiBorders refresh; push layout rects into the overlay so sibling
+                // borders do not lag a frame on WindowServer (wrong edges, then snap-correct).
+                if plan.layoutVisibleOnly {
+                    WindowBordersManager.shared.syncAfterMouseLayout()
+                }
                 // Skip history capture on high-frequency mouse-drag (mouse-up heavy will capture).
                 if plan.sideUiBorders || !event.isAx {
                     TreeHistory.recordLive()
@@ -228,9 +252,11 @@ enum SessionPipeline {
     // MARK: - Phases
 
     /// Phase 1 — session-local caches. See Plan.clearFramesWritten for the SkyLight write-lag policy.
-    private static func phaseBegin(clearFramesWritten: Bool) {
-        invalidateWindowLevelCache()
-        invalidateMonitorsCache()
+    private static func phaseBegin(clearFramesWritten: Bool, invalidateSessionCaches: Bool = true) {
+        if invalidateSessionCaches {
+            invalidateWindowLevelCache()
+            invalidateMonitorsCache()
+        }
         if clearFramesWritten {
             clearFramesWrittenThisSession()
         }
@@ -258,9 +284,9 @@ enum SessionPipeline {
         try await normalizeLayoutReason()
     }
 
-    /// Phase 7 — tiling layout + hide-in-corner for invisible workspaces
-    private static func phaseLayout() async throws {
-        try await layoutWorkspaces()
+    /// Phase 7 — tiling layout (+ hide-in-corner for invisible workspaces unless `visibleOnly`)
+    private static func phaseLayout(visibleOnly: Bool) async throws {
+        try await layoutWorkspaces(includeInvisible: !visibleOnly)
     }
 
     /// Phase 8a — tray / secure input (safe before or after layout)

@@ -87,6 +87,20 @@ final class SessionPipelineTest: XCTestCase {
         XCTAssertFalse(plan.sideUiTray)
         XCTAssertFalse(plan.scheduleFollowUpHeavy)
         XCTAssertFalse(plan.discoverWindows)
+        // Smooth sibling tracking: no focus AX / hygiene / cache / heavy-cancel thrash per tick.
+        XCTAssertTrue(plan.skipFocusAndHygiene)
+        XCTAssertTrue(plan.skipHeavyCancel)
+        XCTAssertFalse(plan.clearFramesWritten)
+        XCTAssertFalse(plan.invalidateSessionCaches)
+        XCTAssertTrue(plan.layoutVisibleOnly)
+    }
+
+    func testFocusFollowsMouseIsHighFrequencyLikeDrag() {
+        let plan = SessionPipeline.planLight(event: .focusFollowsMouse)
+        XCTAssertTrue(plan.skipFocusAndHygiene)
+        XCTAssertTrue(plan.skipHeavyCancel)
+        XCTAssertFalse(plan.invalidateSessionCaches)
+        XCTAssertFalse(plan.clearFramesWritten)
     }
 
     func testAxWithoutMouseManipulateDoesNotGetDiscoveryFromLightPlan() {

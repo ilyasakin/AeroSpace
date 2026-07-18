@@ -44,7 +44,7 @@ extension Workspace {
     }
 
     @MainActor
-    func layoutWorkspace() async throws {
+    func layoutWorkspace(skipFloating: Bool = false) async throws {
         if isEffectivelyEmpty { return }
         let rect = workspaceMonitor.visibleRectPaddedByOuterGaps
         // If monitors are aligned vertically and the monitor below has smaller width, then macOS may not allow the
@@ -79,7 +79,10 @@ extension Workspace {
         unsafe Self.suppressTilingGenerationInvalidation = false
         tilingStructureGeneration = laidOut
 
-        try await layoutFloatingChildren(context: context)
+        // Mouse-drag hot path skips floating — only tiles need to reflow each frame.
+        if !skipFloating {
+            try await layoutFloatingChildren(context: context)
+        }
     }
 
     @MainActor
@@ -159,7 +162,7 @@ private func layoutPersistentNode(
     switch node {
         case .window(let id, let weight):
             guard let window = Window.get(byId: id) else { return node }
-            if window.windowId == currentlyManipulatedWithMouseWindowId { return node }
+            let mouseTarget = window.windowId == currentlyManipulatedWithMouseWindowId
             window.lastAppliedLayoutVirtualRect = virtual
             if window.isFullscreen,
                window == context.workspace.rootTilingContainer.mostRecentWindowRecursive
@@ -168,9 +171,13 @@ private func layoutPersistentNode(
                 window.layoutFullscreen(context)
             } else {
                 let prev = window.lastAppliedLayoutPhysicalRect
+                // Always record layout geometry — borders paint from lastApplied during drag so
+                // all tiles share one coherent frame (live WS on the drag target vs layout on
+                // siblings made the shared edge thrash left/right).
                 window.lastAppliedLayoutPhysicalRect = physicalRect
                 window.isFullscreen = false
-                if prev != physicalRect {
+                // Mouse-resize target: user owns the AX frame; only skip the write.
+                if !mouseTarget, prev != physicalRect {
                     window.setAxFrame(point, CGSize(width: width, height: height))
                 }
             }

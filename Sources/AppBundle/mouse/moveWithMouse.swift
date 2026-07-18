@@ -51,9 +51,15 @@ private func moveWithMouse(_ window: Window) async throws { // todo cover with t
         case .tilingContainer:
             // Edge resize changes size and origin; AX emits Moved + Resized. Do not clear
             // lastApplied or swap tiles — that is resize-with-mouse's job.
+            // Size check uses drag-start baseline when set (lastApplied tracks live layout mid-resize).
             let live = try await liveRectForMouseResize(window)
-            if isMouseResizeLikeDrag(lastApplied: window.lastAppliedLayoutPhysicalRect, live: live) {
-                try await resizeWithMouse(window)
+            let inResizeGesture = currentlyManipulatedWithMouseWindowId == window.windowId
+                && mouseResizePhysicalBaselineIfSet(for: window) != nil
+            let sizeBaseline = mouseResizePhysicalBaselineIfSet(for: window)
+                ?? window.lastAppliedLayoutPhysicalRect
+            if inResizeGesture || isMouseResizeLikeDrag(lastApplied: sizeBaseline, live: live) {
+                ensureMouseResizeWindowServerNotifications(for: window)
+                MouseResizeDriver.kick(window)
                 return
             }
             moveTilingWindow(window)

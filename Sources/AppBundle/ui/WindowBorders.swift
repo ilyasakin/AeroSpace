@@ -255,8 +255,9 @@ private func gradientPoints(angleDegrees: Double) -> (CGPoint, CGPoint) {
 
 /// WindowServer move/resize callback (runs on the thread that registered it - the main thread).
 /// `data` points to the moved window's CGWindowID. Handing it straight to the manager is how border
-/// masks track a live drag at the display's refresh rate instead of waiting for AeroSpace's refresh
-private let windowBordersEventProc: SkyLight.NotifyProc = { _, data, _, _ in
+/// masks track a live drag at the display's refresh rate instead of waiting for AeroSpace's refresh.
+/// Also drives mouse-resize sibling reflow (~60fps) via `MouseResizeDriver`.
+let windowBordersEventProc: SkyLight.NotifyProc = { _, data, _, _ in
     guard let data else { return }
     let windowId = data.load(as: UInt32.self)
     if Thread.isMainThread {
@@ -271,6 +272,8 @@ final class WindowBordersManager {
     static let shared = WindowBordersManager()
     private let overlay = WindowBordersOverlay()
     private var entries: [UInt32: BorderEntry] = [:]
+    /// Window ids currently carrying a border (for WS notify subscription during mouse-resize).
+    var borderedWindowIds: [UInt32] { Array(entries.keys) }
     /// All on-screen normal windows (excluding our overlay), front-to-back. Used to compute which
     /// windows cover a given border. Rebuilt on each full refresh; a drag only updates the moved rect
     private var stack: [(id: UInt32, rect: Rect)] = []
@@ -424,18 +427,64 @@ final class WindowBordersManager {
     /// 3. Mark dirty via epoch + ContiguousArray append — no Set, no region snapshot array
     /// 4. Coalesce all events in this run-loop turn into ONE Core Animation transaction
     func handleWindowMoved(windowId: UInt32) {
-        guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
-        guard let rect = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true) else { return }
+        // Display-rate samples of the drag target drive sibling reflow (~60fps). Must run even
+        // when borders are disabled so resize smoothness does not depend on the overlay.
+        MouseResizeDriver.noteWindowServerFrame(windowId: windowId)
 
+        guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
+        guard let rect = resolvedLiveBorderRect(windowId: windowId) else { return }
+        applyBorderRect(windowId: windowId, rect: rect, flush: true)
+    }
+
+    /// After mouse-drag layout: paint **all** tile borders from layout geometry (lastApplied).
+    /// Mixing live WS for the drag target with layout for siblings made the shared edge thrash.
+    func syncAfterMouseLayout() {
+        guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
+        var any = false
+        for (id, entry) in entries {
+            guard let rect = Window.get(byId: id)?.lastAppliedLayoutPhysicalRect
+                ?? WindowServerReads.current.windowBounds(windowId: id, forOverlay: true)
+            else { continue }
+            if entry.rect != rect {
+                applyBorderRect(windowId: id, rect: rect, flush: false)
+                any = true
+            } else {
+                markDirty(id)
+                any = true
+            }
+        }
+        if any { flushDirtyList() }
+    }
+
+    /// Frame source for a WindowServer move/resize notify.
+    /// - During mouse manipulate: prefer layout lastApplied for every window so borders stay
+    ///   locked to the tile grid (live drag frame ≠ layout allocation → L/R thrash).
+    /// - After our own AX write: prefer lastApplied until SkyLight catches up.
+    /// - Otherwise: live WindowServer bounds.
+    private func resolvedLiveBorderRect(windowId: UInt32) -> Rect? {
+        let live = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true)
+        let applied = Window.get(byId: windowId)?.lastAppliedLayoutPhysicalRect
+        if currentlyManipulatedWithMouseWindowId != nil, let applied {
+            return applied
+        }
+        if skyLightFrameMayBeStale(windowId), let applied {
+            return applied
+        }
+        return live
+    }
+
+    /// Update entry + stack rect and mark dirty. `flush: false` batches into `syncAfterMouseLayout`.
+    private func applyBorderRect(windowId: UInt32, rect: Rect, flush: Bool) {
         let oldRect: Rect?
         if let i = stackIndex[windowId] {
             oldRect = stack[i].rect
-            // Skip no-op events (WindowServer sometimes re-notifies the same frame)
             if oldRect == rect {
                 entries[windowId]?.rect = rect
-                return
+                if flush { return }
+                // still fall through when batching so occlusion can refresh
+            } else {
+                stack[i].rect = rect
             }
-            stack[i].rect = rect
         } else {
             oldRect = nil
             stackIndex[windowId] = stack.count
@@ -444,8 +493,6 @@ final class WindowBordersManager {
         entries[windowId]?.rect = rect
 
         let moverIsBordered = entries[windowId] != nil
-        // Early-out without allocating: walk entries in place. Unrelated animations hit this path
-        // on every WS event, so it must stay allocation-free
         if !moverIsBordered {
             let hitsNew = overlapsAnyBorderInPlace(rect)
             let hitsOld = oldRect.map(overlapsAnyBorderInPlace) ?? false
@@ -453,9 +500,10 @@ final class WindowBordersManager {
         }
 
         markAffectedBorders(mover: windowId, moverIsBordered: moverIsBordered, oldRect: oldRect, newRect: rect)
-        // Paint immediately so the border tracks the window on this event. Coalescing only via
-        // BeforeWaiting left borders stranded when AX/layout kept the run loop busy during drag.
-        flushDirtyList()
+        if flush {
+            // Paint immediately so the border tracks the window on this event.
+            flushDirtyList()
+        }
     }
 
     // MARK: Dirty set

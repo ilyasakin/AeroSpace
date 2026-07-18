@@ -190,7 +190,7 @@ enum OptimalHideCorner {
 }
 
 @MainActor
-func layoutWorkspaces() async throws {
+func layoutWorkspaces(includeInvisible: Bool = true) async throws {
     if !TrayMenuModel.shared.isEnabled {
         for workspace in Workspace.allUnsorted {
             workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() } // todo as!
@@ -200,7 +200,27 @@ func layoutWorkspaces() async throws {
     }
     followActiveWorkspaceForStickyWindows()
 
+    // Mouse-drag: only re-tile the workspace that owns the manipulated window (sibling weights).
+    // Laying out every visible monitor each AX tick is the main source of sibling jank.
+    if !includeInvisible,
+       let id = currentlyManipulatedWithMouseWindowId,
+       let ws = Window.get(byId: id)?.nodeWorkspace
+    {
+        ws.allLeafWindowsRecursive.forEach { ($0 as? MacWindow)?.unhideFromCorner() }
+        try await ws.layoutWorkspace()
+        return
+    }
+
     let monitors = monitors
+
+    // to reduce flicker, first unhide visible workspaces, then hide invisible ones
+    for monitor in monitors {
+        let workspace = monitor.activeWorkspace
+        workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() } // todo as!
+        try await workspace.layoutWorkspace()
+    }
+    guard includeInvisible else { return }
+
     var monitorToOptimalHideCorner: [CGPoint: OptimalHideCorner] = [:]
     for monitor in monitors {
         let xOff = monitor.width * 0.1
@@ -224,13 +244,6 @@ func layoutWorkspaces() async throws {
             ? .bottomLeftCorner
             : .bottomRightCorner
         monitorToOptimalHideCorner[monitor.rect.topLeftCorner] = corner
-    }
-
-    // to reduce flicker, first unhide visible workspaces, then hide invisible ones
-    for monitor in monitors {
-        let workspace = monitor.activeWorkspace
-        workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() } // todo as!
-        try await workspace.layoutWorkspace()
     }
     for workspace in Workspace.allUnsorted where !workspace.isVisible {
         let corner = monitorToOptimalHideCorner[workspace.workspaceMonitor.rect.topLeftCorner] ?? .bottomRightCorner
