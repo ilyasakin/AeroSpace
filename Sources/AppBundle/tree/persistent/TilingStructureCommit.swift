@@ -45,6 +45,32 @@ extension Workspace {
         }
     }
 
+    /// Re-insert a window that was floated from tiling, preferring its original neighbor slots
+    /// (i3 floating toggle: unfloat does not scramble sibling order).
+    @discardableResult
+    func commitTilingRestoreFloatingSlot(windowId: UInt32, slot: FloatingRestoreSlot) -> Bool {
+        commitTilingTransform { spine in
+            // Drop if somehow still present (stale gen).
+            let base = spine.path(ofWindowId: windowId).flatMap { spine.removing(at: $0)?.root } ?? spine
+            let child = PersistentTilingNode.window(id: windowId, weight: slot.weight)
+            if let afterId = slot.neighborAfterId,
+               let path = base.path(ofWindowId: afterId),
+               !path.isRoot,
+               let idx = path.indices.last
+            {
+                return base.inserting(child: child, at: idx, intoContainerAt: path.dropLast)
+            }
+            if let beforeId = slot.neighborBeforeId,
+               let path = base.path(ofWindowId: beforeId),
+               !path.isRoot,
+               let idx = path.indices.last
+            {
+                return base.inserting(child: child, at: idx + 1, intoContainerAt: path.dropLast)
+            }
+            return base.inserting(child: child, at: INDEX_BIND_LAST, intoContainerAt: .root)
+        }
+    }
+
     /// Place a newly detected / re-tiled window into the tiling spine (dwindle or beside MRU).
     /// Path-copy first; live dual-link is rebuilt by materialize. Window handle must already exist.
     ///

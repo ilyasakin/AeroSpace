@@ -12,6 +12,9 @@ open class Window: TreeNode, Hashable {
     var isAlwaysOnTop: Bool = false
     /// The window follows the active workspace of its monitor. See sticky command
     var isSticky: Bool = false
+    /// i3-like floating toggle: when floated from tiling, remember neighbors so unfloat
+    /// re-inserts without scrambling sibling order.
+    var floatingRestoreSlot: FloatingRestoreSlot? = nil
 
     @MainActor
     init(id: UInt32, _ app: any AbstractApp, lastFloatingSize: CGSize?, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {
@@ -52,6 +55,35 @@ enum LayoutReason: Equatable {
     case standard
     /// Reason for the cur temp layout is macOS native fullscreen, minimize, or hide
     case macos(prevParentKind: NonLeafTreeNodeKind)
+}
+
+/// Snapshot of a window's place in the tiling tree when it is floated (i3 floating toggle).
+struct FloatingRestoreSlot: Equatable, Sendable {
+    var workspaceName: String
+    /// Sibling window immediately before this one in the parent container (nil if first).
+    var neighborBeforeId: UInt32?
+    /// Sibling window immediately after this one (nil if last).
+    var neighborAfterId: UInt32?
+    var weight: CGFloat
+
+    /// Capture slot from a currently tiling window. Returns nil if not under a tiling container.
+    @MainActor
+    static func capture(from window: Window) -> FloatingRestoreSlot? {
+        guard let parent = window.parent as? TilingContainer,
+              let workspace = window.nodeWorkspace,
+              let index = window.ownIndex
+        else { return nil }
+        let kids = parent.children
+        let before: UInt32? = index > 0 ? (kids[index - 1] as? Window)?.windowId : nil
+        let after: UInt32? = index + 1 < kids.count ? (kids[index + 1] as? Window)?.windowId : nil
+        let weight = window.getWeight(parent.orientation)
+        return FloatingRestoreSlot(
+            workspaceName: workspace.name,
+            neighborBeforeId: before,
+            neighborAfterId: after,
+            weight: weight,
+        )
+    }
 }
 
 extension Window {

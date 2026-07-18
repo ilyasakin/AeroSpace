@@ -347,4 +347,47 @@ final class LayoutCommandTest: XCTestCase {
         assertEquals(result.exitCode.rawValue, 0)
         assertEquals(root.layoutDescription, .h_tiles([.window(1), .window(2)]))
     }
+
+    /// i3 floating toggle: float middle window then unfloat → sibling order unchanged.
+    func testFloatingToggle_restoresOriginalSiblingOrder() async {
+        let workspace = Workspace.get(byName: name)
+        var w1: Window!
+        var w2: Window!
+        var w3: Window!
+        workspace.rootTilingContainer.apply {
+            w1 = TestWindow.new(id: 1, parent: $0)
+            w2 = TestWindow.new(id: 2, parent: $0)
+            w3 = TestWindow.new(id: 3, parent: $0)
+        }
+        assertEquals(w2.focusWindow(), true)
+        assertEquals(
+            workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId),
+            [1, 2, 3],
+        )
+
+        await parseCommand("layout floating").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertTrue(w2.isFloating)
+        assertTrue(w2.isAlwaysOnTop)
+        assertNotNil(w2.floatingRestoreSlot)
+        // Remaining tiles keep order 1, 3
+        assertEquals(
+            workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId),
+            [1, 3],
+        )
+
+        // Focus another tile (interact without destroying restore slot)
+        assertEquals(w1.focusWindow(), true)
+        assertTrue(w2.isFloating)
+
+        assertEquals(w2.focusWindow(), true)
+        await parseCommand("layout tiling").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertFalse(w2.isFloating)
+        assertFalse(w2.isAlwaysOnTop)
+        assertNil(w2.floatingRestoreSlot)
+        // Original order restored: 1, 2, 3 — not 1, 3, 2 (MRU-append)
+        assertEquals(
+            workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId),
+            [1, 2, 3],
+        )
+    }
 }
