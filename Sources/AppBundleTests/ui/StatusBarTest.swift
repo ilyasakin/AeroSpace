@@ -253,4 +253,12 @@ final class StatusBarConfigTest: XCTestCase {
         // Whitespace-only mapping falls back to the real name
         assertEquals(statusBarWorkspaceLabel(name: "web", symbols: symbols), "web")
     }
+
+    func testFocusedModuleUsesWorkspaceSymbolWhenNoApp() {
+        // When focused has no window, it should reuse workspace-symbols (e.g. "1" → "一").
+        let symbols = ["1": "一", "A": "A"]
+        let emptyFocusedTitle = statusBarWorkspaceLabel(name: "1", symbols: symbols)
+        assertEquals(emptyFocusedTitle, "一")
+        assertEquals(statusBarWorkspaceLabel(name: "A", symbols: symbols), "A")
+    }
 }

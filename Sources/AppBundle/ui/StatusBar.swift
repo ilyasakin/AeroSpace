@@ -440,7 +440,9 @@ private final class StatusBarContentView: NSView {
                         }
                     case "focused":
                         let window = focus.windowOrNil
-                        let title = window?.app.name ?? focus.workspace.name
+                        // Empty workspace: show the same symbol/label as the workspaces module.
+                        let title = window?.app.name
+                            ?? statusBarWorkspaceLabel(name: focus.workspace.name, symbols: config.workspaceSymbols)
                         let icon = config.focusedShowIcon ? statusBarAppIcon(for: window) : nil
                         out.append(.text(title, bg: nil, fg: fg, action: nil, icon: icon))
                     case "cpu":
