@@ -104,6 +104,13 @@ public enum RefreshSessionEvent: Sendable, CustomStringConvertible {
         if case .focusFollowsMouse = self { return true } else { return false }
     }
 
+    /// Pure query CLI commands (list-*, echo, test, true/false). They must not force a layout pass
+    /// or a follow-up complete refresh — that was the dominant cost of scripts that poll state
+    public var isQueryOnly: Bool {
+        if case .socketServer(let args) = self { return args.kind.isQueryOnly }
+        return false
+    }
+
     public var description: String {
         switch self {
             case .ax(let str): "ax(\(str))"

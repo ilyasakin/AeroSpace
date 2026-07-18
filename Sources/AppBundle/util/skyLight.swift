@@ -70,8 +70,8 @@ enum SkyLight {
 
     private static func rawWindowBounds(_ windowId: UInt32) -> Rect? {
         guard let impl = unsafe impl else { return nil }
-        let state = signposter.beginInterval("SkyLight.windowBounds")
-        defer { signposter.endInterval("SkyLight.windowBounds", state) }
+        // No signposter here: borders call this on every WindowServer move event (display refresh
+        // rate). AX paths keep intervals for Instruments; this path must stay bare-metal
         var rect = CGRect.zero
         guard unsafe impl.getWindowBounds(impl.connection, windowId, &rect) == 0 else { return nil }
         guard rect.width > 0, rect.height > 0 else { return nil }

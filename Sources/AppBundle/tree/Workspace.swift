@@ -2,6 +2,9 @@ import AppKit
 import Common
 
 @MainActor private var workspaceNameToWorkspace: [String: Workspace] = [:]
+/// Bumped when the workspace set gains/loses members so `Workspace.all` can reuse its sorted array
+@MainActor private var workspaceListGeneration: UInt64 = 0
+@MainActor private var sortedWorkspacesCache: (generation: UInt64, list: [Workspace])?
 
 @MainActor private var screenPointToPrevVisibleWorkspace: [CGPoint: String] = [:]
 @MainActor private var screenPointToVisibleWorkspace: [CGPoint: Workspace] = [:]
@@ -45,9 +48,16 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
         super.init(parent: NilTreeNode.instance, adaptiveWeight: 0, index: 0)
     }
 
-    /// Sorted by name. Use for UI/CLI listing. Hot-path iterate-all callers should prefer `allUnsorted`
+    /// Sorted by name. Use for UI/CLI listing. Hot-path iterate-all callers should prefer `allUnsorted`.
+    /// The sorted array is cached until a workspace is created or GC'd (membership change only —
+    /// name order is stable for the lifetime of each Workspace instance)
     @MainActor static var all: [Workspace] {
-        workspaceNameToWorkspace.values.sorted()
+        if let cached = sortedWorkspacesCache, cached.generation == workspaceListGeneration {
+            return cached.list
+        }
+        let list = workspaceNameToWorkspace.values.sorted()
+        sortedWorkspacesCache = (workspaceListGeneration, list)
+        return list
     }
 
     /// Unsorted view for callers that just iterate every workspace (refresh/normalize/gc/layout).
@@ -62,6 +72,7 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
         } else {
             let workspace = Workspace(name)
             workspaceNameToWorkspace[name] = workspace
+            workspaceListGeneration &+= 1
             return workspace
         }
     }
@@ -94,11 +105,15 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
         for name in config.persistentWorkspaces {
             _ = get(byName: name) // Make sure that all persistent workspaces are "cached"
         }
+        let before = workspaceNameToWorkspace.count
         workspaceNameToWorkspace = workspaceNameToWorkspace.filter { (_, workspace: Workspace) in
             config.persistentWorkspaces.contains(workspace.name) ||
                 !workspace.isEffectivelyEmpty ||
                 workspace.isVisible ||
                 workspace.name == focus.workspace.name
+        }
+        if workspaceNameToWorkspace.count != before {
+            workspaceListGeneration &+= 1
         }
     }
 

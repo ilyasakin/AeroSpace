@@ -1,49 +1,17 @@
-import CoreGraphics
 import Foundation
 
-@MainActor
-private var cache: [UInt32: MacOsWindowLevel] = [:]
-// Off-screen windows (minimized, parked in a corner, on another Space) never appear in the
-// on-screen-only CGWindowList, so their lookups miss forever. Bound the full rescans to at most
-// one per refresh session instead of one per miss.
-// When the session is not fresh, the next lookup rescans (replacing the whole map) — do NOT
-// return entries from a previous session, or a window that changed level (e.g. became always-on-top)
-// would stay stale until process restart.
-@MainActor
-private var cacheIsFreshForCurrentRefreshSession = false
+/// Window levels come from the shared per-session CGWindowList snapshot
+/// (see onScreenWindowSnapshot). Off-screen windows never appear in that list, so a miss after a
+/// fresh scan is definitive for the rest of the session — not a reason to rescan.
 
 @MainActor
 func invalidateWindowLevelCache() {
-    cacheIsFreshForCurrentRefreshSession = false
+    invalidateOnScreenWindowSnapshot()
 }
 
 @MainActor
 func getWindowLevel(for windowId: UInt32) -> MacOsWindowLevel? {
-    if cacheIsFreshForCurrentRefreshSession {
-        return cache[windowId]
-    }
-
-    var result: [UInt32: MacOsWindowLevel] = [:]
-    let options = CGWindowListOption(arrayLiteral: .excludeDesktopElements, .optionOnScreenOnly)
-    guard let cfArray = CGWindowListCopyWindowInfo(options, CGWindowID(0)) as? [CFDictionary] else {
-        // Failed to read — don't mark fresh so the next call can retry
-        return nil
-    }
-    result.reserveCapacity(cfArray.count)
-    for elem in cfArray {
-        let dict = elem as NSDictionary
-
-        guard let _windowLayer = dict[kCGWindowLayer] else { continue }
-        let windowLayer = ((_windowLayer as! CFNumber) as NSNumber).intValue
-
-        guard let _windowId = dict[kCGWindowNumber] else { continue }
-        let windowId = ((_windowId as! CFNumber) as NSNumber).uint32Value
-
-        result[windowId] = .new(windowLevel: windowLayer)
-    }
-    cache = result
-    cacheIsFreshForCurrentRefreshSession = true
-    return result[windowId]
+    onScreenWindowSnapshot().levels[windowId]
 }
 
 enum MacOsWindowLevel: Sendable, Equatable {

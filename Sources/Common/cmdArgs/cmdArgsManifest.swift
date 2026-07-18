@@ -1,4 +1,17 @@
 public enum CmdKind: String, CaseIterable, Equatable, Sendable {
+    /// Commands that only read/report state. Light sessions for these skip layout and the
+    /// post-command complete refresh (window discovery / normalize), which dominated cost for
+    /// polling scripts (sketchybar, etc.)
+    public var isQueryOnly: Bool {
+        switch self {
+            case .listApps, .listExecEnvVars, .listModes, .listMonitors, .listWindows, .listWorkspaces,
+                 .echo, ._true, ._false, .test, .testNot:
+                true
+            default:
+                false
+        }
+    }
+
     // Sorted
 
     case alwaysOnTop = "always-on-top"

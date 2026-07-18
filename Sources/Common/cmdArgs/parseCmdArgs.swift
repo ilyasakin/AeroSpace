@@ -33,6 +33,8 @@ public struct CmdArgsCommonState: ConvenienceMutable, Equatable, Sendable {
 
 extension CmdArgs {
     public static var info: CmdStaticInfo { Self.parser.info }
+    /// Instance access for existentials (`any CmdArgs`) — same as `Self.info.kind`
+    public var kind: CmdKind { Self.info.kind }
 
     public var windowId: UInt32? {
         get { commonState.windowId }

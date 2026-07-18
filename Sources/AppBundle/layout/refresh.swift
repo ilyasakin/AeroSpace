@@ -87,11 +87,15 @@ func runLightSession<T>(
         updateTrayText()
         SecureInputPanel.shared.refresh()
         WindowBordersManager.shared.refresh()
-        if !event.isFocusFollowsMouse { try await layoutWorkspaces() }
+        // Query-only CLI (list-*, echo, test, …) must not pay layout + full window discovery.
+        // Mutating commands still schedule a complete refresh so newly appeared windows are
+        // registered and normalizeLayoutReason can run
+        let needsLayoutAndDiscovery = !event.isFocusFollowsMouse && !event.isQueryOnly
+        if needsLayoutAndDiscovery { try await layoutWorkspaces() }
         if focusBefore != focusAfter {
             focusAfter?.nativeFocus() // syncFocusToMacOs
         }
-        if !event.isFocusFollowsMouse { scheduleCancellableCompleteRefreshSession(event) }
+        if needsLayoutAndDiscovery { scheduleCancellableCompleteRefreshSession(event) }
         return result
     }
 }

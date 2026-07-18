@@ -13,6 +13,13 @@ struct MacosNativeWindowState {
     let isMinimized: Bool
 }
 
+/// Sync peek for the hot path: when normalizeLayoutReason already knows a standard window is
+/// normal (not fullscreen/minimized), skip the async get entirely
+@MainActor
+func peekMacosNativeWindowState(_ windowId: UInt32) -> MacosNativeWindowState? {
+    cache[windowId]
+}
+
 @MainActor
 func getMacosNativeWindowState(_ window: Window) async throws -> MacosNativeWindowState {
     let windowId = window.windowId

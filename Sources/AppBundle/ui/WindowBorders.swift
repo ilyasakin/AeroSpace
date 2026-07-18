@@ -213,7 +213,8 @@ final class WindowBordersManager {
             entries.removeValue(forKey: id)
         }
 
-        rebuildStack(onScreenStack())
+        // Shared with windowLevelCache: one CGWindowList scan per refresh session
+        rebuildStack(onScreenWindowSnapshot().normalStack)
         // Config / membership / stack order may have changed - full recompute once, immediately
         // (refresh is already session-batched; no need to coalesce further)
         flushAll()
@@ -390,23 +391,6 @@ final class WindowBordersManager {
         }
     }
 
-    /// All on-screen normal (layer 0) windows except our own, front-to-back
-    private func onScreenStack() -> [(id: UInt32, rect: Rect)] {
-        let myPid = Int(ProcessInfo.processInfo.processIdentifier)
-        guard let arr = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
-        var result: [(UInt32, Rect)] = []
-        result.reserveCapacity(arr.count)
-        for w in arr {
-            guard (w[kCGWindowLayer as String] as? Int) == 0,
-                  (w[kCGWindowOwnerPID as String] as? Int) != myPid,
-                  let wid = w[kCGWindowNumber as String] as? Int,
-                  let b = w[kCGWindowBounds as String] as? [String: Any] else { continue }
-            let rect = Rect(topLeftX: (b["X"] as? CGFloat) ?? 0, topLeftY: (b["Y"] as? CGFloat) ?? 0,
-                            width: (b["Width"] as? CGFloat) ?? 0, height: (b["Height"] as? CGFloat) ?? 0)
-            result.append((UInt32(wid), rect))
-        }
-        return result
-    }
 }
 
 /// A top-left-global Rect converted to overlay-layer coordinates (bottom-left, overlay-relative)
