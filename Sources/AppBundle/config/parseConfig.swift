@@ -44,7 +44,31 @@ func readConfig(forceConfigUrl: URL?) -> ReadConfigResult {
         let msg = "Can't read contents of \(configUrl.path.singleQuoted) as a utf8 string: \(error.localizedDescription)"
         return .fatal(configUrl: configUrl, message: msg)
     }
-    return ReadConfigResult(configUrl: configUrl, parseConfigResult: parseConfig(configStr))
+    return ReadConfigResult(
+        configUrl: configUrl,
+        parseConfigResult: parseConfigText(configStr, sourceUrl: configUrl),
+    )
+}
+
+/// Parse config text, routing Hyprland syntax through the importer when detected.
+/// `sourceUrl` supplies the extension for format detection; when nil, content sniff is used.
+@MainActor
+func parseConfigText(_ text: String, sourceUrl: URL? = nil) -> ParseConfigResult {
+    switch detectConfigFormat(text: text, url: sourceUrl) {
+        case .toml:
+            return parseConfig(text)
+        case .hyprland:
+            let imported = importHyprConfig(text, ImportOptions())
+            let parsed = parseConfig(imported.toml)
+            let importWarnings = imported.diagnostics.map { diagnostic in
+                ConfigParseDiagnostic(.emptyRoot, "hyprland import: \(diagnostic.description)")
+            }
+            return ParseConfigResult(
+                config: parsed.config,
+                errors: parsed.errors,
+                warnings: importWarnings + parsed.warnings,
+            )
+    }
 }
 
 struct ConfigParseDiagnostic: Error, Equatable {

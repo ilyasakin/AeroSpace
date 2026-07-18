@@ -5,8 +5,14 @@ func parseCommand(
     allowExecAndForget: Bool,
     allowEval: Bool,
 ) -> ParsedCmd<Shell<any Command>> {
-    if allowExecAndForget && raw.starts(with: "exec-and-forget") {
-        return .cmd(.cmd(ExecAndForgetCommand(args: ExecAndForgetCmdArgs(bashScript: raw.removePrefix("exec-and-forget")))))
+    if allowExecAndForget {
+        if raw.starts(with: "exec-and-forget") {
+            return .cmd(.cmd(ExecAndForgetCommand(args: ExecAndForgetCmdArgs(bashScript: raw.removePrefix("exec-and-forget")))))
+        }
+        // Hyprland dispatcher alias for exec-and-forget (M1). Match whole token "exec" only.
+        if raw == "exec" || raw.starts(with: "exec ") {
+            return .cmd(.cmd(ExecAndForgetCommand(args: ExecAndForgetCmdArgs(bashScript: raw.removePrefix("exec")))))
+        }
     }
     return switch raw.lexAndParseShell() {
         case .success(let it):
