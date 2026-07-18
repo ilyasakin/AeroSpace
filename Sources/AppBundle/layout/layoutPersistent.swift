@@ -2,17 +2,17 @@ import AppKit
 import Common
 
 /// Tiling layout driven by the immutable persistent spine (#1215 cutover).
-/// Structure (parent/child geometry) comes from `PersistentTilingNode`; window identity/AX
-/// still resolves through live `Window` handles. Floating windows remain on the live tree.
 ///
-/// **Index pairing invariant (transitional):** tiles/accordion walk `children` of the spine and
-/// `liveAnchor.children` by the same index to mirror weights and pick live handles. That pairing
-/// is only valid because capture-then-layout is synchronous under serialized sessions — no tree
-/// mutation may interleave between `PersistentTilingNode.capture` and the end of this pass.
-/// Invert to path-copy commit → materialize when dual-link bind is no longer the mutation surface.
+/// Structure and weights for geometry come only from `PersistentTilingNode`. Windows are
+/// resolved by id for AX writes. There is no spine/`liveChildren[i]` index pairing for
+/// geometry or weight distribution. Accordion MRU consults live focus metadata (most-recent
+/// window id) only to pick which spine sibling is "front."
+///
+/// Structural mutations that go through `commitTilingTransform` update the generation first;
+/// layout reads that generation (or recaptures if membership drifted).
 
 extension Workspace {
-    /// Last tiling spine used for layout (updated each layout pass).
+    /// Last tiling spine used for layout / commits (updated each layout or commit).
     @MainActor private static var _tilingSpineByName: [String: PersistentTilingNode] = [:]
 
     @MainActor
@@ -50,23 +50,24 @@ extension Workspace {
         lastAppliedLayoutPhysicalRect = physicalRect
         lastAppliedLayoutVirtualRect = rect
 
-        let liveRoot = rootTilingContainer
-        // Capture once: this generation is the structural source of truth for the pass
-        let spine = PersistentTilingNode.capture(liveRoot)
-        tilingStructureGeneration = spine
+        // Prefer committed generation; recapture only on membership drift
+        let spine = currentTilingSpine()
+        let mruWindowId = rootTilingContainer.mostRecentWindowRecursive?.windowId
 
-        try await layoutPersistentNode(
+        let laidOut = try await layoutPersistentNode(
             spine,
             point: physicalRect.topLeftCorner,
             width: physicalRect.width,
             height: physicalRect.height,
             virtual: rect,
-            path: .root,
-            liveAnchor: liveRoot,
             context: context,
+            mruWindowId: mruWindowId,
         )
+        // Publish weight-adjusted spine so the next pass does not re-capture from dual-link
+        tilingStructureGeneration = laidOut
+        // Keep live adaptive weights in sync for mouse helpers (by window id, not child index)
+        applyWindowWeightsFromSpine(laidOut, parentOrientation: nil)
 
-        // Floating is not part of the tiling spine
         try await layoutFloatingChildren(context: context)
     }
 
@@ -80,6 +81,24 @@ extension Workspace {
     }
 }
 
+/// Apply spine leaf weights onto live windows by id (no index pairing).
+@MainActor
+private func applyWindowWeightsFromSpine(_ node: PersistentTilingNode, parentOrientation: Orientation?) {
+    switch node {
+        case .window(let id, let weight):
+            guard let parentOrientation,
+                  let window = Window.get(byId: id),
+                  window.parent is TilingContainer
+            else { return }
+            window.setWeight(parentOrientation, weight)
+        case .container(let orientation, _, _, let children):
+            for child in children {
+                applyWindowWeightsFromSpine(child, parentOrientation: orientation)
+            }
+    }
+}
+
+/// Returns a weight-adjusted spine for the laid-out generation (path-copy of containers with new child weights).
 @MainActor
 private func layoutPersistentNode(
     _ node: PersistentTilingNode,
@@ -87,16 +106,15 @@ private func layoutPersistentNode(
     width: CGFloat,
     height: CGFloat,
     virtual: Rect,
-    path: PersistentPath,
-    liveAnchor: TreeNode,
     context: LayoutContext,
-) async throws {
+    mruWindowId: UInt32?,
+) async throws -> PersistentTilingNode {
     let physicalRect = Rect(topLeftX: point.x, topLeftY: point.y, width: width, height: height)
 
     switch node {
-        case .window(let id, _):
-            guard let window = Window.get(byId: id) else { return }
-            if window.windowId == currentlyManipulatedWithMouseWindowId { return }
+        case .window(let id, let weight):
+            guard let window = Window.get(byId: id) else { return node }
+            if window.windowId == currentlyManipulatedWithMouseWindowId { return node }
             window.lastAppliedLayoutVirtualRect = virtual
             if window.isFullscreen,
                window == context.workspace.rootTilingContainer.mostRecentWindowRecursive
@@ -111,36 +129,35 @@ private func layoutPersistentNode(
                     window.setAxFrame(point, CGSize(width: width, height: height))
                 }
             }
+            return .window(id: id, weight: weight)
 
-        case .container(let orientation, let layout, _, let children):
-            // Keep live container rects in sync for mouse/resize helpers that read lastApplied*
-            liveAnchor.lastAppliedLayoutPhysicalRect = physicalRect
-            liveAnchor.lastAppliedLayoutVirtualRect = virtual
-
+        case .container(let orientation, let layout, let weight, let children):
             switch layout {
                 case .tiles:
-                    try await layoutPersistentTiles(
-                        children: children,
+                    return try await layoutPersistentTiles(
                         orientation: orientation,
+                        layout: layout,
+                        weight: weight,
+                        children: children,
                         point: point,
                         width: width,
                         height: height,
                         virtual: virtual,
-                        path: path,
-                        liveAnchor: liveAnchor,
                         context: context,
+                        mruWindowId: mruWindowId,
                     )
                 case .accordion:
-                    try await layoutPersistentAccordion(
-                        children: children,
+                    return try await layoutPersistentAccordion(
                         orientation: orientation,
+                        layout: layout,
+                        weight: weight,
+                        children: children,
                         point: point,
                         width: width,
                         height: height,
                         virtual: virtual,
-                        path: path,
-                        liveAnchor: liveAnchor,
                         context: context,
+                        mruWindowId: mruWindowId,
                     )
             }
     }
@@ -148,34 +165,36 @@ private func layoutPersistentNode(
 
 @MainActor
 private func layoutPersistentTiles(
-    children: [PersistentTilingNode],
     orientation: Orientation,
+    layout: Layout,
+    weight: CGFloat,
+    children: [PersistentTilingNode],
     point: CGPoint,
     width: CGFloat,
     height: CGFloat,
     virtual: Rect,
-    path: PersistentPath,
-    liveAnchor: TreeNode,
     context: LayoutContext,
-) async throws {
-    guard !children.isEmpty else { return }
-    // liveChildren[i] corresponds to children[i] only under the capture-then-layout invariant above
-    let liveChildren = liveAnchor.children
+    mruWindowId: UInt32?,
+) async throws -> PersistentTilingNode {
+    guard !children.isEmpty else {
+        return .container(orientation: orientation, layout: layout, weight: weight, children: children)
+    }
     let weightSum = CGFloat(children.sumOfDouble { Double($0.weight) })
     let span = orientation == .h ? width : height
-    guard let delta = (span - weightSum).div(children.count) else { return }
+    guard let delta = (span - weightSum).div(children.count) else {
+        return .container(orientation: orientation, layout: layout, weight: weight, children: children)
+    }
 
     var point = point
     var virtualPoint = virtual.topLeftCorner
     let lastIndex = children.indices.last
     let rawGap = context.resolvedGaps.inner.get(orientation).toDouble()
+    var newChildren: [PersistentTilingNode] = []
+    newChildren.reserveCapacity(children.count)
 
     for (i, child) in children.enumerated() {
         let adjustedWeight = child.weight + delta
-        // Mirror weight onto live node so capture/mouse helpers stay consistent
-        if liveChildren.indices.contains(i) {
-            liveChildren[i].setWeight(orientation, adjustedWeight)
-        }
+        let adjustedChild = child.withWeight(adjustedWeight)
 
         let gap = rawGap - (i == 0 ? rawGap / 2 : 0) - (i == lastIndex ? rawGap / 2 : 0)
         let childPoint = i == 0 ? point : point.addingOffset(orientation, rawGap / 2)
@@ -187,17 +206,16 @@ private func layoutPersistentTiles(
             width: orientation == .h ? adjustedWeight : width,
             height: orientation == .v ? adjustedWeight : height,
         )
-        let childLive = liveChildren.indices.contains(i) ? liveChildren[i] : liveAnchor
-        try await layoutPersistentNode(
-            child,
+        let laidOut = try await layoutPersistentNode(
+            adjustedChild,
             point: childPoint,
             width: childWidth,
             height: childHeight,
             virtual: childVirtual,
-            path: path.appending(i),
-            liveAnchor: childLive,
             context: context,
+            mruWindowId: mruWindowId,
         )
+        newChildren.append(laidOut)
         virtualPoint = orientation == .h
             ? virtualPoint.addingXOffset(adjustedWeight)
             : virtualPoint.addingYOffset(adjustedWeight)
@@ -205,24 +223,36 @@ private func layoutPersistentTiles(
             ? point.addingXOffset(adjustedWeight)
             : point.addingYOffset(adjustedWeight)
     }
+    return .container(orientation: orientation, layout: layout, weight: weight, children: newChildren)
 }
 
 @MainActor
 private func layoutPersistentAccordion(
-    children: [PersistentTilingNode],
     orientation: Orientation,
+    layout: Layout,
+    weight: CGFloat,
+    children: [PersistentTilingNode],
     point: CGPoint,
     width: CGFloat,
     height: CGFloat,
     virtual: Rect,
-    path: PersistentPath,
-    liveAnchor: TreeNode,
     context: LayoutContext,
-) async throws {
-    // Index pairing: same capture-then-layout invariant as layoutPersistentTiles
-    let liveChildren = liveAnchor.children
-    let mruIndex = liveAnchor.mostRecentChild.flatMap { liveChildren.firstIndex(of: $0) } ?? 0
+    mruWindowId: UInt32?,
+) async throws -> PersistentTilingNode {
+    // MRU among this container's spine children — live focus metadata only (window id), not child index of dual-link
+    let mruIndex: Int = {
+        guard let mruWindowId else { return 0 }
+        if let i = children.firstIndex(where: { child in
+            switch child {
+                case .window(let id, _): id == mruWindowId
+                case .container: child.windowIds.contains(mruWindowId)
+            }
+        }) { return i }
+        return 0
+    }()
     let lastIndex = children.indices.last
+    var newChildren: [PersistentTilingNode] = []
+    newChildren.reserveCapacity(children.count)
 
     for (index, child) in children.enumerated() {
         let padding = CGFloat(config.accordionPadding)
@@ -234,32 +264,40 @@ private func layoutPersistentAccordion(
             case mruIndex + 1: (2 * padding, 0)
             default: (padding, padding)
         }
-        let childLive = liveChildren.indices.contains(index) ? liveChildren[index] : liveAnchor
+        let laidOut: PersistentTilingNode
         switch orientation {
             case .h:
-                try await layoutPersistentNode(
+                laidOut = try await layoutPersistentNode(
                     child,
                     point: point + CGPoint(x: lPadding, y: 0),
                     width: width - rPadding - lPadding,
                     height: height,
                     virtual: virtual,
-                    path: path.appending(index),
-                    liveAnchor: childLive,
                     context: context,
+                    mruWindowId: mruWindowId,
                 )
             case .v:
-                try await layoutPersistentNode(
+                laidOut = try await layoutPersistentNode(
                     child,
                     point: point + CGPoint(x: 0, y: lPadding),
                     width: width,
                     height: height - lPadding - rPadding,
                     virtual: virtual,
-                    path: path.appending(index),
-                    liveAnchor: childLive,
                     context: context,
+                    mruWindowId: mruWindowId,
                 )
+        }
+        newChildren.append(laidOut)
+    }
+    return .container(orientation: orientation, layout: layout, weight: weight, children: newChildren)
+}
+
+extension PersistentTilingNode {
+    /// Shallow weight update (does not recurse into container children).
+    fileprivate func withWeight(_ newWeight: CGFloat) -> PersistentTilingNode {
+        switch self {
+            case .window(let id, _): .window(id: id, weight: newWeight)
+            case .container(let o, let l, _, let c): .container(orientation: o, layout: l, weight: newWeight, children: c)
         }
     }
 }
-
-// LayoutContext + floating/fullscreen helpers stay in layoutRecursive.swift (shared)

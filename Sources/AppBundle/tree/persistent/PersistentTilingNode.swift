@@ -45,6 +45,14 @@ enum PersistentTilingNode: Equatable, Sendable, Hashable {
             case .container(_, _, _, let children): children.count
         }
     }
+
+    /// True if this node is a window with `id` or a container that contains it.
+    func containsWindowId(_ id: UInt32) -> Bool {
+        switch self {
+            case .window(let wid, _): wid == id
+            case .container(_, _, _, let children): children.contains { $0.containsWindowId(id) }
+        }
+    }
 }
 
 /// Path from root: each index selects a child of a container.
