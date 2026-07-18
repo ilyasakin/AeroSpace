@@ -1,5 +1,9 @@
 # Hyprland compatibility — product spec
 
+> Part of the broader **Linux-WM compatibility layer** thesis — see
+> [`compatibility-thesis.md`](compatibility-thesis.md) for the umbrella positioning, the config-dialect
+> architecture, and the sibling workstreams ([i3 IPC](i3-ipc-brief.md), [first-party bar](first-party-bar-brief.md)).
+
 ## Thesis
 
 Be the **Hyprland of macOS**: bring a Hyprland user's config, dispatchers, keybinds, window
