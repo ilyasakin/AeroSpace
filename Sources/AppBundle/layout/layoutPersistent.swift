@@ -4,6 +4,12 @@ import Common
 /// Tiling layout driven by the immutable persistent spine (#1215 cutover).
 /// Structure (parent/child geometry) comes from `PersistentTilingNode`; window identity/AX
 /// still resolves through live `Window` handles. Floating windows remain on the live tree.
+///
+/// **Index pairing invariant (transitional):** tiles/accordion walk `children` of the spine and
+/// `liveAnchor.children` by the same index to mirror weights and pick live handles. That pairing
+/// is only valid because capture-then-layout is synchronous under serialized sessions — no tree
+/// mutation may interleave between `PersistentTilingNode.capture` and the end of this pass.
+/// Invert to path-copy commit → materialize when dual-link bind is no longer the mutation surface.
 
 extension Workspace {
     /// Last tiling spine used for layout (updated each layout pass).
@@ -153,6 +159,7 @@ private func layoutPersistentTiles(
     context: LayoutContext,
 ) async throws {
     guard !children.isEmpty else { return }
+    // liveChildren[i] corresponds to children[i] only under the capture-then-layout invariant above
     let liveChildren = liveAnchor.children
     let weightSum = CGFloat(children.sumOfDouble { Double($0.weight) })
     let span = orientation == .h ? width : height
@@ -212,6 +219,7 @@ private func layoutPersistentAccordion(
     liveAnchor: TreeNode,
     context: LayoutContext,
 ) async throws {
+    // Index pairing: same capture-then-layout invariant as layoutPersistentTiles
     let liveChildren = liveAnchor.children
     let mruIndex = liveAnchor.mostRecentChild.flatMap { liveChildren.firstIndex(of: $0) } ?? 0
     let lastIndex = children.indices.last

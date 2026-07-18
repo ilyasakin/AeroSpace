@@ -130,6 +130,11 @@ Immutable, single-linked (downward) path-copying spine for tiling structure:
 Live `TreeNode` remains the mutation/bind surface and AX identity layer. Layout geometry for
 tiling no longer recurses the dual-link tree for structure — only the persistent generation.
 
+**Transitional coupling:** layout also indexes `liveAnchor.children[i]` in parallel with spine
+`children[i]` (weight mirror, accordion MRU, live anchors). That index pairing is safe only
+because capture-then-layout runs synchronously under serialized sessions with no interleaved
+tree mutation. Known, not accidental — remove when mutation is path-copy-first.
+
 ### Follow-up work (not done yet)
 
 - Mutate via path-copy commits first, then materialize live handles (invert today’s capture-then-layout)
