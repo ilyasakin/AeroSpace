@@ -28,14 +28,15 @@ openssl req -x509 -newkey rsa:2048 -keyout "$tmp/key.pem" -out "$tmp/cert.pem" -
     -addext "extendedKeyUsage=critical,codeSigning" \
     -addext "basicConstraints=critical,CA:false"
 
-# Legacy PKCS12 encoding: the macOS keychain rejects OpenSSL 3's default MAC algorithm
-openssl pkcs12 -export -inkey "$tmp/key.pem" -in "$tmp/cert.pem" -out "$tmp/cert.p12" \
-    -passout pass: -name "$CERT_CN" \
-    -legacy -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1
+# Export the PKCS12 with macOS's own LibreSSL (/usr/bin/openssl), not a Homebrew OpenSSL 3 that may
+# be first on PATH: the macOS keychain fails MAC verification on OpenSSL 3's PKCS12 even with the
+# legacy flags, but accepts LibreSSL's default encoding. A throwaway password protects the temp file.
+/usr/bin/openssl pkcs12 -export -inkey "$tmp/key.pem" -in "$tmp/cert.pem" -out "$tmp/cert.p12" \
+    -passout pass:aerospace -name "$CERT_CN"
 
 echo "Importing the certificate into your login keychain…"
-# -A lets codesign use the key without a per-build prompt
-security import "$tmp/cert.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P "" -A
+# -A lets codesign use the key without a per-build prompt; -T authorizes codesign specifically
+security import "$tmp/cert.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P "aerospace" -A -T /usr/bin/codesign
 
 echo "Trusting the certificate for code signing (this needs your password)…"
 sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$tmp/cert.pem"
