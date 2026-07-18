@@ -239,10 +239,9 @@ struct BarSettingsTab: View {
     }
 }
 
-/// One list of modules: a single Toggle per row (on/off), drag-reorder only for “On bar”.
+/// One switch per module (on/off). Drag the grip on “On bar” rows to reorder.
 ///
-/// Avoids double checkbox chrome (custom checkmark + button). List stays in edit mode so
-/// macOS shows real reorder grips; toggles are separate controls so they don’t steal drag.
+/// macOS has no `EditMode`, so reordering uses explicit drag-and-drop (not List.onMove).
 struct BarModulePicker: View {
     let selected: [String]
     let onChange: ([String]) -> Void
@@ -252,57 +251,85 @@ struct BarModulePicker: View {
         catalog.filter { !selected.contains($0.rawValue) }
     }
 
-    /// Keep list permanently in edit mode so `.onMove` grips are always available (macOS).
-    @State private var editMode: EditMode = .active
+    @State private var draggingId: String?
 
     var body: some View {
-        List {
-            Section {
-                if selected.isEmpty {
-                    Text("Nothing on this side yet — turn a module on below.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(selected, id: \.self) { id in
-                        moduleRow(id: id, isOn: true) {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("On bar")
+                .font(.subheadline.weight(.semibold))
+            if selected.isEmpty {
+                Text("Nothing on this side yet — turn a module on below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(selected.enumerated()), id: \.element) { index, id in
+                        moduleRow(
+                            id: id,
+                            isOn: true,
+                            showGrip: true,
+                            isDropTarget: draggingId != nil && draggingId != id,
+                        ) {
                             onChange(selected.filter { $0 != id })
                         }
-                    }
-                    .onMove { source, dest in
-                        var next = selected
-                        next.move(fromOffsets: source, toOffset: dest)
-                        onChange(next)
+                        .onDrag {
+                            draggingId = id
+                            return NSItemProvider(object: id as NSString)
+                        }
+                        .onDrop(
+                            of: [.text],
+                            delegate: BarModuleReorderDropDelegate(
+                                itemId: id,
+                                selected: selected,
+                                draggingId: $draggingId,
+                                onChange: onChange,
+                            ),
+                        )
+                        if index < selected.count - 1 {
+                            Divider()
+                        }
                     }
                 }
-            } header: {
-                Text("On bar")
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor)))
             }
 
             if !available.isEmpty {
-                Section {
-                    ForEach(available, id: \.rawValue) { mod in
-                        moduleRow(id: mod.rawValue, isOn: false) {
+                Text("Available")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.top, 4)
+                VStack(spacing: 0) {
+                    ForEach(Array(available.enumerated()), id: \.element.rawValue) { index, mod in
+                        moduleRow(id: mod.rawValue, isOn: false, showGrip: false, isDropTarget: false) {
                             onChange(selected + [mod.rawValue])
                         }
+                        if index < available.count - 1 {
+                            Divider()
+                        }
                     }
-                } header: {
-                    Text("Available")
                 }
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor)))
             }
         }
-        .listStyle(.bordered(alternatesRowBackgrounds: true))
-        .frame(
-            minHeight: CGFloat(min(280, 44 + (selected.count + available.count) * 28)),
-            maxHeight: 320,
-        )
-        .environment(\.editMode, $editMode)
     }
 
     @ViewBuilder
-    private func moduleRow(id: String, isOn: Bool, setOn: @escaping () -> Void) -> some View {
-        // Toggle is the only on/off control — no second checkmark icon.
-        // `setOn` is invoked when the user flips the switch; get always reflects `isOn`.
+    private func moduleRow(
+        id: String,
+        isOn: Bool,
+        showGrip: Bool,
+        isDropTarget: Bool,
+        flip: @escaping () -> Void,
+    ) -> some View {
         HStack(spacing: 10) {
+            if showGrip {
+                Image(systemName: "line.3.horizontal")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                    .help("Drag to reorder")
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(StatusBarBuiltinModule(rawValue: id)?.title ?? id)
                     .font(.body)
@@ -311,13 +338,13 @@ struct BarModulePicker: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
+            // Single on/off control — no extra checkmark icon.
             Toggle(
                 "",
                 isOn: Binding(
                     get: { isOn },
                     set: { newValue in
-                        // Only act on real flips (get already matches current state).
-                        if newValue != isOn { setOn() }
+                        if newValue != isOn { flip() }
                     },
                 ),
             )
@@ -325,7 +352,40 @@ struct BarModulePicker: View {
             .toggleStyle(.switch)
             .controlSize(.small)
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 6)
+        .background(isDropTarget ? Color.accentColor.opacity(0.12) : Color.clear)
+        .contentShape(Rectangle())
+    }
+}
+
+/// Drop onto a selected row → move the dragged module to that row’s index.
+private struct BarModuleReorderDropDelegate: DropDelegate {
+    let itemId: String
+    let selected: [String]
+    @Binding var draggingId: String?
+    let onChange: ([String]) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool { draggingId != nil }
+
+    func dropEntered(info: DropInfo) {
+        guard let draggingId, draggingId != itemId,
+              let from = selected.firstIndex(of: draggingId),
+              let to = selected.firstIndex(of: itemId),
+              from != to
+        else { return }
+        var next = selected
+        next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        onChange(next)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingId = nil
+        return true
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
     }
 }
 
