@@ -141,6 +141,11 @@ extension Workspace {
 
     /// Rebuild the live dual-link tiling root from an immutable spine.
     /// Windows are resolved by id; unit-test windows are parked floating first so `Window.get` finds them.
+    ///
+    /// Always publishes `tilingStructureGeneration = spine`. After session restore, discovery layout
+    /// may have left a **stale** generation; layout trusts that gen when present, so without this
+    /// publish the next layout would re-apply the pre-restore structure (e.g. horizontal tiles
+    /// after a vertical restore).
     func materializeTilingSpine(_ spine: PersistentTilingNode) {
         let oldRoot = rootTilingContainer
         let leaves = oldRoot.allLeafWindowsRecursive
@@ -158,6 +163,7 @@ extension Workspace {
             }
         }
         check(spine.restore(parent: self, index: INDEX_BIND_LAST), "Failed to materialize tiling spine")
+        tilingStructureGeneration = spine
     }
 
     /// Dirty-flag protocol: if a generation is published, trust it. If nil, capture from live

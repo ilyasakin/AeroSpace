@@ -75,6 +75,9 @@ enum SessionLayoutStore {
             uniqueKeysWithValues: monitors.map { ($0.rect.topLeftCorner, $0) },
         )
 
+        // Drop discovery-layout generations before rebuild — materialize publishes the restored spine.
+        Workspace.clearTilingStructureGenerations()
+
         // Park every live tiling leaf floating so materialize can rebind by id (same as tests).
         for workspace in Workspace.allUnsorted {
             for window in workspace.rootTilingContainer.allLeafWindowsRecursive {
