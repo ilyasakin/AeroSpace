@@ -174,6 +174,15 @@ struct BarSettingsTab: View {
                         Text("When on, only workspaces with windows are listed (the focused workspace always stays visible).")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        Divider().padding(.vertical, 4)
+
+                        Text("Workspace symbols")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Optional letter, emoji, or short label shown on the bar instead of the workspace name. Clicks still target the real workspace.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        WorkspaceSymbolsEditor()
                     }
 
                     SettingsSection(title: "Left modules") {
@@ -246,6 +255,96 @@ struct BarSettingsTab: View {
             .multilineTextAlignment(.trailing)
             .font(.system(.body, design: .monospaced))
         }
+    }
+}
+
+/// Edit `[bar.workspace-symbols]` — workspace name → bar label.
+private struct WorkspaceSymbolsEditor: View {
+    @EnvironmentObject var model: ConfigSettingsModel
+    @State private var newWorkspace = ""
+    @State private var newSymbol = ""
+
+    private let table = ["bar", "workspace-symbols"]
+
+    private var rows: [(key: String, rawValue: String)] {
+        TomlPatcher.keys(model.text, table: table)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(rows, id: \.key) { row in
+                WorkspaceSymbolRow(
+                    workspace: row.key,
+                    symbol: parseTomlStringOrStringArray(row.rawValue).first ?? row.rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "'\"")),
+                    onCommit: { setSymbol(workspace: row.key, symbol: $0) },
+                    onDelete: {
+                        model.apply { TomlPatcher.removeKey($0, table: table, key: row.key) }
+                    },
+                )
+            }
+            HStack {
+                TextField("Workspace", text: $newWorkspace)
+                    .frame(width: 120)
+                TextField("Symbol / label", text: $newSymbol)
+                Button("Add") {
+                    let ws = newWorkspace.trimmingCharacters(in: .whitespaces)
+                    let sym = newSymbol.trimmingCharacters(in: .whitespaces)
+                    guard !ws.isEmpty, !sym.isEmpty else { return }
+                    setSymbol(workspace: ws, symbol: sym)
+                    newWorkspace = ""
+                    newSymbol = ""
+                }
+                .disabled(
+                    newWorkspace.trimmingCharacters(in: .whitespaces).isEmpty
+                        || newSymbol.trimmingCharacters(in: .whitespaces).isEmpty,
+                )
+            }
+        }
+    }
+
+    private func setSymbol(workspace: String, symbol: String) {
+        let trimmed = symbol.trimmingCharacters(in: .whitespacesAndNewlines)
+        model.apply {
+            if trimmed.isEmpty {
+                TomlPatcher.removeKey($0, table: table, key: workspace)
+            } else {
+                TomlPatcher.setValue($0, table: table, key: workspace, rawValue: TomlPatcher.serialize(string: trimmed))
+            }
+        }
+    }
+}
+
+private struct WorkspaceSymbolRow: View {
+    let workspace: String
+    let symbol: String
+    let onCommit: (String) -> Void
+    let onDelete: () -> Void
+    @State private var draft: String = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack {
+            Text(workspace)
+                .font(.body.monospaced())
+                .frame(width: 120, alignment: .leading)
+            TextField("e.g. 一 / 🌐 / W", text: $draft)
+                .onSubmit { onCommit(draft) }
+                .focused($focused)
+                .onChange(of: focused) { isFocused in
+                    if !isFocused, draft != symbol { onCommit(draft) }
+                }
+            Text(draft.isEmpty ? workspace : draft)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 28, alignment: .center)
+                .help("Preview on the bar")
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+        }
+        .onAppear { draft = symbol }
+        .onChange(of: symbol) { draft = $0 }
     }
 }
 

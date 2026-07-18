@@ -402,8 +402,9 @@ private final class StatusBarContentView: NSView {
                             }
                             let visibleHere = ws.isVisible
                                 && ws.workspaceMonitor.rect.topLeftCorner == monitor.rect.topLeftCorner
+                            let label = statusBarWorkspaceLabel(name: ws.name, symbols: config.workspaceSymbols)
                             out.append(.text(
-                                ws.name,
+                                label,
                                 bg: active ? focusBg : (visibleHere ? focusBg.withAlphaComponent(0.35) : nil),
                                 fg: active ? focusFg : fg,
                                 action: { onWorkspaceClick(ws.name) },

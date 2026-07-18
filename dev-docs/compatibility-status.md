@@ -42,10 +42,15 @@ modules-left = ['workspaces', 'mode', 'focused']
 modules-right = ['clock', 'battery']
 # hide-empty-workspaces = true  # omit unoccupied spaces (focused always shown)
 # status-command = ['/path/to/i3bar-protocol-emitter']
+
+# Optional bar labels (workspace name → letter/emoji/symbol)
+# [bar.workspace-symbols]
+# 1 = '一'
+# web = '🌐'
 ```
 
 - Per-monitor strip **below** the system menu bar (no menu-bar replacement).
-- Built-ins: workspaces (click → focus; optional hide-empty), mode, focused app, clock, battery, cpu, memory.
+- Built-ins: workspaces (click → focus; optional hide-empty + custom symbols), mode, focused app, clock, battery, cpu, memory.
 - i3bar protocol input + click_events → module stdin.
 - Hit-test passthrough on empty regions.
 

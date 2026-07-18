@@ -211,4 +211,30 @@ final class StatusBarConfigTest: XCTestCase {
         assertTrue(statusBarShouldShowWorkspace(isEmpty: false, isFocused: false, hideEmpty: true))
         assertTrue(statusBarShouldShowWorkspace(isEmpty: false, isFocused: true, hideEmpty: true))
     }
+
+    func testParseWorkspaceSymbols() {
+        let toml = """
+            [bar]
+            enabled = true
+
+            [bar.workspace-symbols]
+            1 = '一'
+            2 = "🌐"
+            web = 'W'
+            """
+        let result = parseConfig(toml)
+        assertEquals(result.errors.map { $0.description(.error) }, [])
+        let symbols = result.config.statusBar.workspaceSymbols
+        assertEquals(symbols["1"], "一")
+        assertEquals(symbols["2"], "🌐")
+        assertEquals(symbols["web"], "W")
+    }
+
+    func testWorkspaceLabelFallback() {
+        let symbols = ["1": "一", "web": "  "]
+        assertEquals(statusBarWorkspaceLabel(name: "1", symbols: symbols), "一")
+        assertEquals(statusBarWorkspaceLabel(name: "2", symbols: symbols), "2")
+        // Whitespace-only mapping falls back to the real name
+        assertEquals(statusBarWorkspaceLabel(name: "web", symbols: symbols), "web")
+    }
 }

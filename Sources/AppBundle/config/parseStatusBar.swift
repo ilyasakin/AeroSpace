@@ -11,6 +11,9 @@ struct StatusBarConfig: ConvenienceMutable, Equatable, Sendable {
     var modulesRight: [String] = ["clock", "battery"]
     /// When true, the workspaces module omits empty (unoccupied) workspaces — except the focused one.
     var hideEmptyWorkspaces: Bool = false
+    /// Optional display labels for the workspaces module: workspace name → letter/symbol/emoji.
+    /// Unmapped workspaces still show their real name. Clicks always use the real name.
+    var workspaceSymbols: [String: String] = [:]
     /// Optional external process that speaks the i3bar protocol on stdout.
     var statusCommand: [String] = []
     var background: String = "#1e1e2e"
@@ -28,6 +31,7 @@ private let statusBarParser: [String: any ParserProtocol<StatusBarConfig>] = [
     "modules-left": Parser(\.modulesLeft, parseArrayOfStrings),
     "modules-right": Parser(\.modulesRight, parseArrayOfStrings),
     "hide-empty-workspaces": Parser(\.hideEmptyWorkspaces, parseBool),
+    "workspace-symbols": Parser(\.workspaceSymbols, parseWorkspaceSymbols),
     "status-command": Parser(\.statusCommand, parseArrayOfStrings),
     "background": Parser(\.background, parseString),
     "foreground": Parser(\.foreground, parseString),
@@ -38,4 +42,40 @@ private let statusBarParser: [String: any ParserProtocol<StatusBarConfig>] = [
 
 func parseStatusBar(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> StatusBarConfig {
     parseTable(raw, StatusBarConfig(), statusBarParser, backtrace, &c)
+}
+
+/// `[bar.workspace-symbols]` map: workspace name → bar label (letter, symbol, emoji, short text).
+func parseWorkspaceSymbols(
+    _ raw: OrderedJson,
+    _ backtrace: ConfigBacktrace,
+    _ c: inout ConfigParserContext,
+) -> [String: String] {
+    guard let table = raw.asDictOrNil else {
+        c.errors += [expectedActualTypeDiagnostic(expected: .table, actual: raw.tomlType, backtrace)]
+        return [:]
+    }
+    var result: [String: String] = [:]
+    for (workspace, value) in table {
+        let bt = backtrace + .key(workspace)
+        if let s = value.asStringOrNil {
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                result[workspace] = trimmed
+            }
+        } else if let i = value.asIntOrNil {
+            // Bare TOML integers as labels are allowed (`1 = 一` is string; `1 = 2` is int).
+            result[workspace] = String(i)
+        } else {
+            c.errors += [expectedActualTypeDiagnostic(expected: [.string, .int], actual: value.tomlType, bt)]
+        }
+    }
+    return result
+}
+
+/// Label shown on the bar for a workspace. Empty/missing mapping falls back to the real name.
+func statusBarWorkspaceLabel(name: String, symbols: [String: String]) -> String {
+    if let label = symbols[name]?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
+        return label
+    }
+    return name
 }
