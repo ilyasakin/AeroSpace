@@ -223,11 +223,14 @@ private final class StatusBarPanel: NSPanelHud {
         hasShadow = false
         backgroundColor = .clear
         contentView = content
-        // Stay *below* the system menu bar. `.statusBar` is CG level 25 and `.mainMenu` is 24,
-        // so a statusBar-level panel covers the native menu bar (including auto-hide peeks).
-        // Most tiling users auto-hide the menu bar; the menu chrome must win when it appears.
-        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) - 1)
-        // Don't float above the menu bar layer via fullScreenAuxiliary stacking quirks.
+        // Window level must stay:
+        //   above normal app windows (0),
+        //   below Notification Center banners / alerts (modal ≈ 8 and up),
+        //   well below main menu (24) and status items (25).
+        // Using mainMenu-1 (23) put the bar *above* system notifications — not acceptable.
+        // `.floating` (3) is the standard always-on-top HUD tier for this.
+        level = .floating
+        // Don't use fullScreenAuxiliary stacking quirks that can elevate over system UI.
         collectionBehavior = [.canJoinAllSpaces, .stationary]
     }
 
@@ -269,9 +272,11 @@ private final class StatusBarPanel: NSPanelHud {
                 StatusBarManager.shared.sendClick(event)
             },
         )
-        // orderFront is enough; orderFrontRegardless can race above higher-level system windows
-        // on some macOS versions when combined with aggressive levels.
-        orderFront(nil)
+        // Only front when hidden — re-orderFront every timer tick can restack the bar over
+        // same-or-lower-level system UI (including notification banners).
+        if !isVisible {
+            orderFront(nil)
+        }
     }
 }
 
