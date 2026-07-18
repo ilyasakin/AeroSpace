@@ -1,8 +1,8 @@
 import AppKit
 import Common
 
-@MainActor
-private var activeRefreshTask: Task<(), any Error>? = nil
+// Session orchestration lives in SessionPipeline.swift. This file keeps the public entry points
+// and the heavy phase implementations (discover, layout) that the pipeline calls.
 
 @MainActor
 func scheduleCancellableCompleteRefreshSession(
@@ -27,40 +27,14 @@ func runHeavyCompleteRefreshSession(
     layoutWorkspaces shouldLayoutWorkspaces: Bool = true,
     optimisticallyPreLayoutWorkspaces: Bool = false,
 ) async {
-    let state = signposter.beginInterval(#function, "event: \(event) axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)")
-    defer { signposter.endInterval(#function, state) }
-    if !TrayMenuModel.shared.isEnabled { return }
-    invalidateWindowLevelCache()
-    invalidateMonitorsCache()
-    // Do NOT clear framesWrittenThisSession here. A light session that just wrote AX frames
-    // may have scheduled this complete refresh while WindowServer still lags; clearing would
-    // re-enable SkyLight mid-lag and reintroduce the resize→center hazard across the boundary.
-    // Light sessions clear at their start so marks do not accumulate forever.
-    let res = await Result {
-        try await $refreshSessionEvent.withValue(event) {
-            let nativeFocused = try await getNativeFocusedWindow(.cancellable)
-            if let nativeFocused { try await debugWindowsIfRecording(nativeFocused, .cancellable) }
-            updateFocusCache(nativeFocused)
-
-            if shouldLayoutWorkspaces && optimisticallyPreLayoutWorkspaces { try await layoutWorkspaces() }
-
-            await refreshModel_nonCancellable()
-            try await refresh()
-            gcMonitors()
-
-            updateTrayText()
-            SecureInputPanel.shared.refresh()
-            try await normalizeLayoutReason()
-            if shouldLayoutWorkspaces { try await layoutWorkspaces() }
-            // Borders after layout so they see post-write frames (lastApplied / WS), not pre-layout ones
-            WindowBordersManager.shared.refresh()
-        }
-    }
-    switch res {
-        case .success(()): break
-        case .failure(let err as CancellationError): check(assumeCancellable, "Non cancellable refresh session was canceled: \(err) (\(type(of: err)))")
-        case .failure(let err): die("Illegal error: \(err)")
-    }
+    await SessionPipeline.runHeavy(
+        event,
+        assumeCancellable: assumeCancellable,
+        plan: SessionPipeline.planHeavy(
+            layout: shouldLayoutWorkspaces,
+            optimisticLayout: optimisticallyPreLayoutWorkspaces,
+        ),
+    )
 }
 
 @MainActor
@@ -69,40 +43,11 @@ func runLightSession<T>(
     _: RunSessionGuard,
     body: @MainActor () async throws -> T,
 ) async throws -> T {
-    let state = signposter.beginInterval(#function, "event: \(event) axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)")
-    defer { signposter.endInterval(#function, state) }
-    activeRefreshTask?.cancel() // Give priority to runSession
-    activeRefreshTask = nil
-    invalidateWindowLevelCache()
-    invalidateMonitorsCache()
-    clearFramesWrittenThisSession()
-    return try await $refreshSessionEvent.withValue(event) {
-        let nativeFocused = try await getNativeFocusedWindow(.cancellable)
-        if let nativeFocused { try await debugWindowsIfRecording(nativeFocused, .cancellable) }
-        updateFocusCache(nativeFocused)
-        let focusBefore = focus.windowOrNil
-
-        await refreshModel_nonCancellable()
-        let result = try await body()
-        await refreshModel_nonCancellable()
-
-        let focusAfter = focus.windowOrNil
-
-        updateTrayText()
-        SecureInputPanel.shared.refresh()
-        // Query-only CLI (list-*, echo, test, …) must not pay layout + full window discovery.
-        // Mutating commands still schedule a complete refresh so newly appeared windows are
-        // registered and normalizeLayoutReason can run
-        let needsLayoutAndDiscovery = !event.isFocusFollowsMouse && !event.isQueryOnly
-        if needsLayoutAndDiscovery { try await layoutWorkspaces() }
-        // Borders after layout (and after command body setAxFrame) so overlay rects match reality
-        WindowBordersManager.shared.refresh()
-        if focusBefore != focusAfter {
-            focusAfter?.nativeFocus() // syncFocusToMacOs
-        }
-        if needsLayoutAndDiscovery { scheduleCancellableCompleteRefreshSession(event) }
-        return result
-    }
+    try await SessionPipeline.runLight(
+        event,
+        plan: SessionPipeline.planLight(event: event),
+        body: body,
+    )
 }
 
 struct RunSessionGuard: Sendable {
@@ -136,9 +81,9 @@ func refreshModel_nonCancellable() async {
     }
 }
 
+/// Heavy phase: garbage-collect terminated apps/windows and register newly seen ones
 @MainActor
-private func refresh() async throws {
-    // Garbage collect terminated apps and windows before working with all windows
+func discoverAliveWindows() async throws {
     let mapping = try await MacApp.refreshAllAndGetAliveWindowIds(frontmostAppBundleId: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
     let aliveWindowIds = mapping.values.flatMap(id).toSet()
 
@@ -184,7 +129,7 @@ enum OptimalHideCorner {
 }
 
 @MainActor
-private func layoutWorkspaces() async throws {
+func layoutWorkspaces() async throws {
     if !TrayMenuModel.shared.isEnabled {
         for workspace in Workspace.allUnsorted {
             workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() } // todo as!

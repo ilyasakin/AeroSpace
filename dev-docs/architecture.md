@@ -66,6 +66,42 @@ todo
 
 ## Layout subsystem
 
-todo
-
 ../Sources/AppBundle/layout/
+
+- `layoutRecursive.swift` — pure-ish tree walk that assigns frames and issues AX writes
+- `refresh.swift` — public entry points (`runLightSession`, `runHeavyCompleteRefreshSession`) +
+  discover/layout implementations
+- `SessionPipeline.swift` — **session policy and phase order** (see below)
+
+### Session pipeline
+
+All server work that mutates windows or side UI runs inside a **session** with a fixed phase order.
+Do not call layout / discover / borders ad hoc from commands; go through light or heavy sessions.
+
+```
+Begin → Focus-from-native → Model hygiene
+  → [Command body]          # light only
+  → [Discover windows]      # heavy only
+  → [Normalize native]      # heavy only
+  → [Layout]                # unless query-only / focus-follows-mouse
+  → Side UI (tray, secure, borders)   # borders always after layout when layout ran
+  → End (sync focus to macOS; schedule heavy after mutating light)
+```
+
+| Kind | Clears frames-written | Discover | Layout | Follow-up heavy |
+|------|----------------------|----------|--------|-----------------|
+| Light (mutating) | yes | no | yes | yes |
+| Light (query-only / FFM) | yes | no | no | no |
+| Heavy | **no** (keeps light→heavy lag protection) | yes | configurable | no |
+
+Load-bearing rules (locked by `SessionPipelineTest` + comments in code):
+
+1. **Borders after layout** — otherwise overlays paint pre-layout frames.
+2. **Heavy does not clear frames-written** — WindowServer can lag AX writes from the preceding light session.
+3. **Query-only CLI skips layout + heavy** — polling scripts must stay cheap.
+
+### Follow-up work (not done yet)
+
+- Ports for AX / SkyLight / CGWindowList behind narrow protocols (testability)
+- Replace `Window` + `die("Not implemented")` with `MacWindow` + test doubles
+- Immutable/persistent tree (upstream issue #1215) — stability, not OOP for its own sake
