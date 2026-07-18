@@ -241,10 +241,28 @@ struct BarSettingsTab: View {
                     }
 
                     SettingsSection(title: "Colors") {
-                        colorField("Background", key: "background", get: \.statusBar.background)
-                        colorField("Foreground", key: "foreground", get: \.statusBar.foreground)
-                        colorField("Focused background", key: "focused-background", get: \.statusBar.focusedBackground)
-                        colorField("Focused foreground", key: "focused-foreground", get: \.statusBar.focusedForeground)
+                        colorField("Background", key: "background", defaultHex: StatusBarConfig().background, get: \.statusBar.background)
+                        colorField("Foreground", key: "foreground", defaultHex: StatusBarConfig().foreground, get: \.statusBar.foreground)
+                        colorField(
+                            "Focused background",
+                            key: "focused-background",
+                            defaultHex: StatusBarConfig().focusedBackground,
+                            get: \.statusBar.focusedBackground,
+                        )
+                        colorField(
+                            "Focused foreground",
+                            key: "focused-foreground",
+                            defaultHex: StatusBarConfig().focusedForeground,
+                            get: \.statusBar.focusedForeground,
+                        )
+                        HStack {
+                            Spacer()
+                            Button("Reset all colors") {
+                                resetAllBarColors()
+                            }
+                            .disabled(!anyBarColorCustomized)
+                            .help("Restore background, foreground, and focused colors to defaults")
+                        }
                     }
                 }
             }
@@ -267,7 +285,39 @@ struct BarSettingsTab: View {
         return fallback(model.parsedConfig)
     }
 
-    @ViewBuilder private func colorField(_ title: String, key: String, get: @escaping (Config) -> String) -> some View {
+    private static let barColorKeys = [
+        "background",
+        "foreground",
+        "focused-background",
+        "focused-foreground",
+    ]
+
+    private var anyBarColorCustomized: Bool {
+        Self.barColorKeys.contains { barColorIsCustomized(key: $0) }
+    }
+
+    /// True when the file has an explicit value that differs from the built-in default
+    /// (or any explicit override is present — reset removes the key).
+    private func barColorIsCustomized(key: String) -> Bool {
+        TomlPatcher.getRawValue(model.text, table: ["bar"], key: key) != nil
+    }
+
+    private func resetBarColor(key: String) {
+        model.apply { TomlPatcher.removeKey($0, table: ["bar"], key: key) }
+    }
+
+    private func resetAllBarColors() {
+        model.apply { text in
+            Self.barColorKeys.reduce(text) { TomlPatcher.removeKey($0, table: ["bar"], key: $1) }
+        }
+    }
+
+    @ViewBuilder private func colorField(
+        _ title: String,
+        key: String,
+        defaultHex: String,
+        get: @escaping (Config) -> String,
+    ) -> some View {
         HStack(spacing: 12) {
             Text(title)
             Spacer()
@@ -279,6 +329,16 @@ struct BarSettingsTab: View {
             )
             .labelsHidden()
             .frame(width: 44, height: 28)
+
+            Button {
+                resetBarColor(key: key)
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+            }
+            .buttonStyle(.borderless)
+            .disabled(!barColorIsCustomized(key: key))
+            .help("Reset to default (\(defaultHex))")
+            .accessibilityLabel("Reset \(title)")
         }
     }
 
