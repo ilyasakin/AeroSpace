@@ -53,6 +53,21 @@ enum PersistentTilingNode: Equatable, Sendable, Hashable {
             case .container(_, _, _, let children): children.contains { $0.containsWindowId(id) }
         }
     }
+
+    /// Shape equality: same orientation/layout nesting and window ids in order, **ignoring weights**.
+    /// Used so layout-adjusted generations are not discarded when live dual-link container weights
+    /// lag (windows alone were synced before; nested container weights may still differ).
+    func structureEquals(_ other: PersistentTilingNode) -> Bool {
+        switch (self, other) {
+            case (.window(let id1, _), .window(let id2, _)):
+                id1 == id2
+            case (.container(let o1, let l1, _, let c1), .container(let o2, let l2, _, let c2)):
+                o1 == o2 && l1 == l2 && c1.count == c2.count &&
+                    zip(c1, c2).allSatisfy { $0.structureEquals($1) }
+            default:
+                false
+        }
+    }
 }
 
 /// Path from root: each index selects a child of a container.

@@ -66,13 +66,14 @@ extension Workspace {
         check(spine.restore(parent: self, index: INDEX_BIND_LAST), "Failed to materialize tiling spine")
     }
 
-    /// Spine for layout: must match **full** live structure (order, nesting, weights), not just the
-    /// window-id set. Dual-link mutators (swap/move/reparent) can reorder the same ids; comparing
-    /// only membership would keep a stale generation and undo the live tree on the next layout.
+    /// Spine for layout. Recapture when **structure** drifts (order/nesting/window ids), not when
+    /// only weights differ. After layout the published generation has adjusted weights; live
+    /// dual-link container weights may lag until synced — full `==` would thrash and mix old
+    /// container weights with adjusted leaf weights on nested trees.
     func currentTilingSpine() -> PersistentTilingNode {
         let captured = PersistentTilingNode.capture(rootTilingContainer)
-        if let gen = tilingStructureGeneration, gen == captured {
-            return gen
+        if let gen = tilingStructureGeneration, gen.structureEquals(captured) {
+            return gen // keep layout-adjusted weights
         }
         tilingStructureGeneration = captured
         return captured

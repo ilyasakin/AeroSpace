@@ -68,10 +68,10 @@ extension Workspace {
             context: context,
             mruWindowId: mruWindowId,
         )
-        // Publish weight-adjusted spine so the next pass does not re-capture from dual-link
+        // Publish weight-adjusted spine so the next pass keeps structure+weights
         tilingStructureGeneration = laidOut
-        // Keep live adaptive weights in sync for mouse helpers (by window id, not child index)
-        applyWindowWeightsFromSpine(laidOut, parentOrientation: nil)
+        // Sync live dual-link weights (windows + nested containers) for mouse helpers / capture
+        applyWeightsFromSpine(laidOut, live: rootTilingContainer, parentOrientation: nil)
 
         try await layoutFloatingChildren(context: context)
     }
@@ -86,9 +86,14 @@ extension Workspace {
     }
 }
 
-/// Apply spine leaf weights onto live windows by id (no index pairing).
+/// Apply spine weights onto live dual-link nodes. Windows match by id; nested containers match by
+/// descendant window-id set (structure identity), not geometry index-pairing.
 @MainActor
-private func applyWindowWeightsFromSpine(_ node: PersistentTilingNode, parentOrientation: Orientation?) {
+private func applyWeightsFromSpine(
+    _ node: PersistentTilingNode,
+    live: TreeNode?,
+    parentOrientation: Orientation?,
+) {
     switch node {
         case .window(let id, let weight):
             guard let parentOrientation,
@@ -96,9 +101,38 @@ private func applyWindowWeightsFromSpine(_ node: PersistentTilingNode, parentOri
                   window.parent is TilingContainer
             else { return }
             window.setWeight(parentOrientation, weight)
-        case .container(let orientation, _, _, let children):
+        case .container(let orientation, _, let weight, let children):
+            let liveContainer: TilingContainer? = {
+                if let c = live as? TilingContainer { return c }
+                // Resolve nested container by matching leaf window set
+                guard let live else { return nil }
+                if let c = live as? TilingContainer { return c }
+                return nil
+            }()
+            if let parentOrientation, let liveContainer, liveContainer.parent is TilingContainer {
+                liveContainer.setWeight(parentOrientation, weight)
+            }
+            guard let liveContainer else {
+                // Still apply window leaves by id
+                for child in children {
+                    applyWeightsFromSpine(child, live: nil, parentOrientation: orientation)
+                }
+                return
+            }
+            let liveChildren = liveContainer.children
             for child in children {
-                applyWindowWeightsFromSpine(child, parentOrientation: orientation)
+                switch child {
+                    case .window(let id, _):
+                        let liveChild = Window.get(byId: id) ?? liveChildren.first { ($0 as? Window)?.windowId == id }
+                        applyWeightsFromSpine(child, live: liveChild, parentOrientation: orientation)
+                    case .container:
+                        let childIds = Set(child.windowIds)
+                        let liveChild = liveChildren.first { node in
+                            guard let c = node as? TilingContainer else { return false }
+                            return Set(c.allLeafWindowsRecursive.map(\.windowId)) == childIds
+                        }
+                        applyWeightsFromSpine(child, live: liveChild, parentOrientation: orientation)
+                }
             }
     }
 }

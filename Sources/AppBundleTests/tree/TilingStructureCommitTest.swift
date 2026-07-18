@@ -91,6 +91,61 @@ final class TilingStructureCommitTest: XCTestCase {
         XCTAssertGreaterThan(rect!.width * rect!.height, 0)
     }
 
+    /// Nested tiling: second layout must keep first layout's adjusted weights (structureEquals
+    /// ignores weights; container weights must also be synced to live so capture stays consistent).
+    func testNestedTreeSecondLayoutKeepsAdjustedWeights() async throws {
+        let ws = focus.workspace
+        // Force a nested spine: H[ V[w1,w2], w3 ] via path-copy materialize
+        let w1 = TestWindow.new(id: 601, parent: ws.floatingWindowsContainer)
+        let w2 = TestWindow.new(id: 602, parent: ws.floatingWindowsContainer)
+        let w3 = TestWindow.new(id: 603, parent: ws.floatingWindowsContainer)
+        _ = w1; _ = w2; _ = w3
+        let nested = PersistentTilingNode.container(
+            orientation: .h,
+            layout: .tiles,
+            weight: 1,
+            children: [
+                .container(
+                    orientation: .v,
+                    layout: .tiles,
+                    weight: 1,
+                    children: [
+                        .window(id: 601, weight: 1),
+                        .window(id: 602, weight: 1),
+                    ],
+                ),
+                .window(id: 603, weight: 1),
+            ],
+        )
+        XCTAssertTrue(ws.commitTilingTransform { _ in nested })
+
+        try await ws.layoutWorkspace()
+        let gen1 = try XCTUnwrap(ws.tilingStructureGeneration)
+
+        // Second layout must reuse gen weights (structureEquals), not recapture mixed weights
+        try await ws.layoutWorkspace()
+        let gen2 = try XCTUnwrap(ws.tilingStructureGeneration)
+        XCTAssertTrue(gen1.structureEquals(gen2))
+        // Nested container weights should remain layout-adjusted (not reset to 1 via stale capture)
+        guard case .container(_, _, _, let children2) = gen2,
+              case .container(_, _, let nestedWeight, _) = children2[0]
+        else {
+            return XCTFail("expected nested container")
+        }
+        guard case .container(_, _, _, let children1) = gen1,
+              case .container(_, _, let nestedWeight1, _) = children1[0]
+        else {
+            return XCTFail("expected nested container in gen1")
+        }
+        XCTAssertEqual(nestedWeight, nestedWeight1)
+        // Live nested container weight synced for capture consistency
+        let liveNested = ws.rootTilingContainer.children.compactMap { $0 as? TilingContainer }.first
+        XCTAssertNotNil(liveNested)
+        if let liveNested, let parent = liveNested.parent as? TilingContainer {
+            XCTAssertEqual(liveNested.getWeight(parent.orientation), nestedWeight1)
+        }
+    }
+
     /// Regression: dual-link reorder with the same window set must not keep a stale spine.
     /// After layout publishes generation, swap via dual-link bind and layout again — geometry
     /// must follow the live order (not undo the swap).
