@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/zsh
 cd "$(dirname "$0")/.."
 source ./script/setup.sh
 
@@ -30,7 +30,7 @@ create-marker() {
     touch "$1"
 }
 
-if test $all == 1 || test $bundler == 1; then
+if test $all = 1 || test $bundler = 1; then
     marker=$(get-marker bundler "$(cat ./Gemfile)" "$(cat ./.bundle/*)")
     if ! test -f "$marker"; then
         bundler install
@@ -38,7 +38,7 @@ if test $all == 1 || test $bundler == 1; then
     fi
 fi
 
-if test $all == 1 || test $complgen == 1; then
+if test $all = 1 || test $complgen = 1; then
     # https://github.com/adaszko/complgen/releases
     complgen_rev=cacb3970eb
     marker=$(get-marker complgen $complgen_rev)
@@ -72,7 +72,7 @@ lazy-download-zip-and-link-bin() {
     fi
 }
 
-if test $all == 1 || test $swiftlint == 1; then
+if test $all = 1 || test $swiftlint = 1; then
     # https://github.com/realm/SwiftLint/releases
     swiftlint_version=0.63.2
     lazy-download-zip-and-link-bin \
@@ -82,7 +82,7 @@ if test $all == 1 || test $swiftlint == 1; then
         SwiftLintBinary.artifactbundle/macos/swiftlint
 fi
 
-if test $all == 1 || test $xcodegen == 1; then
+if test $all = 1 || test $xcodegen = 1; then
     # https://github.com/yonaskolb/XcodeGen/releases
     xcodegen_version=2.45.3
     lazy-download-zip-and-link-bin \
@@ -92,7 +92,7 @@ if test $all == 1 || test $xcodegen == 1; then
         xcodegen.artifactbundle/xcodegen-$xcodegen_version-macosx/bin/xcodegen
 fi
 
-if test $all == 1 || test $swiftformat == 1; then
+if test $all = 1 || test $swiftformat = 1; then
     # https://github.com/nicklockwood/SwiftFormat/releases
     swiftformat_version=0.60.1
     lazy-download-zip-and-link-bin \
@@ -102,7 +102,7 @@ if test $all == 1 || test $swiftformat == 1; then
         swiftformat.artifactbundle/swiftformat-$swiftformat_version-macos/bin/swiftformat
 fi
 
-if test $all == 1 || test $periphery == 1; then
+if test $all = 1 || test $periphery = 1; then
     # https://github.com/peripheryapp/periphery/releases
     periphery_version=3.7.2
     lazy-download-zip-and-link-bin \

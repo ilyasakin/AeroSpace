@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/zsh
 cd "$(dirname "$0")/.."
 source ./script/setup.sh
 

@@ -31,7 +31,7 @@ jobs:
       - run: env # Debug
       - uses: actions/checkout@v6
       - run: ./.github/gh-actions-runner-xcode-select.sh
-      - run: brew install swiftly bash
+      - run: brew install swiftly # build scripts are zsh-only; no bash needed
       - run: swiftly init --skip-install --assume-yes --verbose && swiftly install
       - run: swiftly run swift --version
       - run: ./build-debug.sh
@@ -51,6 +51,8 @@ jobs:
       - run: env # Debug
       - uses: actions/checkout@v6
       - run: ./.github/gh-actions-runner-xcode-select.sh
+      # bash is NOT used by the build scripts (they are zsh-only); it's only needed to
+      # syntax-check the generated bash completion artifact in build-shell-completion.sh
       - run: brew install bash fish xcbeautify swiftly
       - run: swiftly init --skip-install --assume-yes --verbose && swiftly install
       - run: swiftly run swift --version

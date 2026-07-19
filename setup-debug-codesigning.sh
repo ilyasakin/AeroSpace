@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/zsh
 # One-time setup so debug builds keep their Accessibility permission across rebuilds.
 #
 # THE PROBLEM: debug builds are ad-hoc signed, so macOS ties the Accessibility grant to the

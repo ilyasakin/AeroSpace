@@ -17,9 +17,11 @@ If you struggle to build AeroSpace locally, you can also refer to [builds in Git
 2.  Install [swiftly](https://github.com/swiftlang/swiftly).
     Swiftly is a Swift toolchain manager that will make sure that you use the same swift version as written in `.swift-version` file.
     `brew install swiftly`
-3.  If you want to build shell completion, install rust, bash and fish
+3.  If you want to build shell completion, install rust and fish
+    (the build scripts themselves are zsh-only — macOS's default shell — and never require bash;
+    Homebrew bash is only picked up, if present, to syntax-check the generated bash completion)
     -   Install Rust using rustup. https://www.rust-lang.org/tools/install
-    -   `brew install bash fish`
+    -   `brew install fish` (optionally `brew install bash` for the bash completion check)
 4.  If you want to build man pages, install Ruby >= 3.0. I recommend using [rbenv](https://github.com/rbenv/rbenv).
     -   `rbenv install 3.3.4` (or whatever 3.x version)
     -   Install asciidoctor using Ruby `bundler`. `cd AeroSpace && bundler install`

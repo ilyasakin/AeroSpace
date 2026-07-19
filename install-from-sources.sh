@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/zsh
 cd "$(dirname "$0")"
 source ./script/setup.sh
 
@@ -10,7 +10,7 @@ while test $# -gt 0; do
     esac
 done
 
-if test $rebuild == 1; then
+if test $rebuild = 1; then
     ./build-release.sh
 fi
 
