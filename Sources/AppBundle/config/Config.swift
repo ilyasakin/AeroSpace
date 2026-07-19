@@ -58,6 +58,7 @@ struct Config: ConvenienceMutable {
     var keyMapping = KeyMapping()
     var execConfig: ExecConfig = ExecConfig()
     var focusFollowsMouse: FocusFollowsMouse = FocusFollowsMouse()
+    var floating: FloatingConfig = FloatingConfig()
 
     var onFocusChanged: Shell<any Command> = .empty
     // var onFocusedWorkspaceChanged: [any Command] = []
@@ -75,6 +76,15 @@ struct Config: ConvenienceMutable {
 
 struct FocusFollowsMouse: ConvenienceMutable {
     var enabled: Bool = false
+}
+
+/// Floating-window interaction (SIP-on approximations of i3 float layer).
+struct FloatingConfig: ConvenienceMutable {
+    /// Experimental: CGEventTap intercepts clicks on *exposed* tiling windows when the
+    /// workspace has floats, applies private focus-without-raise, and redelivers the click
+    /// to the target app so macOS does not raise the tile over floats.
+    /// Only affects clicks where the topmost window under the cursor is a managed tile.
+    var clickWithoutRaise: Bool = true
 }
 
 enum ConfigVersion: Int, Comparable, CaseIterable, Sendable, CustomStringConvertible {

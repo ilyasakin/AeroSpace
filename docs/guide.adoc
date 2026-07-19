@@ -424,6 +424,34 @@ The floating window parent container is determined as the smallest tiling contai
 
 This technique eliminates the need for an additional binding for focusing floating windows.
 
+==== i3-like floating focus (SIP stays on)
+
+AeroSpace aims for i3-like floating **without** disabling SIP or installing a Dock
+scripting addition.
+
+* **Keyboard / focus-follows-mouse:** when floats exist, focusing a tile uses private
+  focus-without-raise (`_SLPSSetFrontProcessWithOptions` + key-window events). The tile
+  gets keyboard focus **without** `AXRaise`, so AeroSpace does not sink the float.
+* **Float toggle:** becoming floating raises the window once above the tiling stack.
+* **Click (experimental):** when `floating.click-without-raise` is enabled (default),
+  AeroSpace installs a session `CGEventTap` that intercepts left-clicks where the
+  *topmost* window under the cursor is an exposed tiling window and the workspace has
+  floats. The system raise-on-click is swallowed; private focus-without-raise runs;
+  the click is redelivered to the target app. Clicks on floating windows pass through
+  normally. Requires Accessibility (and may need Input Monitoring on some macOS versions).
+* **Manual recovery:** xref:commands.adoc#raise-floating[raise-floating] puts floats
+  back above tiling after Mission Control or other external reorders.
+
+Disable click intercept:
+
+[source,toml]
+----
+[floating]
+click-without-raise = false
+----
+
+Do *not* use always-on-top as a substitute for floating.
+
 [#emulation-of-virtual-workspaces]
 == Emulation of virtual workspaces
 
