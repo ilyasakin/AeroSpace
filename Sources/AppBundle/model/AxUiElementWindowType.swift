@@ -48,6 +48,13 @@ extension AxUiElementMock {
             return .popup
         }
 
+        // Sheets are glued to their parent window (~ WM_TRANSIENT_FOR): buttonless yet resizable,
+        // so without this check they fall through every branch below to .window and reserve an
+        // empty tile next to the parent (Electron file pickers open NSOpenPanel as a sheet)
+        if get(Ax.roleAttr) == kAXSheetRole {
+            return .dialog
+        }
+
         // Accessory apps (no Dock icon) provide panel-like windows:
         // buttonless ones are popups (e.g. Raycast, zebar), buttoned ones are floating dialogs
         // (e.g. "About This Mac", NoMachine)

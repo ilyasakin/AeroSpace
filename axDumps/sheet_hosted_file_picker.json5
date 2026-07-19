@@ -1,0 +1,57 @@
+{
+  "AXCancelButton" : null,
+  "AXDefaultButton" : null,
+  "AXDescription" : "open",
+  "AXFocused" : 0,
+  "AXFrame" : "<AXValue 0xa74669dc0> {value = x:1476.000000 y:507.000000 w:880.000000 h:448.000000 type = kAXValueCGRectType}",
+  "AXGrowArea" : null,
+  "AXIdentifier" : "open-panel",
+  "AXParent" : "AXUIElement(AxWindowId=92382, title=\"SheetHost\", role=\"AXWindow\", subrole=\"AXStandardWindow\")",
+  "AXPosition" : "<AXValue 0xa7242d170> {value = x:1476.000000 y:507.000000 type = kAXValueCGPointType}",
+  "AXRole" : "AXSheet",
+  "AXSections" : null,
+  "AXSize" : "<AXValue 0xa7242d170> {value = w:880.000000 h:448.000000 type = kAXValueCGSizeType}",
+  "AXWindow" : "AXUIElement(AxWindowId=92382, title=\"SheetHost\", role=\"AXWindow\", subrole=\"AXStandardWindow\")",
+  "Aero.AXApp" : {
+    "AXExtrasMenuBar" : null,
+    "AXFocusedUIElement" : "AXUIElement(AxWindowId=92389, title=nil, role=\"AXList\", subrole=nil)",
+    "AXFocusedWindow" : "AXUIElement(AxWindowId=92388, title=nil, role=\"AXSheet\", subrole=nil)",
+    "AXFrame" : null,
+    "AXFrontmost" : 1,
+    "AXFunctionRowTopLevelElements" : [
+
+    ],
+    "AXMainWindow" : "AXUIElement(AxWindowId=92382, title=\"SheetHost\", role=\"AXWindow\", subrole=\"AXStandardWindow\")",
+    "AXMenuBar" : "<AXUIElement 0xa72864f00> {pid=60357}",
+    "AXPosition" : null,
+    "AXRole" : "AXApplication",
+    "AXSize" : null,
+    "AXTitle" : "sheethost",
+    "AXWindows" : [
+      "AXUIElement(AxWindowId=92382, title=\"SheetHost\", role=\"AXWindow\", subrole=\"AXStandardWindow\")"
+    ],
+    "Aero.AxFailed" : "isWritable.AXFunctionRowTopLevelElements(failure), get.AXFrame(attributeUnsupported), isWritable.AXFrame(failure), get.AXExtrasMenuBar(noValue), isWritable.AXExtrasMenuBar(failure), get.AXSize(attributeUnsupported), isWritable.AXSize(attributeUnsupported), get.AXPosition(attributeUnsupported), isWritable.AXPosition(attributeUnsupported)",
+    "Aero.AxIgnored" : "AXChildren, AXChildrenInNavigationOrder, AXEnhancedUserInterface, AXPreferredLanguage, AXRoleDescription, AXHidden",
+    "Aero.AxWritable" : "AXFrontmost"
+  },
+  "Aero.App.appBundleId" : null,
+  "Aero.App.nsApp.activationPolicy" : "regular",
+  "Aero.App.nsApp.appBundlePath" : "file:///private/tmp/claude-501/-Users-ilyasakin-development-AeroSpace/d3a8a649-561d-450d-bf7f-eb068bb837e9/scratchpad/sheethost/",
+  "Aero.App.nsApp.execPath" : "file:///private/tmp/claude-501/-Users-ilyasakin-development-AeroSpace/d3a8a649-561d-450d-bf7f-eb068bb837e9/scratchpad/sheethost",
+  "Aero.App.pid" : 60357,
+  "Aero.App.version" : null,
+  "Aero.App.versionShort" : null,
+  "Aero.AxFailed" : "isWritable.AXFrame(failure), get.AXGrowArea(failure), get.AXDefaultButton(noValue), get.AXCancelButton(noValue), get.AXSections(failure)",
+  "Aero.AxIgnored" : "AXChildren, AXChildrenInNavigationOrder, AXRoleDescription",
+  "Aero.AxUiElementWindowType" : "dialog",
+  "Aero.AxWritable" : "AXSize, AXPosition, AXSections",
+  "Aero.axWindowId" : 92388,
+  "Aero.macOS.version" : "Version 26.5.1 (Build 25F80)",
+  "Aero.matchedWindowDetectionRule" : null,
+  "Aero.on-window-detected" : [
+
+  ],
+  "Aero.treeNodeParent" : "Optional(AppBundle.TilingContainer)",
+  "Aero.windowLevel" : "normalWindow",
+  "Aero.workspace" : "1"
+}
