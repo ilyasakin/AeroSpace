@@ -35,6 +35,13 @@ final class TestWindow: Window, CustomStringConvertible {
         TestApp.shared.focusedWindow = self
     }
 
+    /// Records awaited raises (float-layer settle ordering tests).
+    @MainActor static var onNativeRaiseAndWait: ((UInt32) -> Void)? = nil
+
+    @MainActor override func nativeRaiseAndWait() async {
+        TestWindow.onNativeRaiseAndWait?(windowId)
+    }
+
     override func closeAxWindow() {
         unbindFromParent()
     }

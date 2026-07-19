@@ -142,6 +142,10 @@ final class MacWindow: Window {
         macApp.raiseWindow(windowId)
     }
 
+    @MainActor override func nativeRaiseAndWait() async {
+        await macApp.raiseWindowAndWait(windowId)
+    }
+
     override func closeAxWindow() {
         garbageCollect(skipClosedWindowsCache: true)
         macApp.closeAndUnregisterAxWindow(windowId)

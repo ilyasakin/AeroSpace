@@ -186,6 +186,25 @@ final class MacApp: AbstractApp {
         }
     }
 
+    /// Like `raiseWindow`, but returns only after the app has processed the AXRaise.
+    /// Ordering-sensitive callers (float-layer settle) must post make-key strictly *after*
+    /// the raise — `withWindowAsync` fire-and-forget cannot guarantee that.
+    func raiseWindowAndWait(_ windowId: UInt32) async {
+        if serverArgs.isReadOnly { return }
+        _ = try? await withWindow(windowId, .cancellable) { window, _ in
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        }
+    }
+
+    /// Mark the window as main/key for AppKit without AXRaise (float layer must stay on top).
+    @MainActor
+    func setMainWithoutRaise(_ windowId: UInt32) {
+        if serverArgs.isReadOnly { return }
+        _ = withWindowAsync(windowId, .cancellable) { window, job in
+            window.set(Ax.isMainAttr, true)
+        }
+    }
+
     func setAxFrame(_ windowId: UInt32, _ topLeft: CGPoint?, _ size: CGSize?) {
         setFrameJobs.removeValue(forKey: windowId)?.cancel()
         setFrameJobs[windowId] = withWindowAsync(windowId, .cancellable) { [axApp] window, job in

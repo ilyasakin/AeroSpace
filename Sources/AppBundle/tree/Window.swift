@@ -73,6 +73,9 @@ open class Window: TreeNode, Hashable {
 
     /// Raise the window to the top of the z-order without focusing it. Best-effort
     @MainActor func nativeRaise() {}
+    /// Like `nativeRaise`, but returns only after the app has processed the raise —
+    /// required when a make-key must be ordered strictly after it (float-layer settle).
+    @MainActor func nativeRaiseAndWait() async { nativeRaise() }
     func getAxRect(_ cm: CancellationMode) async throws -> Rect? { die("Not implemented") }
     func getCenter(_ cm: CancellationMode) async throws -> CGPoint? { try await getAxRect(cm)?.center }
 

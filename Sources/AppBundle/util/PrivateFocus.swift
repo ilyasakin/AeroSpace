@@ -9,6 +9,8 @@ enum PrivateFocus {
     nonisolated(unsafe) private static var lastFocusedPsn: ProcessSerialNumberBits?
     nonisolated(unsafe) private static var lastFocusedWindowId: UInt32?
     nonisolated(unsafe) static var sleepMicroseconds: (useconds_t) -> Void = { usleep($0) }
+    /// Async gap for key transfers off the tap callback (never stalls the main run loop).
+    nonisolated(unsafe) static var asyncSleepNanoseconds: (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) }
     nonisolated(unsafe) static var onPostEvent: (([UInt8]) -> Void)?
 
     static func resetFocusTrackingForTests() {
@@ -35,19 +37,64 @@ enum PrivateFocus {
         return true
     }
 
+    /// Default gap between same-app unfocus/focus SLPS events (yabai).
+    static let sameAppSwitchGapMicroseconds: useconds_t = 40000
+
+    /// Last window id we told SLPS was key (for same-app 0x0d). Tests/click path may read.
+    static var trackedKeyWindowId: UInt32? { unsafe lastFocusedWindowId }
+
     @discardableResult
     static func focusWithoutRaise(
         pid: pid_t,
         windowId: UInt32,
         fallbackPreviousKeyWindowId: UInt32? = nil,
+        /// When set and ≠ `windowId`, always run the same-app 0x0d unfocus→focus dance from
+        /// this id (even if tracking already points at `windowId`). Needed when AXRaise on a
+        /// float steals key back after we already updated tracking to the tile.
+        forcePreviousKeyWindowId: UInt32? = nil,
+        /// Same-app 0x0d gap. Use `0` on CGEventTap paths (must not block the tap).
+        sameAppGapMicroseconds: useconds_t = sameAppSwitchGapMicroseconds,
     ) -> Bool {
-        guard let impl else { return false }
+        guard let prepared = prepareFocusWithoutRaise(
+            pid: pid,
+            windowId: windowId,
+            fallbackPreviousKeyWindowId: fallbackPreviousKeyWindowId,
+            forcePreviousKeyWindowId: forcePreviousKeyWindowId,
+        ) else { return false }
+        if let switchPair = prepared.sameAppSwitch {
+            postSameAppKeySwitch(
+                psn: prepared.psn,
+                fromWindowId: switchPair.from,
+                toWindowId: switchPair.to,
+                postEvent: prepared.postEvent,
+                gapMicroseconds: sameAppGapMicroseconds,
+            )
+        }
+        finishFocusWithoutRaise(prepared)
+        return true
+    }
+
+    private struct PreparedFocus {
+        var psn: ProcessSerialNumberBits
+        var windowId: UInt32
+        var setFrontProcess: SetFrontProcessFun
+        var postEvent: PostEventFun
+        var sameAppSwitch: (from: UInt32, to: UInt32)?
+    }
+
+    private static func prepareFocusWithoutRaise(
+        pid: pid_t,
+        windowId: UInt32,
+        fallbackPreviousKeyWindowId: UInt32?,
+        forcePreviousKeyWindowId: UInt32? = nil,
+    ) -> PreparedFocus? {
+        guard let impl else { return nil }
         var psn = ProcessSerialNumberBits()
         let st = withUnsafeMutableBytes(of: &psn) { raw -> Int32 in
             guard let base = raw.baseAddress else { return -1 }
             return impl.getProcessForPID(pid, base)
         }
-        guard st == 0 else { return false }
+        guard st == 0 else { return nil }
 
         let frontPsn: ProcessSerialNumberBits? = {
             guard let getFront = impl.getFrontProcess else { return nil }
@@ -60,17 +107,84 @@ enum PrivateFocus {
         }()
 
         let sameApp = psnEquals(psn, unsafe lastFocusedPsn) || psnEquals(psn, frontPsn)
-        if sameApp {
+        var switchPair: (from: UInt32, to: UInt32)?
+        if let forced = forcePreviousKeyWindowId, forced != windowId {
+            // Caller knows OS key is still on `forced` (e.g. float after AXRaise).
+            switchPair = (forced, windowId)
+        } else if sameApp {
             let fromId = unsafe lastFocusedWindowId ?? fallbackPreviousKeyWindowId
             if let fromId, fromId != windowId {
-                postSameAppKeySwitch(psn: psn, fromWindowId: fromId, toWindowId: windowId, postEvent: impl.postEvent)
+                switchPair = (fromId, windowId)
             }
         }
+        return PreparedFocus(
+            psn: psn,
+            windowId: windowId,
+            setFrontProcess: impl.setFrontProcess,
+            postEvent: impl.postEvent,
+            sameAppSwitch: switchPair,
+        )
+    }
 
+    private static func finishFocusWithoutRaise(_ prepared: PreparedFocus) {
         let kCPSUserGenerated: UInt32 = 0x200
-        _ = withUnsafeBytes(of: psn) { raw in
-            impl.setFrontProcess(raw.baseAddress!, windowId, kCPSUserGenerated)
+        _ = withUnsafeBytes(of: prepared.psn) { raw in
+            _ = prepared.setFrontProcess(raw.baseAddress!, prepared.windowId, kCPSUserGenerated)
         }
+        makeKeyWindow(psn: prepared.psn, windowId: prepared.windowId, postEvent: prepared.postEvent)
+        unsafe lastFocusedPsn = prepared.psn
+        unsafe lastFocusedWindowId = prepared.windowId
+    }
+
+    /// Key transfer to run **after** floats were `AXRaise`d (the raise moves key to the float
+    /// when its app is frontmost). Same-app: yabai 0x0d unfocus(float) → 40ms async gap →
+    /// focus(tile), then make-key. Cross-app floats don't steal key, so make-key alone suffices
+    /// (pass `fromSameAppWindowId: nil`). Never calls `_SLPSSetFrontProcessWithOptions` — that
+    /// restacks the tile above the floats.
+    @discardableResult
+    static func transferKeyAfterFloatRaise(
+        pid: pid_t,
+        toWindowId: UInt32,
+        fromSameAppWindowId: UInt32?,
+    ) async -> Bool {
+        guard let impl else { return false }
+        var psn = ProcessSerialNumberBits()
+        let st = withUnsafeMutableBytes(of: &psn) { raw -> Int32 in
+            guard let base = raw.baseAddress else { return -1 }
+            return impl.getProcessForPID(pid, base)
+        }
+        guard st == 0 else { return false }
+        if let fromId = fromSameAppWindowId, fromId != toWindowId {
+            postEventBytes(
+                sameAppSwitchEventBytes(fromWindowId: fromId, toWindowId: toWindowId, phase: .unfocusPrevious),
+                psn: psn,
+                postEvent: impl.postEvent,
+            )
+            await asyncSleepNanoseconds(UInt64(sameAppSwitchGapMicroseconds) * 1000)
+            postEventBytes(
+                sameAppSwitchEventBytes(fromWindowId: fromId, toWindowId: toWindowId, phase: .focusNext),
+                psn: psn,
+                postEvent: impl.postEvent,
+            )
+        }
+        makeKeyWindow(psn: psn, windowId: toWindowId, postEvent: impl.postEvent)
+        unsafe lastFocusedPsn = psn
+        unsafe lastFocusedWindowId = toWindowId
+        return true
+    }
+
+    /// Re-assert key window only (SLPS make-key events). Does **not** call
+    /// `_SLPSSetFrontProcessWithOptions`, which can restack the window above floats.
+    /// Use after `AXRaise` on floats when the tile must stay key but floats must stay on top.
+    @discardableResult
+    static func makeKeyOnly(pid: pid_t, windowId: UInt32) -> Bool {
+        guard let impl else { return false }
+        var psn = ProcessSerialNumberBits()
+        let st = withUnsafeMutableBytes(of: &psn) { raw -> Int32 in
+            guard let base = raw.baseAddress else { return -1 }
+            return impl.getProcessForPID(pid, base)
+        }
+        guard st == 0 else { return false }
         makeKeyWindow(psn: psn, windowId: windowId, postEvent: impl.postEvent)
         unsafe lastFocusedPsn = psn
         unsafe lastFocusedWindowId = windowId
@@ -78,15 +192,15 @@ enum PrivateFocus {
     }
 
     static func sameAppSwitchEventBytes(fromWindowId: UInt32, toWindowId: UInt32, phase: SameAppPhase) -> [UInt8] {
-        var bytes = [UInt8](repeating: 0, count: 0xf8)
-        bytes[0x04] = 0xf8
-        bytes[0x08] = 0x0d
+        var bytes = [UInt8](repeating: 0, count: 0xF8)
+        bytes[0x04] = 0xF8
+        bytes[0x08] = 0x0D
         switch phase {
             case .unfocusPrevious:
-                bytes[0x8a] = 0x02
+                bytes[0x8A] = 0x02
                 writeWindowId(&bytes, fromWindowId)
             case .focusNext:
-                bytes[0x8a] = 0x01
+                bytes[0x8A] = 0x01
                 writeWindowId(&bytes, toWindowId)
         }
         return bytes
@@ -148,7 +262,7 @@ enum PrivateFocus {
 
     private static func writeWindowId(_ bytes: inout [UInt8], _ windowId: UInt32) {
         withUnsafeBytes(of: windowId.littleEndian) { raw in
-            for i in 0 ..< 4 { bytes[0x3c + i] = raw[i] }
+            for i in 0 ..< 4 { bytes[0x3C + i] = raw[i] }
         }
     }
 
@@ -167,13 +281,16 @@ enum PrivateFocus {
         fromWindowId: UInt32,
         toWindowId: UInt32,
         postEvent: PostEventFun,
+        gapMicroseconds: useconds_t = sameAppSwitchGapMicroseconds,
     ) {
         postEventBytes(
             sameAppSwitchEventBytes(fromWindowId: fromWindowId, toWindowId: toWindowId, phase: .unfocusPrevious),
             psn: psn,
             postEvent: postEvent,
         )
-        sleepMicroseconds(40_000)
+        if gapMicroseconds > 0 {
+            sleepMicroseconds(gapMicroseconds)
+        }
         postEventBytes(
             sameAppSwitchEventBytes(fromWindowId: fromWindowId, toWindowId: toWindowId, phase: .focusNext),
             psn: psn,
@@ -182,11 +299,11 @@ enum PrivateFocus {
     }
 
     private static func makeKeyWindow(psn: ProcessSerialNumberBits, windowId: UInt32, postEvent: PostEventFun) {
-        var bytes = [UInt8](repeating: 0, count: 0xf8)
-        bytes[0x04] = 0xf8
-        bytes[0x3a] = 0x10
+        var bytes = [UInt8](repeating: 0, count: 0xF8)
+        bytes[0x04] = 0xF8
+        bytes[0x3A] = 0x10
         writeWindowId(&bytes, windowId)
-        for i in 0x20 ..< 0x30 { bytes[i] = 0xff }
+        for i in 0x20 ..< 0x30 { bytes[i] = 0xFF }
         bytes[0x08] = 0x01
         postEventBytes(bytes, psn: psn, postEvent: postEvent)
         bytes[0x08] = 0x02
