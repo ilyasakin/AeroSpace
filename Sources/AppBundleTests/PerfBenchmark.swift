@@ -98,43 +98,28 @@ final class PerfBenchmark: XCTestCase {
     /// buffers). Target: **nanoseconds** per event for pure math (not µs from Set/Array alloc).
     func testWindowBordersHotPaths() {
         let borderCount = 20
-        let stackExtra = 80
         let width = 4
 
         // Grid of bordered windows (visible tiles)
         var borderRegions: [(id: UInt32, region: Rect)] = []
         borderRegions.reserveCapacity(borderCount)
-        var stack: [(id: UInt32, rect: Rect)] = []
-        stack.reserveCapacity(borderCount + stackExtra)
-        var managedIds = Set<UInt32>()
         for i in 0 ..< borderCount {
             let id = UInt32(i)
             let rect = Rect(topLeftX: CGFloat(i % 5) * 400, topLeftY: CGFloat(i / 5) * 300,
                             width: 380, height: 280)
             borderRegions.append((id, WindowBordersMath.region(rect: rect, width: width)))
-            stack.append((id, rect))
-            managedIds.insert(id)
         }
-        // Non-managed on-screen windows (menus, other apps, etc.)
-        for i in 0 ..< stackExtra {
-            let id = UInt32(1000 + i)
-            stack.append((id, Rect(topLeftX: CGFloat(i) * 20, topLeftY: 900, width: 15, height: 15)))
-        }
-        var stackIndex: [UInt32: Int] = [:]
-        for (i, item) in stack.enumerated() { stackIndex[item.id] = i }
 
         let farOld = Rect(topLeftX: 5000, topLeftY: 5000, width: 50, height: 50)
         let farNew = Rect(topLeftX: 5050, topLeftY: 5050, width: 50, height: 50)
         let dragId: UInt32 = 3
-        let dragOld = stack[Int(dragId)].rect
+        let dragOld = borderRegions[Int(dragId)].region
         let dragNew = Rect(topLeftX: dragOld.topLeftX + 12, topLeftY: dragOld.topLeftY + 8,
                            width: dragOld.width, height: dragOld.height)
 
-        // Warm reusable buffers (mirrors WindowBordersManager)
+        // Warm reusable buffers (mirrors WindowBordersManager dirty tracking)
         var dirtyScratch = ContiguousArray<UInt32>()
         dirtyScratch.reserveCapacity(16)
-        var occScratch = ContiguousArray<Rect>()
-        occScratch.reserveCapacity(8)
 
         time("borders.overlapsAny (miss, 20 borders)", iterations: 1_000_000) {
             _ = WindowBordersMath.overlapsAnyBorder(regions: borderRegions, rect: farNew)
@@ -165,55 +150,5 @@ final class PerfBenchmark: XCTestCase {
             )
         }
 
-        // Full occlusion pass for every bordered window (worst-case full redraw math)
-        time("borders.collectOccluders (all 20, stack=100, zero-heap)", iterations: 100_000) {
-            var n = 0
-            for i in 0 ..< borderCount {
-                let id = UInt32(i)
-                WindowBordersMath.collectOccluders(
-                    id: id,
-                    region: borderRegions[i].region,
-                    isActive: id == 0,
-                    activeId: 0,
-                    activeRect: stack[0].rect,
-                    stack: stack,
-                    stackIndex: stackIndex[id],
-                    managedIds: managedIds,
-                    into: &occScratch,
-                )
-                n += occScratch.count
-            }
-            XCTAssertGreaterThanOrEqual(n, 0)
-        }
-
-        // Incremental: only dirty set from a drag (typical live path after coalesce)
-        time("borders.dirty+occluders (drag≈few borders, zero-heap)", iterations: 500_000) {
-            dirtyScratch.removeAll(keepingCapacity: true)
-            WindowBordersMath.appendAffectedBorderIds(
-                mover: dragId,
-                moverIsBordered: true,
-                borderRegions: borderRegions,
-                oldRect: dragOld,
-                newRect: dragNew,
-                into: &dirtyScratch,
-            )
-            var n = 0
-            for id in dirtyScratch {
-                let idx = Int(id)
-                WindowBordersMath.collectOccluders(
-                    id: id,
-                    region: borderRegions[idx].region,
-                    isActive: id == 0,
-                    activeId: 0,
-                    activeRect: stack[0].rect,
-                    stack: stack,
-                    stackIndex: stackIndex[id],
-                    managedIds: managedIds,
-                    into: &occScratch,
-                )
-                n += occScratch.count
-            }
-            XCTAssertGreaterThanOrEqual(n, 0)
-        }
     }
 }
