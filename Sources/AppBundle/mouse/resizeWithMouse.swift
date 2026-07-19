@@ -37,7 +37,7 @@ enum MouseResizeDriver {
         guard currentlyManipulatedWithMouseWindowId == windowId,
               let window = Window.get(byId: windowId),
               mouseResizePhysicalBaselineIfSet(for: window) != nil
-                || window.lastAppliedLayoutPhysicalRect != nil
+              || window.lastAppliedLayoutPhysicalRect != nil
         else { return }
         kick(window)
     }

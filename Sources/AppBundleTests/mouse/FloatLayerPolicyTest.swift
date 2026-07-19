@@ -118,26 +118,26 @@ final class FloatLayerPolicyTest: XCTestCase {
             toWindowId: 0x1122_3344,
             phase: .unfocusPrevious,
         )
-        XCTAssertEqual(unfocus[0x04], 0xf8)
-        XCTAssertEqual(unfocus[0x08], 0x0d)
-        XCTAssertEqual(unfocus[0x8a], 0x02)
+        XCTAssertEqual(unfocus[0x04], 0xF8)
+        XCTAssertEqual(unfocus[0x08], 0x0D)
+        XCTAssertEqual(unfocus[0x8A], 0x02)
         // little-endian window id at 0x3c
-        XCTAssertEqual(unfocus[0x3c], 0xDD)
-        XCTAssertEqual(unfocus[0x3d], 0xCC)
-        XCTAssertEqual(unfocus[0x3e], 0xBB)
-        XCTAssertEqual(unfocus[0x3f], 0xAA)
+        XCTAssertEqual(unfocus[0x3C], 0xDD)
+        XCTAssertEqual(unfocus[0x3D], 0xCC)
+        XCTAssertEqual(unfocus[0x3E], 0xBB)
+        XCTAssertEqual(unfocus[0x3F], 0xAA)
 
         let focusNext = PrivateFocus.sameAppSwitchEventBytes(
             fromWindowId: 0xAABB_CCDD,
             toWindowId: 0x1122_3344,
             phase: .focusNext,
         )
-        XCTAssertEqual(focusNext[0x08], 0x0d)
-        XCTAssertEqual(focusNext[0x8a], 0x01)
-        XCTAssertEqual(focusNext[0x3c], 0x44)
-        XCTAssertEqual(focusNext[0x3d], 0x33)
-        XCTAssertEqual(focusNext[0x3e], 0x22)
-        XCTAssertEqual(focusNext[0x3f], 0x11)
+        XCTAssertEqual(focusNext[0x08], 0x0D)
+        XCTAssertEqual(focusNext[0x8A], 0x01)
+        XCTAssertEqual(focusNext[0x3C], 0x44)
+        XCTAssertEqual(focusNext[0x3D], 0x33)
+        XCTAssertEqual(focusNext[0x3E], 0x22)
+        XCTAssertEqual(focusNext[0x3F], 0x11)
     }
 
     /// Second focusWithoutRaise on the same process must run the 0x0d dance + 40ms delay
@@ -167,19 +167,19 @@ final class FloatLayerPolicyTest: XCTestCase {
 
         // Second window of same app — yabai same-app branch.
         XCTAssertTrue(PrivateFocus.focusWithoutRaise(pid: pid, windowId: 9002))
-        XCTAssertEqual(slept, [40_000], "same-app switch must delay 40ms between 0x0d events")
+        XCTAssertEqual(slept, [40000], "same-app switch must delay 40ms between 0x0d events")
 
         let newEvents = Array(events.dropFirst(afterFirst))
-        let unfocus = newEvents.first { $0.count > 0x8a && $0[0x08] == 0x0d && $0[0x8a] == 0x02 }
-        let refocus = newEvents.first { $0.count > 0x8a && $0[0x08] == 0x0d && $0[0x8a] == 0x01 }
+        let unfocus = newEvents.first { $0.count > 0x8A && $0[0x08] == 0x0D && $0[0x8A] == 0x02 }
+        let refocus = newEvents.first { $0.count > 0x8A && $0[0x08] == 0x0D && $0[0x8A] == 0x01 }
         XCTAssertNotNil(unfocus, "must post 0x0d unfocus previous key window")
         XCTAssertNotNil(refocus, "must post 0x0d focus next key window")
         // previous id 9001 little-endian at 0x3c
-        XCTAssertEqual(unfocus![0x3c], UInt8(9001 & 0xff))
-        XCTAssertEqual(unfocus![0x3d], UInt8((9001 >> 8) & 0xff))
+        XCTAssertEqual(unfocus![0x3C], UInt8(9001 & 0xFF))
+        XCTAssertEqual(unfocus![0x3D], UInt8((9001 >> 8) & 0xFF))
         // next id 9002
-        XCTAssertEqual(refocus![0x3c], UInt8(9002 & 0xff))
-        XCTAssertEqual(refocus![0x3d], UInt8((9002 >> 8) & 0xff))
+        XCTAssertEqual(refocus![0x3C], UInt8(9002 & 0xFF))
+        XCTAssertEqual(refocus![0x3D], UInt8((9002 >> 8) & 0xFF))
     }
 
     /// Production path: float focused with raise:true (seeds via noteKeyWindow only — no
@@ -211,17 +211,17 @@ final class FloatLayerPolicyTest: XCTestCase {
 
         // Same-app tile under float: focusWithoutRaise with tracking seeded only by noteKeyWindow.
         XCTAssertTrue(PrivateFocus.focusWithoutRaise(pid: pid, windowId: tileId))
-        XCTAssertEqual(slept, [40_000])
+        XCTAssertEqual(slept, [40000])
 
-        let unfocus = events.first { $0.count > 0x8a && $0[0x08] == 0x0d && $0[0x8a] == 0x02 }
-        let refocus = events.first { $0.count > 0x8a && $0[0x08] == 0x0d && $0[0x8a] == 0x01 }
+        let unfocus = events.first { $0.count > 0x8A && $0[0x08] == 0x0D && $0[0x8A] == 0x02 }
+        let refocus = events.first { $0.count > 0x8A && $0[0x08] == 0x0D && $0[0x8A] == 0x01 }
         XCTAssertNotNil(unfocus, "0x0d unfocus must run after raise:true float seed")
         XCTAssertNotNil(refocus, "0x0d focus tile must run")
         // fromId must be the float
-        XCTAssertEqual(unfocus![0x3c], UInt8(floatId & 0xff))
-        XCTAssertEqual(unfocus![0x3d], UInt8((floatId >> 8) & 0xff))
-        XCTAssertEqual(refocus![0x3c], UInt8(tileId & 0xff))
-        XCTAssertEqual(refocus![0x3d], UInt8((tileId >> 8) & 0xff))
+        XCTAssertEqual(unfocus![0x3C], UInt8(floatId & 0xFF))
+        XCTAssertEqual(unfocus![0x3D], UInt8((floatId >> 8) & 0xFF))
+        XCTAssertEqual(refocus![0x3C], UInt8(tileId & 0xFF))
+        XCTAssertEqual(refocus![0x3D], UInt8((tileId >> 8) & 0xFF))
     }
 
     /// After raise:true float focus, MacApp seeds noteKeyWindow then may only have
@@ -255,11 +255,11 @@ final class FloatLayerPolicyTest: XCTestCase {
                 fallbackPreviousKeyWindowId: 8001,
             ),
         )
-        XCTAssertEqual(slept, [40_000])
-        let unfocus = events.first { $0.count > 0x8a && $0[0x08] == 0x0d && $0[0x8a] == 0x02 }
+        XCTAssertEqual(slept, [40000])
+        let unfocus = events.first { $0.count > 0x8A && $0[0x08] == 0x0D && $0[0x8A] == 0x02 }
         XCTAssertNotNil(unfocus)
-        XCTAssertEqual(unfocus![0x3c], UInt8(8001 & 0xff))
-        XCTAssertEqual(unfocus![0x3d], UInt8((8001 >> 8) & 0xff))
+        XCTAssertEqual(unfocus![0x3C], UInt8(8001 & 0xFF))
+        XCTAssertEqual(unfocus![0x3D], UInt8((8001 >> 8) & 0xFF))
     }
 }
 

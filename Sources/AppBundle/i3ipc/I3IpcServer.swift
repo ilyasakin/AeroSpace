@@ -170,9 +170,8 @@ func i3IpcBroadcastWorkspaceEvent(change: String, currentName: String, oldName: 
 @MainActor
 func i3IpcBroadcastWindowEvent(change: String, windowId: UInt32?, workspace: String) {
     i3IpcTestEventOrderSink?("window")
-    let container: [String: Any]
-    if let windowId {
-        container = [
+    let container: [String: Any] = if let windowId {
+        [
             "id": Int(windowId),
             "type": "con",
             "name": workspace,
@@ -181,7 +180,7 @@ func i3IpcBroadcastWindowEvent(change: String, windowId: UInt32?, workspace: Str
         ]
     } else {
         // Empty workspace focus — no X11 window; still emit a minimal container so clients don't NPE.
-        container = [
+        [
             "id": NSNull(),
             "type": "workspace",
             "name": workspace,

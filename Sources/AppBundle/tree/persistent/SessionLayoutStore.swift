@@ -268,8 +268,8 @@ private struct SessionLayoutDTO: Codable {
     }
 }
 
-private extension SessionLayoutDTO.NodeDTO {
-    init(_ node: PersistentTilingNode) {
+extension SessionLayoutDTO.NodeDTO {
+    fileprivate init(_ node: PersistentTilingNode) {
         switch node {
             case .window(let id, let weight):
                 self = .window(id: id, weight: Double(weight))
@@ -283,7 +283,7 @@ private extension SessionLayoutDTO.NodeDTO {
         }
     }
 
-    func toNode() -> PersistentTilingNode {
+    fileprivate func toNode() -> PersistentTilingNode {
         switch self {
             case .window(let id, let weight):
                 return .window(id: id, weight: CGFloat(weight))

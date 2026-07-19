@@ -209,7 +209,7 @@ final class SystemCornerRadiusProbes {
     private enum ProbeStyle { case plain, toolbar, utility }
 
     private func makeProbeWindow(style: ProbeStyle) -> NSWindow {
-        let rect = NSRect(x: -10_000, y: -10_000, width: 400, height: 300)
+        let rect = NSRect(x: -10000, y: -10000, width: 400, height: 300)
         let mask: NSWindow.StyleMask
         let window: NSWindow
         switch style {

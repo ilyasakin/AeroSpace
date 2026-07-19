@@ -92,18 +92,17 @@ enum WindowBordersMath {
         stackCount: Int,
         stackIndex: Int?,
     ) -> CGFloat {
-        let stackRank: CGFloat
-        if let stackIndex, stackCount > 0 {
+        let stackRank: CGFloat = if let stackIndex, stackCount > 0 {
             // Front of stack (index 0) → higher rank among peers.
-            stackRank = CGFloat(stackCount - stackIndex)
+            CGFloat(stackCount - stackIndex)
         } else {
-            stackRank = 0
+            0
         }
         if floatingIds.contains(id) {
-            return 2_000 + stackRank
+            return 2000 + stackRank
         }
         if id == activeId {
-            return 1_000 + stackRank
+            return 1000 + stackRank
         }
         return stackRank
     }

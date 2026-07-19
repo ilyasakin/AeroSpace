@@ -861,8 +861,8 @@ func statusBarHexFromComponents(r: Int, g: Int, b: Int, a: Int = 255) -> String 
     return String(format: "#%02X%02X%02X%02X", r, g, b, a)
 }
 
-private extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
+extension Comparable {
+    fileprivate func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)
     }
 }
