@@ -36,6 +36,7 @@ let subcommandDescriptions = [
     ["  move-to", "Place a floating window at an absolute top-left position"],
     ["  move-workspace-to-monitor", "Move workspace to monitor targeted by relative direction, by order, or by pattern."],
     ["  move", "Move the focused window in the given direction"],
+    ["  raise-floating", "Raise floating windows above the tiling stack (i3-like float layer recovery)"],
     ["  reload-config", "Reload currently active config"],
     ["  resize-to", "Set absolute pixel size of the focused/target window"],
     ["  resize", "Resize the focused window"],

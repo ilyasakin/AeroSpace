@@ -70,7 +70,7 @@ let fullscreen_help_generated = """
        OR: fullscreen [-h|--help] off [--window-id <window-id>] [--fail-if-noop]
     """
 let import_config_help_generated = """
-    USAGE: import-config [-h|--help] (i3|hyprland) <path> [--output <path>] [--mod (alt|cmd)] [--dry-run]
+    USAGE: import-config [-h|--help] (i3) <path> [--output <path>] [--mod (alt|cmd)] [--dry-run]
     """
 let join_with_help_generated = """
     USAGE: join-with [-h|--help] [--window-id <window-id>] (left|down|up|right)
@@ -132,6 +132,9 @@ let move_node_to_workspace_help_generated = """
        OR: move-node-to-workspace [-h|--help] [--focus-follows-window] [--fail-if-noop]
                                   [--window-id <window-id>] [--] <workspace-name>
     """
+let move_to_help_generated = """
+    USAGE: move-to [-h|--help] [--window-id <window-id>] <x> <y>
+    """
 let move_workspace_to_monitor_help_generated = """
     USAGE: move-workspace-to-monitor [-h|--help] [--workspace <workspace>] [--wrap-around] (left|down|up|right)
        OR: move-workspace-to-monitor [-h|--help] [--workspace <workspace>] [--wrap-around] (next|prev)
@@ -142,8 +145,14 @@ let move_help_generated = """
                 [--boundaries-action <boundary-action>] [--fail-if-fullscreen]
                 [--fail-if-macos-native-fullscreen] (left|down|up|right)
     """
+let raise_floating_help_generated = """
+    USAGE: raise-floating [-h|--help]
+    """
 let reload_config_help_generated = """
     USAGE: reload-config [-h|--help] [--no-gui] [--dry-run] [--warnings-as-errors]
+    """
+let resize_to_help_generated = """
+    USAGE: resize-to [-h|--help] [--window-id <window-id>] <width> <height>
     """
 let resize_help_generated = """
     USAGE: resize [-h|--help] [--window-id <window-id>] (smart|smart-opposite|width|height) [+|-]<number>[%]
@@ -179,6 +188,12 @@ let test_help_generated = """
 let tiling_policy_help_generated = """
     USAGE: tiling-policy [-h|--help] [--workspace <workspace>] (manual|dwindle|default)
     """
+let toggle_group_help_generated = """
+    USAGE: toggle-group [-h|--help] [--window-id <window-id>]
+    """
+let toggle_special_workspace_help_generated = """
+    USAGE: toggle-special-workspace [-h|--help] [--] <workspace>
+    """
 let trigger_binding_help_generated = """
     USAGE: trigger-binding [-h|--help] --mode <mode-id> [--] <binding>
     """
@@ -196,16 +211,4 @@ let workspace_back_and_forth_help_generated = """
 let workspace_help_generated = """
     USAGE: workspace [-h|--help] [--auto-back-and-forth] [--fail-if-noop] [--] <workspace-name>
        OR: workspace [-h|--help] [--wrap-around] [--stdin|--no-stdin] (next|prev)
-    """
-let move_to_help_generated = """
-    USAGE: move-to [-h|--help] [--window-id <window-id>] <x> <y>
-    """
-let resize_to_help_generated = """
-    USAGE: resize-to [-h|--help] [--window-id <window-id>] <width> <height>
-    """
-let toggle_group_help_generated = """
-    USAGE: toggle-group [-h|--help] [--window-id <window-id>]
-    """
-let toggle_special_workspace_help_generated = """
-    USAGE: toggle-special-workspace [-h|--help] [--] <workspace>
     """

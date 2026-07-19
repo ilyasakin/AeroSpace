@@ -76,6 +76,8 @@ extension CmdArgs {
                 command = MoveToCommand(args: self as! MoveToCmdArgs)
             case .moveWorkspaceToMonitor:
                 command = MoveWorkspaceToMonitorCommand(args: self as! MoveWorkspaceToMonitorCmdArgs)
+            case .raiseFloating:
+                command = RaiseFloatingCommand(args: self as! RaiseFloatingCmdArgs)
             case .reloadConfig:
                 command = ReloadConfigCommand(args: self as! ReloadConfigCmdArgs)
             case .resize:

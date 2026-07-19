@@ -1,0 +1,47 @@
+= aerospace-raise-floating(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-raise-floating
+// tag::purpose[]
+:manpurpose: Raise floating windows above the tiling stack (i3-like float layer recovery)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace raise-floating [-h|--help]
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+AeroSpace aims for i3-like floating: floats stay above tiling so you can still
+focus and interact with tiles underneath. SIP stays on (no Dock scripting
+addition). Everyday focus uses private focus-without-raise so tiles do not sink
+floats. Use this command when something else reorders the stack (Mission
+Control, another app, etc.).
+
+All floating windows on *visible* workspaces are raised (MRU float ends on top
+among floats). If a tiled window is focused, keyboard focus is re-asserted on
+that tile without raising it.
+
+Unlike xref:aerospace-always-on-top.adoc[always-on-top], this does not mark
+windows and does not re-raise on every focus change.
+
+Example binding:
+
+[source,toml]
+----
+alt-shift-f = 'raise-floating'
+----
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+// end::body[]
