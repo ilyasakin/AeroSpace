@@ -95,12 +95,14 @@ struct LayoutCommand: Command {
                 }
                 // Keep lastApplied as the current tile frame so a following resize/center in the
                 // same session can merge size+position (see MacWindow.setAxFrame / mergeFrameWrite).
-                // Do *not* force always-on-top: that only re-raises and blocks interacting with
-                // other tiles (focus works briefly, then the float is raised over them again).
+                // Do *not* force always-on-top: that re-raises on every focus change and blocks
+                // interacting with other tiles (i3 float is a layer, not always-on-top).
                 window.bindAsFloatingWindow(to: workspace)
                 if let size = window.lastFloatingSize {
                     window.setAxFrame(nil, size)
                 }
+                // Place the new float above the tiling stack once (i3: floats start on top).
+                FloatLayer.didBecomeFloating(window)
                 return .succ
         }
     }

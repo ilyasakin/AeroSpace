@@ -47,3 +47,28 @@ struct AlwaysOnTopCommand: Command {
         }
     }
 }
+
+/// Raise floating windows above the tiling stack (MRU last among floats).
+///
+/// Recovery only — not on every focus change. Primary path is private focus-without-raise
+/// (`FloatLayer` / `nativeFocusRespectingFloats`) so tiles never sink floats. Call from
+/// `raise-floating` when the stack has drifted.
+///
+/// - Parameter preserveTileKeyboardFocus: after raising floats, re-assert keyboard focus on
+///   the focused tile without raising it (i3: float stays on top, tile may stay key).
+@MainActor func raiseFloatingWindowsAboveTiling(preserveTileKeyboardFocus: Bool = true) {
+    let focused = focus.windowOrNil
+    var raisedAny = false
+    for workspace in Workspace.allUnsorted where workspace.isVisible {
+        let floats = workspace.floatingWindowsContainer.mruChildren.compactMap { $0 as? Window }
+        guard !floats.isEmpty else { continue }
+        // Oldest first → newest last (top of stack among floats)
+        for window in floats.reversed() {
+            window.nativeRaise()
+            raisedAny = true
+        }
+    }
+    if preserveTileKeyboardFocus, raisedAny, let focused, !focused.isFloating {
+        FloatLayer.focus(focused, raise: false)
+    }
+}

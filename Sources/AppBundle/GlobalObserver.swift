@@ -31,9 +31,9 @@ enum GlobalObserver {
                        // "Hide app" (cmd-h) -> force focus
                        MacApp.allAppsMap.values.count(where: { $0.nsApp.isHidden }) == 1
                     {
-                        // Force focus
+                        // Force focus without sinking workspace floats under a raised tile.
                         _ = w.focusWindow()
-                        w.nativeFocus()
+                        w.nativeFocusRespectingFloats()
                     }
                     for app in MacApp.allAppsMap.values {
                         app.nsApp.unhide()
@@ -76,6 +76,9 @@ enum GlobalObserver {
                     // Detect close button clicks for unfocused windows. Yes, kAXUIElementDestroyedNotification is that unreliable
                     //  And trigger new window detection that could be delayed due to mouseDown event
                     default:
+                        // Do NOT re-raise floats here. macOS raises the clicked tile; forcing floats
+                        // back on top after every click steals key focus and blocks interacting with
+                        // tiles (the old band-aid). Keyboard/FFM keep floats via focus-without-raise.
                         scheduleCancellableCompleteRefreshSession(.globalObserverLeftMouseUp)
                 }
             }

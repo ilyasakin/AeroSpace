@@ -69,6 +69,8 @@ final class SessionPipelineTest: XCTestCase {
         XCTAssertTrue(plan.sideUiTray) // tray may update, but only via fingerprint (no full walk when unchanged)
         XCTAssertFalse(plan.trayFullLeafWalk)
         XCTAssertFalse(RefreshSessionEvent.focusFollowsMouse.needsDiscoveryFollowUp)
+        // Body owns nativeFocus(raise:); end-of-session re-raise would undo float-safe focus.
+        XCTAssertTrue(plan.skipFocusAndHygiene)
     }
 
     func testHotkeyLightStillRunsSideUi() {

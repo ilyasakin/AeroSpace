@@ -88,8 +88,13 @@ extension Workspace {
     @MainActor
     private func layoutFloatingChildren(context: LayoutContext) async throws {
         for window in floatingWindows {
-            window.lastAppliedLayoutPhysicalRect = nil
-            window.lastAppliedLayoutVirtualRect = nil
+            // Keep lastApplied when set (resize/center on float). Clearing it made
+            // focus-follows-mouse miss the float and hit the tile underneath, then
+            // nativeFocus raised the tile over the float. Refresh from live if missing.
+            if window.lastAppliedLayoutPhysicalRect == nil {
+                window.lastAppliedLayoutPhysicalRect =
+                    WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)
+            }
             try await window.layoutFloatingWindow(context)
         }
     }

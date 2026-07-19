@@ -228,8 +228,11 @@ enum SessionPipeline {
                 phaseSideUiBorders()
             }
 
-            if focusBefore != focusAfter {
-                focusAfter?.nativeFocus() // syncFocusToMacOs
+            // Body-owned paths (FFM / mouse-drag) already called nativeFocus with the correct
+            // raise policy. Re-calling default nativeFocus() would AXRaise a tile under floats,
+            // sink them, then focus-change re-raise steals key-window → unfocus/refocus flicker.
+            if focusBefore != focusAfter, !plan.skipFocusAndHygiene {
+                focusAfter?.nativeFocusRespectingFloats() // syncFocusToMacOs
             }
             if plan.scheduleFollowUpHeavy {
                 scheduleCancellableCompleteRefreshSession(

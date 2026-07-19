@@ -38,9 +38,10 @@ import ApplicationServices
             guard let token: RunSessionGuard = .isServerEnabled else { return }
             try checkCancellation()
 
-            // 1) Cheap geometry only — no AX. Most moves stay inside the same tile.
+            // Z-order-aware geometry (CGWindowList front-to-back). Floating windows that sit
+            // above tiles must win even when the cursor is over the tile's layout rect —
+            // otherwise nativeFocus raises the tile and the float "jumps" to the bottom.
             guard let window = windowUnderMouseCheap(location) else {
-                // 2) Optional AX fallback when layout rects miss (rare after layout is warm).
                 try checkCancellation()
                 if await isAxWindowUnderMouse(location) == false { return }
                 guard let window = try await windowUnderMouseAxFallback(location) else { return }
@@ -48,7 +49,7 @@ import ApplicationServices
                 return
             }
 
-            // Already focused — zero session work (this is the hot path while moving inside a window).
+            // Already focused — zero session work (hot path while moving inside a window).
             if window.windowId == focusFollowsLastFocusedId
                 || window.windowId == focus.windowOrNil?.windowId
             {
@@ -56,7 +57,7 @@ import ApplicationServices
                 return
             }
 
-            // 3) Menu / desktop filter only when we are about to change focus (not every pixel).
+            // Menu / desktop filter only when we are about to change focus.
             try checkCancellation()
             if await isAxWindowUnderMouse(location) == false { return }
 
@@ -69,26 +70,44 @@ import ApplicationServices
 private func focusFollowsApply(_ window: Window, token: RunSessionGuard) async throws {
     try checkCancellation()
     try await runLightSession(.focusFollowsMouse, token) {
+        // Tree focus first; nativeFocusRespectingFloats is the only OS focus write (pipeline
+        // skips end-of-session nativeFocus for FFM — must not re-raise and undo raise:false).
         _ = window.focusWindow()
-        window.nativeFocus()
+        window.nativeFocusRespectingFloats()
     }
     focusFollowsLastFocusedId = window.windowId
 }
 
-/// Geometry-only hit test using layout rects (no AX). Fast enough for every mouse-move settle.
+/// Geometry hit test. Floating windows always beat tiles they cover (live frame), then
+/// front-to-back stack, then tiling layout rects.
 @MainActor
-private func windowUnderMouseCheap(_ location: CGPoint) -> Window? {
+func windowUnderMouseCheap(_ location: CGPoint) -> Window? {
     let workspace = location.monitorApproximation.activeWorkspace
 
+    // 1) Floats first using live/lastApplied frames — independent of stale CGWindowList cache.
+    //    Treat any float containing the point as above the tiling layer for hit purposes.
     for child in workspace.floatingWindowsContainer.mruChildren {
         guard let child = child as? Window else { continue }
-        if let rect = child.lastAppliedLayoutPhysicalRect ?? child.lastAppliedLayoutVirtualRect,
-           rect.contains(location)
-        {
+        if floatingWindowFrame(child)?.contains(location) == true {
             return child
         }
     }
 
+    // 2) Front-to-back stack among remaining candidates (fresh each call when floats exist).
+    if !workspace.floatingWindows.isEmpty {
+        invalidateOnScreenWindowSnapshot()
+    }
+    let stack = onScreenWindowSnapshot().normalStack
+    for item in stack {
+        guard item.rect.contains(location) else { continue }
+        guard let window = Window.get(byId: item.id) else { continue }
+        guard windowIsEligibleForFfm(window, on: workspace) else { continue }
+        // Floats already handled above; skip so we don't re-hit with stale stack order.
+        if window.isFloating { continue }
+        return window
+    }
+
+    // 3) Tiling layout rects (lastApplied / virtual).
     if let w = location.findWindowRecursively(
         in: workspace.rootTilingContainer,
         virtual: false,
@@ -103,10 +122,29 @@ private func windowUnderMouseCheap(_ location: CGPoint) -> Window? {
     )
 }
 
+@MainActor
+private func windowIsEligibleForFfm(_ window: Window, on workspace: Workspace) -> Bool {
+    if window.isHiddenInCorner { return false }
+    if window.nodeWorkspace == workspace { return true }
+    // Sticky floats/tiles follow the monitor's active workspace.
+    if window.isSticky, window.nodeMonitor?.activeWorkspace == workspace { return true }
+    return false
+}
+
+/// Live or last-known frame for a floating window (layout clears lastApplied on some paths).
+@MainActor
+func floatingWindowFrame(_ window: Window) -> Rect? {
+    if let applied = window.lastAppliedLayoutPhysicalRect ?? window.lastAppliedLayoutVirtualRect {
+        return applied
+    }
+    return WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)
+}
+
 /// AX rect scan — only when cheap geometry found nothing.
 @MainActor
 private func windowUnderMouseAxFallback(_ location: CGPoint) async throws -> Window? {
     let workspace = location.monitorApproximation.activeWorkspace
+    // Prefer front-to-back among floats that actually contain the point (live AX rect).
     for child in workspace.floatingWindowsContainer.mruChildren {
         try checkCancellation()
         guard let child = child as? Window else { continue }

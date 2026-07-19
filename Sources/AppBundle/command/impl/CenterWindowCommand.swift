@@ -12,6 +12,7 @@ struct CenterWindowCommand: Command {
         if !window.isFloating {
             window.bindAsFloatingWindow(to: target.workspace)
             if let size = window.lastFloatingSize { window.setAxFrame(nil, size) }
+            FloatLayer.didBecomeFloating(window)
         }
 
         guard let monitor = window.nodeMonitor else {
