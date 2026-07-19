@@ -24,6 +24,9 @@ final class GroupTabBarManager {
         clearTabs()
 
         for workspace in Workspace.allUnsorted where workspace.isVisible {
+            // Native-fullscreen Space on this display: the group sits behind the fullscreen app,
+            // so its tab strip must not paint (see workspaceDisplayIsFullscreen).
+            if workspaceDisplayIsFullscreen(workspace) { continue }
             collectAccordionGroups(workspace.rootTilingContainer)
         }
 
@@ -97,6 +100,9 @@ private final class GroupTabBarOverlay: NSPanelHud {
 
     override init() {
         super.init()
+        // No .fullScreenAuxiliary: tab strips must not render over native-fullscreen Spaces
+        // (they describe the underlying workspace, not the fullscreen app). Same as StatusBarPanel.
+        collectionBehavior = [.canJoinAllSpaces, .stationary]
         ignoresMouseEvents = false // tabs need clicks; empty areas pass through via hitTest
         isOpaque = false
         hasShadow = false

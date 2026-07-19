@@ -51,6 +51,13 @@ final class StatusBarManager {
             seen.insert(key)
             let panel = panels[key] ?? StatusBarPanel()
             panels[key] = panel
+            // Native-fullscreen Space on this display: hide the bar (like the system menu bar).
+            // collectionBehavior does not keep the panel off fullscreen Spaces (see WindowBorders);
+            // the periodic refresh timer re-evaluates this even if the space-change notif races.
+            if let displayId = DisplayRefresh.displayId(for: mon), SkyLight.currentSpaceIsFullscreen(displayId: displayId) {
+                panel.orderOut(nil)
+                continue
+            }
             panel.update(monitor: mon, config: cfg, externalBlocks: externalBlocks)
         }
         for (key, panel) in panels where !seen.contains(key) {

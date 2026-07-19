@@ -22,6 +22,10 @@ final class WindowBordersOverlay: NSPanelHud {
 
     override init() {
         super.init()
+        // No .fullScreenAuxiliary: borders must not follow onto native-fullscreen Spaces
+        // (fullscreen video etc.) — the fullscreen window isn't managed, so any border there
+        // is a stale ring from the underlying workspace. Same opt-out as StatusBarPanel.
+        collectionBehavior = [.canJoinAllSpaces, .stationary]
         hasShadow = false
         ignoresMouseEvents = true
         let view = NSView()
@@ -330,6 +334,9 @@ final class WindowBordersManager {
         var nextFloating = Set<UInt32>(minimumCapacity: 4)
         var membershipChanged = false
         for workspace in Workspace.allUnsorted where workspace.isVisible {
+            // A native-fullscreen Space is showing on this display: the workspace's windows are
+            // behind it, so their borders would paint over the fullscreen app. Entries drop below.
+            if workspaceDisplayIsFullscreen(workspace) { continue }
             for window in workspace.allLeafWindowsRecursive {
                 guard let rect = resolvedBorderRect(for: window) else { continue }
                 seen.insert(window.windowId)
@@ -786,6 +793,15 @@ enum FloatingBorderTracker {
         lastSampled = live
         WindowBordersManager.shared.sampleFloatingBorder(windowId: id)
     }
+}
+
+/// True when the workspace's display currently shows a native macOS fullscreen Space.
+/// Border / tab-bar overlays skip such workspaces: their windows sit behind the fullscreen app,
+/// and collectionBehavior alone does not keep the overlay panels off fullscreen Spaces.
+@MainActor
+func workspaceDisplayIsFullscreen(_ workspace: Workspace) -> Bool {
+    guard let displayId = DisplayRefresh.displayId(for: workspace) else { return false }
+    return SkyLight.currentSpaceIsFullscreen(displayId: displayId)
 }
 
 /// A top-left-global Rect converted to overlay-layer coordinates (bottom-left, overlay-relative)
