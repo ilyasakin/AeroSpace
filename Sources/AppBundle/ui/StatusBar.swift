@@ -96,6 +96,7 @@ final class StatusBarManager {
                     _ = StatusBarCpuSampler.shared.sample()
                     _ = StatusBarGpuSampler.shared.sample()
                 }
+                StatusBarNetSampler.shared.sample()
                 self?.refresh()
             }
         }
@@ -339,10 +340,20 @@ private final class StatusBarContentView: NSView {
             case cpuHistory([[Double]], fg: NSColor)
             /// Single-series GPU history, oldest → newest.
             case gpuHistory([Double], last: Double?, fg: NSColor)
+            /// Filled capsule gauge + trailing label (memory).
+            case meter(fraction: Double, label: String, icon: NSImage?, tooltip: String)
+            /// Live network throughput as two stacked mini-rows (↓ over ↑). Fixed width from a
+            /// single-rate worst-case template + monospaced digits: digit churn never shifts
+            /// neighbors, and the stack keeps the chip half as wide as one-line ↓/↑ text.
+            case netRate(down: String, up: String, icon: NSImage?, widthTemplate: String)
         }
 
         let sparkTrail = sparklinePercentTrailingWidth(fontSize: CGFloat(max(10, config.fontSize - 1)))
         let iconSide = max(12, min(height - 8, 18))
+        let symbolPointSize = CGFloat(max(10, config.fontSize - 1))
+        let meterTrackWidth: CGFloat = 36
+        let meterLabelFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        let netRateFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
 
         func width(of item: Placeable) -> CGFloat {
             switch item {
@@ -361,6 +372,17 @@ private final class StatusBarContentView: NSView {
                 case .gpuHistory:
                     let n = StatusBarGpuSampler.historyCapacity
                     return defaultSparklineLayout(sampleCount: n, trailingWidth: sparkTrail).totalWidth
+                case .meter(_, let label, let icon, _):
+                    let labelW = NSAttributedString(string: label, attributes: [.font: meterLabelFont]).size().width
+                    var w = meterTrackWidth + 6 + labelW + 2
+                    if icon != nil { w += iconSide + 6 }
+                    return w
+                case .netRate(_, _, let icon, let widthTemplate):
+                    // Measure the template, not the live text — width must not track the digits
+                    let attr = NSAttributedString(string: widthTemplate, attributes: [.font: netRateFont])
+                    var w = attr.size().width + 8
+                    if icon != nil { w += iconSide + 4 }
+                    return w
             }
         }
 
@@ -417,6 +439,32 @@ private final class StatusBarContentView: NSView {
                     )
                     addSubview(graph)
                     buttons.append(graph)
+                case .meter(let fraction, let label, let icon, let tooltip):
+                    let meter = StatusBarMeterView(
+                        frame: frame,
+                        fraction: fraction,
+                        label: label,
+                        icon: icon,
+                        iconSide: iconSide,
+                        accent: fg,
+                        labelFont: meterLabelFont,
+                        trackWidth: meterTrackWidth,
+                        tooltip: tooltip,
+                    )
+                    addSubview(meter)
+                    buttons.append(meter)
+                case .netRate(let down, let up, let icon, _):
+                    let view = StatusBarNetRateView(
+                        frame: frame,
+                        down: down,
+                        up: up,
+                        icon: icon,
+                        iconSide: iconSide,
+                        accent: fg,
+                        rowFont: netRateFont,
+                    )
+                    addSubview(view)
+                    buttons.append(view)
             }
         }
 
@@ -468,8 +516,26 @@ private final class StatusBarContentView: NSView {
                     case "gpu":
                         out.append(.gpuHistory(gpuHistory.samples, last: gpuHistory.lastKnown, fg: fg))
                     default:
-                        if let text = statusBarSystemModuleText(mod) {
-                            out.append(.text(text, bg: nil, fg: fg, action: nil, icon: nil))
+                        switch statusBarSystemModuleRender(mod) {
+                            case nil: break
+                            case .text(let text, let symbols):
+                                let icon = statusBarSymbolImage(candidates: symbols, pointSize: symbolPointSize)
+                                // Live rates re-render every second: stacked ↓/↑ rows with fixed
+                                // template width so the right cluster doesn't shift as digits churn
+                                if mod == "network", text.hasPrefix("↓"), text.split(separator: " ").count == 2 {
+                                    let parts = text.split(separator: " ")
+                                    out.append(.netRate(
+                                        down: String(parts[0]),
+                                        up: String(parts[1]),
+                                        icon: icon,
+                                        widthTemplate: "↓888.8M",
+                                    ))
+                                } else {
+                                    out.append(.text(text, bg: nil, fg: fg, action: nil, icon: icon))
+                                }
+                            case .meter(let fraction, let label, let symbols, let tooltip):
+                                let icon = statusBarSymbolImage(candidates: symbols, pointSize: symbolPointSize)
+                                out.append(.meter(fraction: fraction, label: label, icon: icon, tooltip: tooltip))
                         }
                 }
             }
@@ -712,10 +778,21 @@ private class StatusBarChipView: NSView {
         if let icon {
             let side = min(iconSide, max(10, bounds.height - 6))
             let ix: CGFloat = 6
-            let iy = ((bounds.height - side) / 2).rounded(.toNearestOrAwayFromZero)
-            let iconRect = NSRect(x: ix, y: iy, width: side, height: side)
-            // Template-ish: keep full-color Dock icons (don't apply tint).
-            icon.draw(
+            // Aspect-fit into the side box (SF Symbols are rarely square); template symbols are
+            // tinted to the label color, full-color Dock icons draw as-is.
+            let intrinsic = icon.size
+            let scale = intrinsic.width > 0 && intrinsic.height > 0
+                ? min(side / intrinsic.width, side / intrinsic.height) : 1
+            let w = intrinsic.width * scale
+            let h = intrinsic.height * scale
+            let iconRect = NSRect(
+                x: ix + ((side - w) / 2).rounded(.toNearestOrAwayFromZero),
+                y: ((bounds.height - h) / 2).rounded(.toNearestOrAwayFromZero),
+                width: w,
+                height: h,
+            )
+            let drawn = icon.isTemplate ? statusBarTintedImage(icon, color: fg) : icon
+            drawn.draw(
                 in: iconRect,
                 from: .zero,
                 operation: .sourceOver,
@@ -794,6 +871,241 @@ private final class StatusBarButton: StatusBarChipView {
             onClick: onClick,
         )
     }
+}
+
+// MARK: - Meter (memory)
+
+/// Capsule gauge + trailing label. Same visual language as the sparkline track; fill turns
+/// amber above 80% and red above 92% so memory pressure is readable at a glance.
+@MainActor
+private final class StatusBarMeterView: NSView {
+    private let fraction: Double
+    private let label: String
+    private let icon: NSImage?
+    private let iconSide: CGFloat
+    private let accent: NSColor
+    private let labelFont: NSFont
+    private let trackWidth: CGFloat
+
+    init(
+        frame: NSRect,
+        fraction: Double,
+        label: String,
+        icon: NSImage?,
+        iconSide: CGFloat,
+        accent: NSColor,
+        labelFont: NSFont,
+        trackWidth: CGFloat,
+        tooltip: String,
+    ) {
+        self.fraction = min(1, max(0, fraction))
+        self.label = label
+        self.icon = icon
+        self.iconSide = iconSide
+        self.accent = accent
+        self.labelFont = labelFont
+        self.trackWidth = trackWidth
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        toolTip = tooltip
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Claim hits inside bounds so the tooltip works (same as the sparkline view).
+    nonisolated override func hitTest(_ point: NSPoint) -> NSView? {
+        guard Thread.isMainThread else { return nil }
+        return MainActor.assumeIsolated {
+            let local = convert(point, from: superview)
+            return bounds.contains(local) ? self : nil
+        }
+    }
+
+    nonisolated override func accessibilityHitTest(_ point: NSPoint) -> Any? { nil }
+    nonisolated override func isAccessibilityElement() -> Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        var x: CGFloat = 0
+        if let icon {
+            let side = min(iconSide, max(10, bounds.height - 6))
+            let intrinsic = icon.size
+            let scale = intrinsic.width > 0 && intrinsic.height > 0
+                ? min(side / intrinsic.width, side / intrinsic.height) : 1
+            let w = intrinsic.width * scale
+            let h = intrinsic.height * scale
+            let iconRect = NSRect(
+                x: ((side - w) / 2).rounded(.toNearestOrAwayFromZero),
+                y: ((bounds.height - h) / 2).rounded(.toNearestOrAwayFromZero),
+                width: w,
+                height: h,
+            )
+            let drawn = icon.isTemplate ? statusBarTintedImage(icon, color: accent) : icon
+            drawn.draw(
+                in: iconRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: [.interpolation: NSImageInterpolation.high],
+            )
+            x = side + 6
+        }
+
+        let trackH: CGFloat = 7
+        let trackY = ((bounds.height - trackH) / 2).rounded(.toNearestOrAwayFromZero)
+        let track = NSRect(x: x, y: trackY, width: trackWidth, height: trackH)
+        accent.withAlphaComponent(0.16).setFill()
+        NSBezierPath(roundedRect: track, xRadius: trackH / 2, yRadius: trackH / 2).fill()
+
+        // Fill keeps at least a capsule-width so tiny fractions still read as "some".
+        let fillW = max(trackH, track.width * CGFloat(fraction))
+        let fillColor: NSColor = fraction > 0.92 ? .systemRed : fraction > 0.8 ? .systemOrange : accent
+        fillColor.withAlphaComponent(0.95).setFill()
+        NSBezierPath(
+            roundedRect: NSRect(x: track.minX, y: track.minY, width: fillW, height: trackH),
+            xRadius: trackH / 2,
+            yRadius: trackH / 2,
+        ).fill()
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: labelFont,
+            .foregroundColor: accent.withAlphaComponent(0.95),
+        ]
+        let size = (label as NSString).size(withAttributes: attrs)
+        let y = ((bounds.height - size.height) / 2).rounded(.toNearestOrAwayFromZero) - 0.5
+        (label as NSString).draw(
+            in: NSRect(x: track.maxX + 6, y: y, width: max(0, bounds.width - track.maxX - 6), height: size.height),
+            withAttributes: attrs,
+        )
+    }
+}
+
+// MARK: - Network rate (stacked ↓/↑ rows)
+
+/// Two mini rows: download over upload. Zero-rates draw dimmed so idle traffic reads as quiet
+/// instead of shouting "0K". Width is fixed by the caller (template-measured) — this view only
+/// draws left-aligned into it.
+@MainActor
+private final class StatusBarNetRateView: NSView {
+    private let down: String
+    private let up: String
+    private let icon: NSImage?
+    private let iconSide: CGFloat
+    private let accent: NSColor
+    private let rowFont: NSFont
+
+    init(
+        frame: NSRect,
+        down: String,
+        up: String,
+        icon: NSImage?,
+        iconSide: CGFloat,
+        accent: NSColor,
+        rowFont: NSFont,
+    ) {
+        self.down = down
+        self.up = up
+        self.icon = icon
+        self.iconSide = iconSide
+        self.accent = accent
+        self.rowFont = rowFont
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// Not interactive: empty-region passthrough like the content view.
+    nonisolated override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    nonisolated override func accessibilityHitTest(_ point: NSPoint) -> Any? { nil }
+    nonisolated override func isAccessibilityElement() -> Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        var x: CGFloat = 0
+        if let icon {
+            let side = min(iconSide, max(10, bounds.height - 6))
+            let intrinsic = icon.size
+            let scale = intrinsic.width > 0 && intrinsic.height > 0
+                ? min(side / intrinsic.width, side / intrinsic.height) : 1
+            let w = intrinsic.width * scale
+            let h = intrinsic.height * scale
+            let iconRect = NSRect(
+                x: ((side - w) / 2).rounded(.toNearestOrAwayFromZero),
+                y: ((bounds.height - h) / 2).rounded(.toNearestOrAwayFromZero),
+                width: w,
+                height: h,
+            )
+            let drawn = icon.isTemplate ? statusBarTintedImage(icon, color: accent) : icon
+            drawn.draw(
+                in: iconRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: [.interpolation: NSImageInterpolation.high],
+            )
+            x = side + 4
+        }
+
+        let rowH = bounds.height / 2
+        drawRow(down, atY: rowH, height: rowH, x: x) // top row (AppKit y-up)
+        drawRow(up, atY: 0, height: rowH, x: x)
+    }
+
+    private func drawRow(_ text: String, atY y: CGFloat, height: CGFloat, x: CGFloat) {
+        // "↓0K" / "↑0K" = idle → dim the whole row
+        let isZero = text.hasSuffix("0K") && text.count <= 3
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: rowFont,
+            .foregroundColor: accent.withAlphaComponent(isZero ? 0.4 : 0.95),
+        ]
+        let size = (text as NSString).size(withAttributes: attrs)
+        let textY = y + ((height - size.height) / 2).rounded(.toNearestOrAwayFromZero)
+        (text as NSString).draw(
+            in: NSRect(x: x, y: textY, width: max(0, bounds.width - x), height: size.height),
+            withAttributes: attrs,
+        )
+    }
+}
+
+// MARK: - SF Symbol helpers
+
+@MainActor private var statusBarSymbolCache: [String: NSImage] = [:]
+
+/// First SF Symbol that resolves from `candidates` (names drift across macOS releases),
+/// configured to the bar's font scale and marked template so it tints to the label color.
+@MainActor
+func statusBarSymbolImage(candidates: [String], pointSize: CGFloat) -> NSImage? {
+    guard !candidates.isEmpty else { return nil }
+    let key = "\(candidates.joined(separator: ","))|\(pointSize)"
+    if let cached = statusBarSymbolCache[key] { return cached }
+    for name in candidates {
+        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { continue }
+        let cfg = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
+        let img = base.withSymbolConfiguration(cfg) ?? base
+        img.isTemplate = true
+        statusBarSymbolCache[key] = img
+        return img
+    }
+    return nil
+}
+
+/// Fill a template image with `color` (sourceAtop keeps the symbol's alpha mask).
+@MainActor
+func statusBarTintedImage(_ image: NSImage, color: NSColor) -> NSImage {
+    let out = NSImage(size: image.size)
+    out.lockFocus()
+    image.draw(in: NSRect(origin: .zero, size: image.size), from: .zero, operation: .sourceOver, fraction: 1)
+    color.set()
+    NSRect(origin: .zero, size: image.size).fill(using: .sourceAtop)
+    out.unlockFocus()
+    return out
 }
 
 /// Dock icon for the window's app (for the `focused` module).

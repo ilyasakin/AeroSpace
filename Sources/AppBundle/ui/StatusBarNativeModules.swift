@@ -98,6 +98,14 @@ func statusBarFormatClock(date: Date, calendar: Calendar, format: String) -> Str
     return out
 }
 
+/// How a built-in module renders in the bar: plain text with an optional SF Symbol icon, or a
+/// filled meter (memory). `symbols` are fallback candidates — first name that resolves wins,
+/// because symbol names drift across macOS releases.
+enum StatusBarModuleRender: Equatable {
+    case text(String, symbols: [String])
+    case meter(fraction: Double, label: String, symbols: [String], tooltip: String)
+}
+
 enum StatusBarBattery {
     /// Snapshot for tests / live IOKit.
     struct Snapshot: Equatable {
@@ -110,6 +118,24 @@ enum StatusBarBattery {
         guard snap.isPresent, let p = snap.percent else { return nil }
         let icon = snap.isCharging ? "⚡" : "🔋"
         return "\(icon)\(p)%"
+    }
+
+    static func render(from snap: Snapshot) -> StatusBarModuleRender? {
+        guard snap.isPresent, let p = snap.percent else { return nil }
+        let symbols: [String] = if snap.isCharging {
+            ["battery.100percent.bolt", "battery.100.bolt", "bolt.fill"]
+        } else if p >= 85 {
+            ["battery.100percent", "battery.100"]
+        } else if p >= 60 {
+            ["battery.75percent", "battery.75"]
+        } else if p >= 35 {
+            ["battery.50percent", "battery.50"]
+        } else if p >= 10 {
+            ["battery.25percent", "battery.25"]
+        } else {
+            ["battery.0percent", "battery.0"]
+        }
+        return .text("\(p)%", symbols: symbols)
     }
 
     static func liveSnapshot() -> Snapshot {
@@ -156,6 +182,22 @@ enum StatusBarCpuMem {
         return "MEM \(pct)%"
     }
 
+    /// Memory as a fill meter: capsule gauge + used-GB label (replaces the bare "MEM 62%" text).
+    static func memoryRender(from snap: MemorySnapshot? = nil) -> StatusBarModuleRender {
+        guard let s = snap ?? liveMemorySnapshot() else {
+            return .text("MEM ?", symbols: ["memorychip"])
+        }
+        let usedGb = Double(s.usedBytes) / 1_073_741_824
+        let totalGb = Double(s.totalBytes) / 1_073_741_824
+        let pct = Int((s.usedFraction * 100).rounded())
+        return .meter(
+            fraction: s.usedFraction,
+            label: String(format: "%.1fG", usedGb),
+            symbols: ["memorychip"],
+            tooltip: String(format: "Memory %.1f GB used of %.0f GB (%d%%)", usedGb, totalGb, pct),
+        )
+    }
+
     static func liveMemorySnapshot() -> MemorySnapshot? {
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(
@@ -194,6 +236,17 @@ enum StatusBarVolume {
         return "\(icon) \(snap.percent)%"
     }
 
+    static func render(from snap: Snapshot) -> StatusBarModuleRender {
+        if snap.isMuted { return .text("mute", symbols: ["speaker.slash.fill"]) }
+        let symbols: [String] = switch snap.percent {
+            case 0: ["speaker.fill"]
+            case ..<34: ["speaker.wave.1.fill"]
+            case ..<67: ["speaker.wave.2.fill"]
+            default: ["speaker.wave.3.fill"]
+        }
+        return .text("\(snap.percent)%", symbols: symbols)
+    }
+
     static func liveSnapshot() -> Snapshot {
         do {
             let muted = Sound.output.isMuted
@@ -203,6 +256,77 @@ enum StatusBarVolume {
             return Snapshot(percent: 0, isMuted: true)
         }
     }
+}
+
+/// Interface byte-counter sampler for live ↓/↑ rates. Counters come from getifaddrs AF_LINK
+/// if_data (32-bit, wrap-safe delta); summed over en* (physical Wi-Fi/Ethernet — VPN utun traffic
+/// is counted on the underlying en* anyway, so tunnels don't double-count).
+@MainActor
+final class StatusBarNetSampler {
+    static let shared = StatusBarNetSampler()
+    /// Don't recompute rates faster than this even if refresh() is spammed.
+    static let minSampleInterval: TimeInterval = 0.9
+    /// A per-tick delta above this is a 32-bit counter wrap glitch, not traffic — skip the update.
+    private static let wrapGlitchThreshold: UInt64 = 4 << 30
+
+    private var lastTotals: (rx: UInt64, tx: UInt64)?
+    private var lastAt: TimeInterval = 0
+    private(set) var rxPerSec: Double = 0
+    private(set) var txPerSec: Double = 0
+
+    private init() {}
+
+    func sample() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if lastAt > 0, now - lastAt < Self.minSampleInterval { return }
+        // Flow-level counters (ntstat) first: interface counters miss inbound bytes when VPNs /
+        // content filters / Skywalk carry the flow (downlink reads 0). See NetworkFlowStats.
+        guard let totals = NetworkFlowStats.shared.poll() ?? Self.readTotals() else { return }
+        if let last = lastTotals, lastAt > 0 {
+            let dt = now - lastAt
+            let dRx = totals.rx &- last.rx
+            let dTx = totals.tx &- last.tx
+            if dt > 0, dRx < Self.wrapGlitchThreshold, dTx < Self.wrapGlitchThreshold {
+                rxPerSec = Double(dRx) / dt
+                txPerSec = Double(dTx) / dt
+            }
+        }
+        lastTotals = totals
+        lastAt = now
+    }
+
+    private static func readTotals() -> (rx: UInt64, tx: UInt64)? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        var rx: UInt64 = 0
+        var tx: UInt64 = 0
+        var found = false
+        var ptr: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = ptr {
+            defer { ptr = current.pointee.ifa_next }
+            guard let addr = current.pointee.ifa_addr,
+                  addr.pointee.sa_family == UInt8(AF_LINK),
+                  let dataPtr = current.pointee.ifa_data
+            else { continue }
+            let name = String(cString: current.pointee.ifa_name)
+            guard name.hasPrefix("en") else { continue }
+            let data = dataPtr.assumingMemoryBound(to: if_data.self).pointee
+            rx &+= UInt64(data.ifi_ibytes)
+            tx &+= UInt64(data.ifi_obytes)
+            found = true
+        }
+        return found ? (rx, tx) : nil
+    }
+}
+
+/// Compact rate label: "0K" → "999K" → "1.2M" → "1.2G" (bytes/s, 1024 base). Pure for tests.
+func statusBarFormatRate(bytesPerSec: Double) -> String {
+    let kb = max(0, bytesPerSec) / 1024
+    if kb < 1000 { return String(format: "%.0fK", kb) }
+    let mb = kb / 1024
+    if mb < 1000 { return String(format: "%.1fM", mb) }
+    return String(format: "%.1fG", mb / 1024)
 }
 
 enum StatusBarNetwork {
@@ -218,6 +342,14 @@ enum StatusBarNetwork {
             return "🌐 \(snap.interface) \(address)"
         }
         return "🌐 \(snap.interface)"
+    }
+
+    /// Live throughput instead of the static interface/IP line. Pure for tests.
+    static func render(isUp: Bool, rxPerSec: Double, txPerSec: Double) -> StatusBarModuleRender {
+        guard isUp else { return .text("offline", symbols: ["wifi.slash"]) }
+        let down = statusBarFormatRate(bytesPerSec: rxPerSec)
+        let up = statusBarFormatRate(bytesPerSec: txPerSec)
+        return .text("↓\(down) ↑\(up)", symbols: ["network"])
     }
 
     static func liveSnapshot() -> Snapshot {
@@ -293,7 +425,23 @@ func statusBarSystemModuleText(_ id: String) -> String? {
     }
 }
 
-/// True when this module needs a faster refresh (~1s) for live graphs.
+/// Resolve a built-in system module to its bar rendering (nil = hide this tick).
+@MainActor
+func statusBarSystemModuleRender(_ id: String) -> StatusBarModuleRender? {
+    switch id {
+        case "battery": StatusBarBattery.render(from: StatusBarBattery.liveSnapshot())
+        case "memory": StatusBarCpuMem.memoryRender()
+        case "volume": StatusBarVolume.render(from: StatusBarVolume.liveSnapshot())
+        case "network": StatusBarNetwork.render(
+            isUp: StatusBarNetwork.liveSnapshot().isUp,
+            rxPerSec: StatusBarNetSampler.shared.rxPerSec,
+            txPerSec: StatusBarNetSampler.shared.txPerSec,
+        )
+        default: statusBarSystemModuleText(id).map { .text($0, symbols: []) }
+    }
+}
+
+/// True when this module needs a faster refresh (~1s) for live graphs / rates.
 func statusBarModuleNeedsFastRefresh(_ id: String) -> Bool {
-    id == "cpu" || id == "gpu"
+    id == "cpu" || id == "gpu" || id == "network"
 }
