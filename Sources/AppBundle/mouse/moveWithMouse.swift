@@ -27,6 +27,11 @@ func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableR
 
         // Stamp before light plan so session skips side-UI rebuild + follow-up heavy.
         currentlyManipulatedWithMouseWindowId = window.windowId
+        // Floating free-drag: start display-Hz border sampling *before* the light session Task,
+        // so the first frames aren't waiting on session scheduling / AX.
+        if window.isFloating {
+            FloatingBorderTracker.kick(window)
+        }
         // Edge/corner resize also fires AXMoved. Route those to resize so we never wipe the
         // layout baseline or tile-swap mid-resize (see isMouseResizeLikeDrag).
         resizeWithMouseTask?.cancel()
@@ -45,7 +50,7 @@ private func moveWithMouse(_ window: Window) async throws { // todo cover with t
     resetClosedWindowsCache()
     switch window.windowParentCases {
         case .floatingWindowsContainer:
-            try await moveFloatingWindow(window)
+            moveFloatingWindow(window)
         case .macosFullscreenWindowsContainer, .macosMinimizedWindowsContainer, .macosPopupWindowsContainer, .macosHiddenAppsWindowsContainer:
             return // Unconventional windows can't be moved with mouse
         case .tilingContainer:
@@ -68,8 +73,14 @@ private func moveWithMouse(_ window: Window) async throws { // todo cover with t
 }
 
 @MainActor
-private func moveFloatingWindow(_ window: Window) async throws {
-    guard let targetWorkspace = try await window.getCenter(.cancellable)?.monitorApproximation.activeWorkspace else { return }
+private func moveFloatingWindow(_ window: Window) {
+    // Arm display-Hz border sampler first (before any tree work) so the border tracks at
+    // monitor refresh even when the rest of the light session is busy.
+    FloatingBorderTracker.kick(window)
+
+    // Mouse location is free; AX getCenter every drag tick serialized the main actor and
+    // delayed border paint by many frames. During a title-bar drag the pointer is on the window.
+    let targetWorkspace = mouseLocation.monitorApproximation.activeWorkspace
     guard let parent = window.parent else { return }
     if targetWorkspace != parent {
         window.bindAsFloatingWindow(to: targetWorkspace)

@@ -75,6 +75,8 @@ private func focusFollowsApply(_ window: Window, token: RunSessionGuard) async t
         _ = window.focusWindow()
         window.nativeFocusRespectingFloats()
     }
+    // FFM light sessions skip sideUiBorders — still move active border style/occlusion.
+    WindowBordersManager.shared.syncActiveFocus()
     focusFollowsLastFocusedId = window.windowId
 }
 

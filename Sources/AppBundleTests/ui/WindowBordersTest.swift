@@ -193,8 +193,8 @@ final class WindowBordersTest: XCTestCase {
         XCTAssertFalse(dirty.contains(2)) // isolated
     }
 
-    func testActiveBorderNotMaskedByManagedNeighbour() {
-        // Stack front-to-back: neighbour (1) above active (0), both managed
+    func testActiveBorderNotMaskedByManagedTilingNeighbour() {
+        // Stack front-to-back: tiling neighbour (1) above active (0), both managed tiles
         let stack: [(id: UInt32, rect: Rect)] = [
             (1, Rect(topLeftX: 50, topLeftY: 50, width: 100, height: 100)),
             (0, Rect(topLeftX: 0, topLeftY: 0, width: 200, height: 200)),
@@ -210,12 +210,103 @@ final class WindowBordersTest: XCTestCase {
             stack: stack,
             stackIndex: 1,
             managedIds: managed,
+            floatingIds: [],
         )
-        // Active must not be masked by managed neighbour even if stack puts neighbour above
+        // Active must not be masked by managed *tiling* neighbour even if stack puts neighbour above
         XCTAssertTrue(occ.isEmpty)
     }
 
-    func testInactiveBorderAlwaysClippedByActive() {
+    func testActiveTileBorderMaskedByFloatingAbove() {
+        // Float (2) above focused tile (0) — focus-without-raise keeps float on top; border must too
+        let stack: [(id: UInt32, rect: Rect)] = [
+            (2, Rect(topLeftX: 50, topLeftY: 50, width: 100, height: 100)),
+            (0, Rect(topLeftX: 0, topLeftY: 0, width: 200, height: 200)),
+        ]
+        let managed: Set<UInt32> = [0, 2]
+        let floating: Set<UInt32> = [2]
+        let region = WindowBordersMath.region(rect: stack[1].rect, width: 4)
+        let occ = WindowBordersMath.occluders(
+            id: 0,
+            region: region,
+            isActive: true,
+            activeId: 0,
+            activeRect: stack[1].rect,
+            stack: stack,
+            stackIndex: 1,
+            managedIds: managed,
+            floatingIds: floating,
+        )
+        XCTAssertEqual(occ.count, 1)
+        XCTAssertEqual(occ[0], stack[0].rect)
+    }
+
+    func testActiveTileBorderMaskedByFloatEvenWhenStackLagPutsFloatBehind() {
+        // Private focus can leave CG stack stale: tile listed above float. Policy still clips.
+        let floatRect = Rect(topLeftX: 50, topLeftY: 50, width: 100, height: 100)
+        let tileRect = Rect(topLeftX: 0, topLeftY: 0, width: 200, height: 200)
+        let stack: [(id: UInt32, rect: Rect)] = [
+            (0, tileRect), // tile "front" in stale stack
+            (2, floatRect),
+        ]
+        let managed: Set<UInt32> = [0, 2]
+        let floating: Set<UInt32> = [2]
+        let region = WindowBordersMath.region(rect: tileRect, width: 4)
+        let occ = WindowBordersMath.occluders(
+            id: 0,
+            region: region,
+            isActive: true,
+            activeId: 0,
+            activeRect: tileRect,
+            stack: stack,
+            stackIndex: 0, // nothing above tile in stale stack
+            managedIds: managed,
+            floatingIds: floating,
+        )
+        XCTAssertEqual(occ.count, 1)
+        XCTAssertEqual(occ[0], floatRect)
+    }
+
+    func testBorderZPositionFloatAboveActiveTile() {
+        let floating: Set<UInt32> = [2]
+        let floatZ = WindowBordersMath.borderZPosition(
+            id: 2, activeId: 0, floatingIds: floating, stackCount: 2, stackIndex: 0,
+        )
+        let activeTileZ = WindowBordersMath.borderZPosition(
+            id: 0, activeId: 0, floatingIds: floating, stackCount: 2, stackIndex: 1,
+        )
+        let otherTileZ = WindowBordersMath.borderZPosition(
+            id: 1, activeId: 0, floatingIds: floating, stackCount: 3, stackIndex: 2,
+        )
+        XCTAssertGreaterThan(floatZ, activeTileZ, "float border must paint over active tile border")
+        XCTAssertGreaterThan(activeTileZ, otherTileZ, "active tile above other tiles")
+    }
+
+    func testFloatingBorderNotForceClippedByActiveTileUnderIt() {
+        // Inactive float is stack-front; active tile is below. Do not cut float border by tile.
+        let floating = Rect(topLeftX: 50, topLeftY: 50, width: 100, height: 100)
+        let active = Rect(topLeftX: 0, topLeftY: 0, width: 200, height: 200)
+        let stack: [(id: UInt32, rect: Rect)] = [
+            (2, floating),
+            (0, active),
+        ]
+        let managed: Set<UInt32> = [0, 2]
+        let floatingIds: Set<UInt32> = [2]
+        let region = WindowBordersMath.region(rect: floating, width: 4)
+        let occ = WindowBordersMath.occluders(
+            id: 2,
+            region: region,
+            isActive: false,
+            activeId: 0,
+            activeRect: active,
+            stack: stack,
+            stackIndex: 0,
+            managedIds: managed,
+            floatingIds: floatingIds,
+        )
+        XCTAssertTrue(occ.isEmpty, "float above focused tile must keep its border raise")
+    }
+
+    func testInactiveTilingBorderAlwaysClippedByActive() {
         // Stack does not include active above inactive (tiling restack lag), but active still clips
         let inactive = Rect(topLeftX: 0, topLeftY: 0, width: 200, height: 200)
         let active = Rect(topLeftX: 50, topLeftY: 50, width: 100, height: 100)
@@ -234,6 +325,7 @@ final class WindowBordersTest: XCTestCase {
             stack: stack,
             stackIndex: 0, // nothing above inactive in stack
             managedIds: managed,
+            floatingIds: [],
         )
         XCTAssertEqual(occ.count, 1)
         XCTAssertEqual(occ[0], active)

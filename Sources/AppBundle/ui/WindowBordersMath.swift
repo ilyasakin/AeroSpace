@@ -77,11 +77,48 @@ enum WindowBordersMath {
         return Set(ids)
     }
 
+    /// Overlay z-order for a border host. Higher draws on top.
+    ///
+    /// Focus-without-raise leaves **window** z-order alone, but the single always-on-top border
+    /// overlay must still paint float borders above tile borders — otherwise the active tile's
+    /// bright ring visually "steals raise" over a float that is correctly still on top.
+    ///
+    /// Layers (high → low): floating (stack order) → active tiling → other tiling (stack order).
+    @inline(__always)
+    static func borderZPosition(
+        id: UInt32,
+        activeId: UInt32?,
+        floatingIds: Set<UInt32>,
+        stackCount: Int,
+        stackIndex: Int?,
+    ) -> CGFloat {
+        let stackRank: CGFloat
+        if let stackIndex, stackCount > 0 {
+            // Front of stack (index 0) → higher rank among peers.
+            stackRank = CGFloat(stackCount - stackIndex)
+        } else {
+            stackRank = 0
+        }
+        if floatingIds.contains(id) {
+            return 2_000 + stackRank
+        }
+        if id == activeId {
+            return 1_000 + stackRank
+        }
+        return stackRank
+    }
+
     /// Write top-left-global rects of windows that cover `id`'s (outset) border region into `out`.
     /// Clears `out` with `removeAll(keepingCapacity:)` first. Zero heap when capacity is warm.
     ///
-    /// Front-to-back stack: lower indices are above higher ones. Active window is forced frontmost
-    /// for managed borders (never masked by another managed window; always clips inactive ones).
+    /// Front-to-back stack: lower indices are above higher ones.
+    ///
+    /// **Tiling:** active window is forced frontmost among *tiling* managed windows (tiling stack
+    /// lag) — never masked by another tile; inactive tiles still clip under active.
+    ///
+    /// **Floating:** float layer always occludes tiles (i3 contract / focus-without-raise), even if
+    /// CG stack lag temporarily lists a float behind a tile. Float borders are never force-clipped
+    /// by the active tile underneath them.
     static func collectOccluders(
         id: UInt32,
         region: Rect,
@@ -91,21 +128,39 @@ enum WindowBordersMath {
         stack: [(id: UInt32, rect: Rect)],
         stackIndex: Int?,
         managedIds: Set<UInt32>,
+        floatingIds: Set<UInt32> = [],
         into out: inout ContiguousArray<Rect>,
     ) {
         out.removeAll(keepingCapacity: true)
+        let subjectIsFloating = floatingIds.contains(id)
         var activeIncluded = false
         if let idx = stackIndex {
             for i in 0 ..< idx {
                 let item = stack[i]
                 if !rectsIntersect(region, item.rect) { continue }
-                if isActive, managedIds.contains(item.id) { continue }
+                // Active ignores *tiling* managed neighbours only — not floats above it.
+                if isActive, managedIds.contains(item.id), !floatingIds.contains(item.id) {
+                    continue
+                }
                 out.append(item.rect)
                 if item.id == activeId { activeIncluded = true }
             }
         }
-        if !isActive, let activeId, !activeIncluded,
-           let activeRect, rectsIntersect(region, activeRect)
+        // Float layer policy: every intersecting float occludes tiling borders, even when CG
+        // stack lag puts the float *behind* the focused tile (common right after private focus).
+        if !subjectIsFloating, !floatingIds.isEmpty {
+            for item in stack {
+                guard floatingIds.contains(item.id) else { continue }
+                guard rectsIntersect(region, item.rect) else { continue }
+                if !out.contains(item.rect) {
+                    out.append(item.rect)
+                }
+            }
+        }
+        // Force-clip inactive *tiling* borders under active (stack lag). Never force-clip a float —
+        // and never force-clip under an active *float* (float is already a real occluder).
+        if !isActive, !subjectIsFloating, let activeId, !floatingIds.contains(activeId),
+           !activeIncluded, let activeRect, rectsIntersect(region, activeRect)
         {
             out.append(activeRect)
         }
@@ -121,6 +176,7 @@ enum WindowBordersMath {
         stack: [(id: UInt32, rect: Rect)],
         stackIndex: Int?,
         managedIds: Set<UInt32>,
+        floatingIds: Set<UInt32> = [],
     ) -> [Rect] {
         var out = ContiguousArray<Rect>()
         collectOccluders(
@@ -132,6 +188,7 @@ enum WindowBordersMath {
             stack: stack,
             stackIndex: stackIndex,
             managedIds: managedIds,
+            floatingIds: floatingIds,
             into: &out,
         )
         return Array(out)

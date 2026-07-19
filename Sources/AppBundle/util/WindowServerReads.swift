@@ -98,6 +98,29 @@ func resolveBorderRect(
     return lastApplied
 }
 
+/// Pure decision for **live** border frames on WindowServer move/resize notify.
+///
+/// - **Floating**: user owns the frame — always track live WS. lastApplied is only a
+///   focus-follows-mouse / layout snapshot and freezes under free drag if preferred.
+/// - **Tiling + mouse manipulate**: prefer lastApplied so borders match the tile grid
+///   (live drag frame of the resize target ≠ sibling layout allocations → edge thrash).
+/// - **After our AX write**: prefer lastApplied until SkyLight catches up.
+func resolveLiveBorderRect(
+    isFloating: Bool,
+    mouseManipulateActive: Bool,
+    mayBeStale: Bool,
+    lastApplied: Rect?,
+    liveBounds: Rect?,
+) -> Rect? {
+    if isFloating {
+        if mayBeStale, let lastApplied { return lastApplied }
+        return liveBounds ?? lastApplied
+    }
+    if mouseManipulateActive, let lastApplied { return lastApplied }
+    if mayBeStale, let lastApplied { return lastApplied }
+    return liveBounds
+}
+
 /// Merge a partial frame write into the last applied rect.
 /// Command chains like `resize` then `center-window` issue size-only then position-only writes;
 /// without merging, the second call cancels the first AX job and leaves the tiled size.

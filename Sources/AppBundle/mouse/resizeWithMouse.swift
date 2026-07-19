@@ -178,6 +178,7 @@ func resetManipulatedWithMouseIfPossible() async throws {
     if currentlyManipulatedWithMouseWindowId != nil {
         currentlyManipulatedWithMouseWindowId = nil
         MouseResizeDriver.stop()
+        FloatingBorderTracker.stop()
         for workspace in Workspace.allUnsorted {
             workspace.resetResizeWeightBeforeResizeRecursive()
         }

@@ -282,10 +282,11 @@ final class WindowBordersManager {
     private var stackIndex: [UInt32: Int] = [:]
     /// Membership set for occlusion "managed" skips. Rebuilt only when entries gain/lose ids.
     private var managedIds: Set<UInt32> = []
-    /// The focused window. Treated as the frontmost window for border purposes: its border is never
-    /// masked by another managed window and draws on top, and inactive borders are always clipped
-    /// under it. Tiling rarely restacks tiles, so the raw on-screen stack can't be trusted to put the
-    /// focused window above a neighbour that overflowed onto it
+    /// Floating managed windows — true z-order occluders even when a tile is focused
+    /// (focus-without-raise keeps floats above tiles; borders must not reverse that).
+    private var floatingIds: Set<UInt32> = []
+    /// The focused window. Treated as frontmost among *tiling* managed windows for border
+    /// occlusion (tiling stack lag). Floating windows still occlude per real CG stack.
     private var activeId: UInt32?
     private var observingWindowServer = false
     /// Per-window chrome class for corner-radius probes (plain vs toolbar). Filled async once.
@@ -326,11 +327,13 @@ final class WindowBordersManager {
 
         activeId = focus.windowOrNil?.windowId
         var seen = Set<UInt32>(minimumCapacity: entries.count)
+        var nextFloating = Set<UInt32>(minimumCapacity: 4)
         var membershipChanged = false
         for workspace in Workspace.allUnsorted where workspace.isVisible {
             for window in workspace.allLeafWindowsRecursive {
                 guard let rect = resolvedBorderRect(for: window) else { continue }
                 seen.insert(window.windowId)
+                if window.isFloating { nextFloating.insert(window.windowId) }
                 if entries[window.windowId] == nil { membershipChanged = true }
                 let entry = entries[window.windowId] ?? makeEntry(window.windowId, rect: rect)
                 entry.rect = rect
@@ -353,6 +356,7 @@ final class WindowBordersManager {
         if membershipChanged {
             managedIds = Set(entries.keys)
         }
+        floatingIds = nextFloating
         // Continuous drag-rate move/resize delivery requires an explicit window id list
         // (SLSRegisterNotifyProc alone is not enough — JankyBorders does this every rebuild)
         requestWindowServerNotifications()
@@ -360,6 +364,42 @@ final class WindowBordersManager {
         // Config / membership / stack order may have changed - full recompute once, immediately
         // (refresh is already session-batched; no need to coalesce further)
         flushAll()
+    }
+
+    /// Update active/inactive border styles after focus changes when the light session skipped
+    /// `sideUiBorders` (focus-follows-mouse, float click-without-raise).
+    ///
+    /// Without this, keyboard focus moves but the **active** border stays on the previous window
+    /// (and keeps "frontmost" occlusion privilege) — looks like focus stole the border, not raise.
+    func syncActiveFocus() {
+        let cfg = config.windowBorders
+        guard cfg.enabled, TrayMenuModel.shared.isEnabled else { return }
+        let newActive = focus.windowOrNil?.windowId
+        // Always refresh float membership + stack: focus-without-raise paths skip full `refresh()`,
+        // and stale stack/floatingIds is exactly what paints active tile borders over floats.
+        var nextFloating = Set<UInt32>(minimumCapacity: floatingIds.count)
+        for workspace in Workspace.allUnsorted where workspace.isVisible {
+            for window in workspace.floatingWindows {
+                nextFloating.insert(window.windowId)
+            }
+        }
+        floatingIds = nextFloating
+        invalidateOnScreenWindowSnapshot()
+        rebuildStack(onScreenWindowSnapshot().normalStack)
+        if newActive == activeId {
+            // Style unchanged but occlusion/z may still need a repaint after stack refresh.
+            flushAll()
+            overlay.orderFrontRegardless()
+            return
+        }
+        activeId = newActive
+        for (id, entry) in entries {
+            entry.style = id == activeId ? cfg.resolvedActiveStyle() : cfg.resolvedInactiveStyle()
+            entry.color = entry.style.primaryColor
+        }
+        // Active id affects style + which borders force-clip (tiling). Float occluders stay real.
+        flushAll()
+        overlay.orderFrontRegardless()
     }
 
     /// Classify window chrome (toolbar vs plain) once so radius can track Tahoe's split.
@@ -433,8 +473,28 @@ final class WindowBordersManager {
         MouseResizeDriver.noteWindowServerFrame(windowId: windowId)
 
         guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
+
+        // Floating free-drag: arm display-link sampler so borders track at monitor Hz even when
+        // WS notifies are sparse or the main thread is busy with AX light sessions.
+        if let window = Window.get(byId: windowId), window.isFloating, entries[windowId] != nil {
+            FloatingBorderTracker.kick(window)
+        }
+
         guard let rect = resolvedLiveBorderRect(windowId: windowId) else { return }
         applyBorderRect(windowId: windowId, rect: rect, flush: true)
+    }
+
+    /// Sample live bounds + paint for a floating drag target (display-link / immediate tick).
+    func sampleFloatingBorder(windowId: UInt32) {
+        guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled else { return }
+        guard entries[windowId] != nil else { return }
+        guard let live = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true) else { return }
+        applyBorderRect(windowId: windowId, rect: live, flush: true)
+    }
+
+    /// Stop display-link floating border tracking (mouse-up).
+    func stopFloatingBorderTracking() {
+        FloatingBorderTracker.stop()
     }
 
     /// After mouse-drag layout: paint **all** tile borders from layout geometry (lastApplied).
@@ -457,21 +517,18 @@ final class WindowBordersManager {
         if any { flushDirtyList() }
     }
 
-    /// Frame source for a WindowServer move/resize notify.
-    /// - During mouse manipulate: prefer layout lastApplied for every window so borders stay
-    ///   locked to the tile grid (live drag frame ≠ layout allocation → L/R thrash).
-    /// - After our own AX write: prefer lastApplied until SkyLight catches up.
-    /// - Otherwise: live WindowServer bounds.
+    /// Frame source for a WindowServer move/resize notify. See `resolveLiveBorderRect`.
     private func resolvedLiveBorderRect(windowId: UInt32) -> Rect? {
+        let window = Window.get(byId: windowId)
         let live = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true)
-        let applied = Window.get(byId: windowId)?.lastAppliedLayoutPhysicalRect
-        if currentlyManipulatedWithMouseWindowId != nil, let applied {
-            return applied
-        }
-        if skyLightFrameMayBeStale(windowId), let applied {
-            return applied
-        }
-        return live
+        let applied = window?.lastAppliedLayoutPhysicalRect
+        return resolveLiveBorderRect(
+            isFloating: window?.isFloating == true,
+            mouseManipulateActive: currentlyManipulatedWithMouseWindowId != nil,
+            mayBeStale: skyLightFrameMayBeStale(windowId),
+            lastApplied: applied,
+            liveBounds: live,
+        )
     }
 
     /// Update entry + stack rect and mark dirty. `flush: false` batches into `syncAfterMouseLayout`.
@@ -492,6 +549,11 @@ final class WindowBordersManager {
             stack.append((windowId, rect))
         }
         entries[windowId]?.rect = rect
+        // Floating free-drag: keep lastApplied in sync with live so FFM / refresh don't snap back
+        // to the drag-start snapshot after mouse-up.
+        if let window = Window.get(byId: windowId), window.isFloating {
+            window.lastAppliedLayoutPhysicalRect = rect
+        }
 
         let moverIsBordered = entries[windowId] != nil
         if !moverIsBordered {
@@ -592,7 +654,16 @@ final class WindowBordersManager {
         originY: CGFloat,
         activeRect: Rect?,
     ) {
-        let panel = entry.applyStroke(originX: originX, originY: originY, zPosition: id == activeId ? 1 : 0)
+        // Float borders must paint above tile borders (including active). Active-only z was
+        // painting the focused tile's ring over floats → "border steals raise".
+        let z = WindowBordersMath.borderZPosition(
+            id: id,
+            activeId: activeId,
+            floatingIds: floatingIds,
+            stackCount: stack.count,
+            stackIndex: stackIndex[id],
+        )
+        let panel = entry.applyStroke(originX: originX, originY: originY, zPosition: z)
         WindowBordersMath.collectOccluders(
             id: id,
             region: entry.region,
@@ -602,6 +673,7 @@ final class WindowBordersManager {
             stack: stack,
             stackIndex: stackIndex[id],
             managedIds: managedIds,
+            floatingIds: floatingIds,
             into: &occluderScratch,
         )
         entry.applyMask(panel: panel, occluders: occluderScratch, originX: originX, originY: originY)
@@ -621,6 +693,7 @@ final class WindowBordersManager {
         for (_, entry) in entries { entry.removeFromOverlay() }
         entries.removeAll()
         managedIds.removeAll()
+        floatingIds.removeAll()
         chromeCache.removeAll()
         stack.removeAll()
         stackIndex.removeAll()
@@ -634,6 +707,84 @@ final class WindowBordersManager {
         for (i, item) in newStack.enumerated() {
             stackIndex[item.id] = i
         }
+    }
+}
+
+// MARK: - Floating free-drag: display-Hz border glue
+
+/// Samples a floating window’s live frame on the **workspace display’s** vsync so the border
+/// follows at monitor Hz (ProMotion 120, etc.), not at the rate of AX/`SLS` notify delivery.
+///
+/// WS move events still paint immediately when they arrive; this fills gaps when notifies are
+/// sparse or the main run loop is busy with light sessions.
+@MainActor
+enum FloatingBorderTracker {
+    private static var targetId: UInt32?
+    private static let subscriptionId = UUID()
+    private static var subscribedDisplayId: CGDirectDisplayID?
+    private static var lastSampled: Rect?
+
+    /// Start / continue tracking. Safe to call every drag tick.
+    static func kick(_ window: Window) {
+        guard window.isFloating else { return }
+        guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled else { return }
+        targetId = window.windowId
+        ensureNotifications(for: window)
+        ensureSubscribed(for: window)
+        // Immediate sample — do not wait one display frame for the first move.
+        sampleNow()
+    }
+
+    static func stop() {
+        targetId = nil
+        lastSampled = nil
+        if let displayId = subscribedDisplayId {
+            WorkspaceDisplayLink.unsubscribe(displayId: displayId, id: subscriptionId)
+            subscribedDisplayId = nil
+        }
+    }
+
+    private static func ensureNotifications(for window: Window) {
+        var ids: [UInt32] = [window.windowId]
+        ids.append(contentsOf: WindowBordersManager.shared.borderedWindowIds)
+        SkyLight.requestNotifications(for: ids)
+    }
+
+    private static func ensureSubscribed(for window: Window) {
+        let displayId = DisplayRefresh.displayId(for: window)
+            ?? window.nodeWorkspace.flatMap { DisplayRefresh.displayId(for: $0) }
+            ?? CGMainDisplayID()
+        if subscribedDisplayId == displayId { return }
+        if let old = subscribedDisplayId {
+            WorkspaceDisplayLink.migrate(
+                id: subscriptionId,
+                from: old,
+                to: displayId,
+                onPulse: { FloatingBorderTracker.onDisplayPulse() },
+            )
+        } else {
+            WorkspaceDisplayLink.subscribe(displayId: displayId, id: subscriptionId) {
+                FloatingBorderTracker.onDisplayPulse()
+            }
+        }
+        subscribedDisplayId = displayId
+    }
+
+    private static func onDisplayPulse() {
+        guard targetId != nil else { return }
+        // Follow the window across monitors mid-drag.
+        if let id = targetId, let window = Window.get(byId: id), window.isFloating {
+            ensureSubscribed(for: window)
+        }
+        sampleNow()
+    }
+
+    private static func sampleNow() {
+        guard let id = targetId else { return }
+        guard let live = WindowServerReads.current.windowBounds(windowId: id, forOverlay: true) else { return }
+        if live == lastSampled { return }
+        lastSampled = live
+        WindowBordersManager.shared.sampleFloatingBorder(windowId: id)
     }
 }
 

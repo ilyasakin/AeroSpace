@@ -133,6 +133,49 @@ final class WindowServerReadsTest: XCTestCase {
         )
     }
 
+    // MARK: resolveLiveBorderRect (WS move notify — float vs tile drag)
+
+    func testLiveBorderFloatingTracksLiveDuringMouseDrag() {
+        // Regression: alt-shift-space float + drag froze border on lastApplied
+        let applied = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400)
+        let live = Rect(topLeftX: 120, topLeftY: 80, width: 400, height: 400)
+        let r = resolveLiveBorderRect(
+            isFloating: true,
+            mouseManipulateActive: true,
+            mayBeStale: false,
+            lastApplied: applied,
+            liveBounds: live,
+        )
+        XCTAssertEqual(r, live)
+    }
+
+    func testLiveBorderTilingPrefersLastAppliedDuringMouseDrag() {
+        // Tile-grid path: layout lastApplied must win so sibling edges don't thrash
+        let applied = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
+        let live = Rect(topLeftX: 10, topLeftY: 0, width: 520, height: 1000)
+        let r = resolveLiveBorderRect(
+            isFloating: false,
+            mouseManipulateActive: true,
+            mayBeStale: false,
+            lastApplied: applied,
+            liveBounds: live,
+        )
+        XCTAssertEqual(r, applied)
+    }
+
+    func testLiveBorderFloatingStaleAfterOurWritePrefersLastApplied() {
+        let applied = Rect(topLeftX: 10, topLeftY: 20, width: 300, height: 400)
+        let lagging = Rect(topLeftX: 0, topLeftY: 0, width: 300, height: 400)
+        let r = resolveLiveBorderRect(
+            isFloating: true,
+            mouseManipulateActive: false,
+            mayBeStale: true,
+            lastApplied: applied,
+            liveBounds: lagging,
+        )
+        XCTAssertEqual(r, applied)
+    }
+
     // MARK: mergeFrameWrite (resize → center command chains)
 
     func testMergeFrameWriteSizeOnlyThenPositionOnly() {
