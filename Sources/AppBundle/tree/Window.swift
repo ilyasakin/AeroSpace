@@ -42,7 +42,35 @@ open class Window: TreeNode, Hashable {
     func isMacosFullscreen(_ cm: CancellationMode) async throws -> Bool { false }
     func isMacosMinimized(_ cm: CancellationMode) async throws -> Bool { false } // todo replace with enum MacOsWindowNativeState { normal, fullscreen, invisible }
     var isHiddenInCorner: Bool { die("Not implemented") }
-    @MainActor func nativeFocus() { die("Not implemented") }
+    @MainActor open func nativeFocus() { die("Not implemented") }
+    /// Focus for keyboard without changing global z-order (no AXRaise).
+    @MainActor open func nativeFocus(raise: Bool) { if raise { nativeFocus() } }
+    /// Focus in the OS under the i3-like float contract (SIP on, no Dock SA).
+    ///
+    /// Contract:
+    /// - Floating windows stay above the tiling stack for normal focus moves.
+    /// - Focusing a tile never `AXRaise`s when the workspace has floats (no sink).
+    /// - Uses private `_SLPSSetFrontProcessWithOptions` focus-without-raise when available
+    ///   so CG z-order is unchanged (verified with SIP enabled).
+    /// - Focusing a float may raise (normal stack among peers).
+    /// - Durable foreign-window *levels* still require yabai's SA (SIP partial off); we do not.
+    @MainActor func nativeFocusRespectingFloats() {
+        let hasFloats = workspaceHasFloatingWindows
+        let raise = FloatLayerPolicy.shouldRaiseOnFocus(isFloating: isFloating, workspaceHasFloats: hasFloats)
+        // Tiles under floats: private focus-without-raise only. Do not AXRaise floats afterward —
+        // that re-covers tiles and steals key focus (breaks click/keyboard on tiling).
+        if FloatLayerPolicy.preferFocusWithoutRaise(isFloating: isFloating, workspaceHasFloats: hasFloats) {
+            FloatLayer.focus(self, raise: false)
+        } else {
+            FloatLayer.focus(self, raise: raise)
+        }
+    }
+
+    /// True when this window's workspace currently has at least one floating window.
+    @MainActor var workspaceHasFloatingWindows: Bool {
+        !(nodeWorkspace?.floatingWindows.isEmpty ?? true)
+    }
+
     /// Raise the window to the top of the z-order without focusing it. Best-effort
     @MainActor func nativeRaise() {}
     func getAxRect(_ cm: CancellationMode) async throws -> Rect? { die("Not implemented") }

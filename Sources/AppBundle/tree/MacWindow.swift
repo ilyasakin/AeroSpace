@@ -115,7 +115,8 @@ final class MacWindow: Window {
                     if focus.windowOrNil?.app.pid != app.pid {
                         // Force focus to fix macOS annoyance with focused apps without windows.
                         //   https://github.com/nikitabobko/AeroSpace/issues/65
-                        deadWindowFocus.windowOrNil?.nativeFocus()
+                        // Respect floats: do not AXRaise a tile under a floating window.
+                        deadWindowFocus.windowOrNil?.nativeFocusRespectingFloats()
                     }
                 case .macosPopupWindowsContainer, // Don't switch back on popup destruction
                      .workspace, // Workspace is invalid parent for windows
@@ -130,7 +131,11 @@ final class MacWindow: Window {
     override func isMacosMinimized(_ cm: CancellationMode) async throws -> Bool { try await macApp.isMacosNativeMinimized(windowId, cm) == true }
 
     @MainActor override func nativeFocus() {
-        macApp.nativeFocus(windowId)
+        macApp.nativeFocus(windowId, raise: true)
+    }
+
+    @MainActor override func nativeFocus(raise: Bool) {
+        macApp.nativeFocus(windowId, raise: raise)
     }
 
     @MainActor override func nativeRaise() {

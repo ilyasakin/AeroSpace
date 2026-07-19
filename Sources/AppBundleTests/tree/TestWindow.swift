@@ -4,6 +4,8 @@ import AppKit
 final class TestWindow: Window, CustomStringConvertible {
     private var _rect: Rect?
     var isMacosFullscreenForTest = false
+    /// Last `raise` argument seen by `nativeFocus(raise:)` (nil if never called).
+    private(set) var lastNativeFocusRaise: Bool? = nil
 
     @MainActor
     private init(_ id: UInt32, _ parent: NonLeafTreeNodeObject, _ adaptiveWeight: CGFloat, _ rect: Rect?) {
@@ -23,6 +25,12 @@ final class TestWindow: Window, CustomStringConvertible {
 
     @MainActor
     override func nativeFocus() {
+        nativeFocus(raise: true)
+    }
+
+    @MainActor
+    override func nativeFocus(raise: Bool) {
+        lastNativeFocusRaise = raise
         appForTests = TestApp.shared
         TestApp.shared.focusedWindow = self
     }
