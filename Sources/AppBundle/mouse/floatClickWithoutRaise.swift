@@ -423,7 +423,25 @@ private func evaluateFloatClickAction(
 
     let location = quartzLocation.withYAxisFlipped
     invalidateOnScreenWindowSnapshot()
-    guard let top = topmostManagedWindow(at: location) else { return .passThrough }
+    let top: Window
+    if let targetId = SkyLight.findEventTargetWindow(at: quartzLocation) {
+        if let managed = Window.get(byId: targetId) {
+            top = managed
+        } else if NSApp.window(withWindowNumber: Int(targetId)) != nil {
+            // Our own alpha-passthrough overlays (tab bar / status bar) can win the WS hit test
+            // in their transparent regions — resolve what's really under the click via the model
+            guard let scanned = topmostManagedWindow(at: location) else { return .passThrough }
+            top = scanned
+        } else {
+            // The true click target is a window we don't manage: a menu, panel, dialog, or
+            // another app's float sitting above our tiles. The click is theirs — never intercept
+            return .passThrough
+        }
+    } else {
+        // SLSFindWindowAndOwner unavailable (symbol drift) — model-based scan fallback
+        guard let scanned = topmostManagedWindow(at: location) else { return .passThrough }
+        top = scanned
+    }
 
     let workspace = top.nodeWorkspace ?? location.monitorApproximation.activeWorkspace
     let hasFloats = !workspace.floatingWindows.isEmpty
@@ -498,14 +516,18 @@ func topmostManagedWindow(at location: CGPoint) -> Window? {
         }
     }
 
+    // First hit wins: the frontmost window containing the point decides. Walking past
+    // non-tile hits used to reroute clicks that belonged to unmanaged windows (dialogs,
+    // other apps' panels) or stale-rect floats sitting above the tile.
     let stack = onScreenWindowSnapshot().normalStack
     for item in stack {
         guard item.rect.contains(location) else { continue }
-        guard let window = Window.get(byId: item.id) else { continue }
+        guard let window = Window.get(byId: item.id) else { return nil } // unmanaged on top: click is theirs
         if window.isHiddenInCorner { continue }
-        if window.isFloating { continue }
+        if window.isFloating { return window } // model rect in phase 1 was stale — still a float hit
         if window.nodeWorkspace == workspace { return window }
         if window.isSticky, window.nodeMonitor?.activeWorkspace == workspace { return window }
+        return nil // managed but belongs elsewhere (other workspace) — don't claim the click
     }
 
     if let w = location.findWindowRecursively(
