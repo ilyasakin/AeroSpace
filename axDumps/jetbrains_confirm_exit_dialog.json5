@@ -1,0 +1,75 @@
+{
+  "AXActivationPoint" : "<AXValue 0x7256fc180> {value = x:-1.000000 y:1441.000000 type = kAXValueCGPointType}",
+  "AXCancelButton" : null,
+  "AXCloseButton" : null,
+  "AXDefaultButton" : null,
+  "AXDocument" : null,
+  "AXFocused" : 0,
+  "AXFrame" : "<AXValue 0x72370dec0> {value = x:2559.000000 y:1439.000000 w:370.000000 h:170.000000 type = kAXValueCGRectType}",
+  "AXFullScreen" : 0,
+  "AXFullScreenButton" : null,
+  "AXGrowArea" : null,
+  "AXMain" : 1,
+  "AXMinimizeButton" : null,
+  "AXMinimized" : 0,
+  "AXModal" : 0,
+  "AXParent" : "<AXUIElement Application 0x72505ddd0> {pid=81124}",
+  "AXPosition" : "<AXValue 0x7256fc180> {value = x:2559.000000 y:1439.000000 type = kAXValueCGPointType}",
+  "AXProxy" : null,
+  "AXRole" : "AXWindow",
+  "AXSections" : [
+    "{\n    SectionDescription = Content;\n    SectionObject = \"<AXUIElement 0x72505c930> {pid=81124}\";\n    SectionUniqueID = AXContent;\n}"
+  ],
+  "AXSize" : "<AXValue 0x7256fc180> {value = w:370.000000 h:170.000000 type = kAXValueCGSizeType}",
+  "AXSubrole" : "AXUnknown",
+  "AXTitle" : "Confirm Exit",
+  "AXTitleUIElement" : null,
+  "AXToolbarButton" : null,
+  "AXZoomButton" : null,
+  "Aero.AXApp" : {
+    "AXExtrasMenuBar" : null,
+    "AXFocusedUIElement" : "<AXUIElement 0x72505ddd0> {pid=81124}",
+    "AXFocusedWindow" : "AXUIElement(AxWindowId=93385, title=\"Confirm Exit\", role=\"AXWindow\", subrole=\"AXUnknown\")",
+    "AXFrame" : null,
+    "AXFrontmost" : 0,
+    "AXFunctionRowTopLevelElements" : [
+
+    ],
+    "AXMainWindow" : "AXUIElement(AxWindowId=93385, title=\"Confirm Exit\", role=\"AXWindow\", subrole=\"AXUnknown\")",
+    "AXMenuBar" : "<AXUIElement 0x72505ddd0> {pid=81124}",
+    "AXPosition" : null,
+    "AXRole" : "AXApplication",
+    "AXSize" : null,
+    "AXTitle" : "DataGrip",
+    "AXWindows" : [
+      "AXUIElement(AxWindowId=93385, title=\"Confirm Exit\", role=\"AXWindow\", subrole=\"AXUnknown\")",
+      "AXUIElement(AxWindowId=93294, title=\"Kuika – Query.sql [kuika_app_be…db.kuika.com]\", role=\"AXWindow\", subrole=\"AXDialog\")"
+    ],
+    "Aero.AxFailed" : "isWritable.AXFunctionRowTopLevelElements(failure), get.AXFrame(attributeUnsupported), isWritable.AXFrame(failure), get.AXExtrasMenuBar(noValue), isWritable.AXExtrasMenuBar(failure), get.AXSize(attributeUnsupported), isWritable.AXSize(attributeUnsupported), get.AXPosition(attributeUnsupported), isWritable.AXPosition(attributeUnsupported)",
+    "Aero.AxIgnored" : "AXChildren, AXChildrenInNavigationOrder, AXEnhancedUserInterface, AXPreferredLanguage, AXRoleDescription, AXHidden",
+    "Aero.AxWritable" : "AXFrontmost"
+  },
+  "Aero.App.appBundleId" : "com.jetbrains.datagrip",
+  "Aero.App.nsApp.activationPolicy" : "regular",
+  "Aero.App.nsApp.appBundlePath" : "file:///Users/ilyasakin/Applications/DataGrip.app/",
+  "Aero.App.nsApp.execPath" : "file:///Users/ilyasakin/Applications/DataGrip.app/Contents/MacOS/datagrip",
+  "Aero.App.pid" : 81124,
+  "Aero.App.version" : "DB-262.8665.272",
+  "Aero.App.versionShort" : "2026.2",
+  "Aero.AxFailed" : "isWritable.AXFrame(failure), get.AXGrowArea(failure), get.AXMinimizeButton(noValue), get.AXDocument(noValue), get.AXCloseButton(noValue), isWritable.AXActivationPoint(failure), get.AXFullScreenButton(noValue), get.AXProxy(noValue), get.AXDefaultButton(noValue), get.AXTitleUIElement(noValue), get.AXCancelButton(noValue), get.AXZoomButton(noValue), get.AXToolbarButton(noValue)",
+  "Aero.AxIgnored" : "AXChildrenInNavigationOrder, AXChildren, AXRoleDescription",
+  "Aero.AxUiElementWindowType" : "dialog",
+  "Aero.AxWritable" : "AXPosition, AXSections, AXMain",
+  "Aero.axWindowId" : 93385,
+  "Aero.macOS.version" : "Version 26.5.1 (Build 25F80)",
+  "Aero.matchedWindowDetectionRule" : null,
+  "Aero.on-window-detected" : [
+    {
+      "commands" : "move-node-to-workspace G",
+      "matcher" : "appId=\"com.jetbrains.datagrip\""
+    }
+  ],
+  "Aero.treeNodeParent" : "Optional(AppBundle.TilingContainer)",
+  "Aero.windowLevel" : "normalWindow",
+  "Aero.workspace" : "G"
+}

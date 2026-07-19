@@ -90,6 +90,21 @@ extension AxUiElementMock {
             return .popup
         }
 
+        // Provably fixed-size windows that are not fullscreen-capable float: tiling must resize,
+        // and these refuse. X11 analog: i3 floats windows whose WM_NORMAL_HINTS pin min == max
+        // (confirm/exit dialogs — JetBrains' JBR exposes them as buttonless AXUnknown windows,
+        // Swing/AWT as standard-chrome ones; both are fixed-size and never fullscreen-capable).
+        // Fullscreen-capable means an enabled fullscreen button or a settable AXFullScreen —
+        // "designed to go big" (iPhone Simulator, mpv borderless fullscreen) stays tiled.
+        // `isSettable == false` is a proven "not settable"; old dumps / failed AX probes stay
+        // unknown (nil) and fall through — never reclassifies on missing information.
+        if isSettable(Ax.sizeAttr) == false,
+           fullscreenButton?.get(Ax.enabledAttr) != true,
+           isSettable(Ax.isFullscreenAttr) != true
+        {
+            return .dialog
+        }
+
         // Float windows that declare a dialog-ish subrole (macOS native file picker, telegram
         // image viewer, Finder Quick Look)
         if subrole != kAXStandardWindowSubrole && anyButton {

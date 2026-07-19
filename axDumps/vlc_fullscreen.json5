@@ -59,7 +59,7 @@
   "Aero.App.versionShort" : "3.0.21",
   "Aero.AxFailed" : "isWritable.AXFrame, get.AXGrowArea, get.AXMinimizeButton, get.AXDocument, get.AXCloseButton, isWritable.AXActivationPoint, get.AXFullScreenButton, get.AXProxy, get.AXDefaultButton, get.AXTitleUIElement, get.AXCancelButton, get.AXZoomButton, get.AXToolbarButton",
   "Aero.AxIgnored" : "AXChildrenInNavigationOrder, AXChildren, AXRoleDescription",
-  "Aero.AxUiElementWindowType" : "window", // todo fix
+  "Aero.AxUiElementWindowType" : "dialog", // fixed-size, not fullscreen-capable -> float (was "window // todo fix")
   "Aero.AxWritable" : "AXPosition, AXSections, AXMain",
   "Aero.axWindowId" : 4856,
   "Aero.macOS.version" : "Version 26.1 (Build 25B78)",
