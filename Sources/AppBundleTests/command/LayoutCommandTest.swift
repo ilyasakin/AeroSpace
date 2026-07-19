@@ -353,11 +353,10 @@ final class LayoutCommandTest: XCTestCase {
         let workspace = Workspace.get(byName: name)
         var w1: Window!
         var w2: Window!
-        var w3: Window!
         workspace.rootTilingContainer.apply {
             w1 = TestWindow.new(id: 1, parent: $0)
             w2 = TestWindow.new(id: 2, parent: $0)
-            w3 = TestWindow.new(id: 3, parent: $0)
+            TestWindow.new(id: 3, parent: $0)
         }
         assertEquals(w2.focusWindow(), true)
         assertEquals(
@@ -389,6 +388,62 @@ final class LayoutCommandTest: XCTestCase {
         assertEquals(
             workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId),
             [1, 2, 3],
+        )
+    }
+
+    /// Float a root-level window whose only neighbor is a *container* (split / accordion group):
+    /// unfloat must land back at root level. The old direct-window-only capture recorded nil
+    /// neighbors here and fell back to MRU placement *inside* the container.
+    func testFloatingToggle_containerNeighbor_restoresRootPosition() async {
+        let workspace = Workspace.get(byName: name)
+        var w3: Window!
+        workspace.rootTilingContainer.apply {
+            TilingContainer.newVTiles(parent: $0, adaptiveWeight: 1).apply {
+                TestWindow.new(id: 1, parent: $0)
+                assertEquals(TestWindow.new(id: 2, parent: $0).focusWindow(), true)
+            }
+            w3 = TestWindow.new(id: 3, parent: $0)
+        }
+        assertEquals(
+            workspace.rootTilingContainer.layoutDescription,
+            .h_tiles([.v_tiles([.window(1), .window(2)]), .window(3)]),
+        )
+        assertEquals(w3.focusWindow(), true)
+
+        await parseCommand("layout floating").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertTrue(w3.isFloating)
+        assertNotNil(w3.floatingRestoreSlot)
+
+        await parseCommand("layout tiling").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertFalse(w3.isFloating)
+        assertEquals(
+            workspace.rootTilingContainer.layoutDescription,
+            .h_tiles([.v_tiles([.window(1), .window(2)]), .window(3)]),
+        )
+    }
+
+    /// No restore slot (window was never tiled): i3 floating_disable semantics — plain sibling
+    /// insert AFTER the MRU tiling leaf (con_descend_tiling_focused), not dwindle/absorb.
+    func testUnfloat_withoutSlot_insertsAfterMruTilingLeaf() async {
+        let workspace = Workspace.get(byName: name)
+        var w1: Window!
+        var w3: Window!
+        workspace.rootTilingContainer.apply {
+            w1 = TestWindow.new(id: 1, parent: $0)
+            TestWindow.new(id: 2, parent: $0)
+        }
+        workspace.floatingWindowsContainer.apply {
+            w3 = TestWindow.new(id: 3, parent: $0)
+        }
+        assertEquals(w1.focusWindow(), true) // MRU tiling leaf = w1
+        assertEquals(w3.focusWindow(), true)
+        assertNil(w3.floatingRestoreSlot)
+
+        await parseCommand("layout tiling").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertFalse(w3.isFloating)
+        assertEquals(
+            workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId),
+            [1, 3, 2],
         )
     }
 }

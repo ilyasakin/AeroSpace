@@ -85,6 +85,18 @@ struct PersistentPath: Equatable, Sendable, Hashable {
     var dropLast: PersistentPath {
         PersistentPath(indices: Array(indices.dropLast()))
     }
+
+    /// Walk up `levels` ancestors, never past a child of the root (the result must stay
+    /// insertable-next-to). Clamps when the tree got flatter than the recorded ascent.
+    func ascending(by levels: Int) -> PersistentPath {
+        var result = self
+        var remaining = levels
+        while remaining > 0, result.indices.count > 1 {
+            result = result.dropLast
+            remaining -= 1
+        }
+        return result
+    }
 }
 
 // MARK: - Read

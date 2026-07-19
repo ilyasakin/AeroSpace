@@ -71,13 +71,29 @@ struct LayoutCommand: Command {
                     case .floatingWindowsContainer(let container):
                         window.lastFloatingSize = (try? await window.getAxSize(.nonCancellable)) ?? window.lastFloatingSize
                         guard let workspace = container.nodeWorkspace else { return .fail(io.err(bugPrompt())) }
-                        // Unfloat re-inserts at the original neighbor slot when possible
+                        // Tier 1: nothing changed while floating → materialize the pre-float
+                        // spine verbatim (exact structure + weights; undoes removal's flatten).
+                        let preSpine = window.floatingRestorePreSpine
+                        let postSpine = window.floatingRestorePostSpine
+                        window.floatingRestorePreSpine = nil
+                        window.floatingRestorePostSpine = nil
+                        if let preSpine, let postSpine, workspace.currentTilingSpine() == postSpine {
+                            window.floatingRestoreSlot = nil
+                            workspace.materializeTilingSpine(preSpine)
+                            return .succ
+                        }
+                        // Tier 2: workspace changed — re-insert at the original neighbor slot
                         // (sibling order unchanged — not MRU-append).
                         if let slot = window.floatingRestoreSlot {
                             window.floatingRestoreSlot = nil
                             if workspace.commitTilingRestoreFloatingSlot(windowId: window.windowId, slot: slot) {
                                 return .succ
                             }
+                        }
+                        // Neighbors gone / never tiled: i3 floating_disable semantics — plain
+                        // sibling insert after the MRU tiling leaf (no dwindle/absorb placement).
+                        if workspace.commitTilingUnfloat(windowId: window.windowId) {
+                            return .succ
                         }
                         do {
                             try await window.relayoutWindow(on: workspace, .nonCancellable, forceTile: true)
@@ -89,15 +105,22 @@ struct LayoutCommand: Command {
             case .floating:
                 guard let window = target.windowOrNil else { return .fail(io.err(noWindowIsFocused)) }
                 let workspace = target.workspace
-                // Capture tiling slot *before* unbind so unfloat can restore order.
+                // Capture tiling slot + exact spine *before* unbind so unfloat can restore.
                 if !window.isFloating {
                     window.floatingRestoreSlot = FloatingRestoreSlot.capture(from: window)
+                    window.floatingRestorePreSpine = workspace.currentTilingSpine()
                 }
                 // Keep lastApplied as the current tile frame so a following resize/center in the
                 // same session can merge size+position (see MacWindow.setAxFrame / mergeFrameWrite).
                 // Do *not* force always-on-top: that re-raises on every focus change and blocks
                 // interacting with other tiles (i3 float is a layer, not always-on-top).
                 window.bindAsFloatingWindow(to: workspace)
+                if window.floatingRestorePreSpine != nil {
+                    // Settle the flatten NOW and snapshot the result: the unfloat comparison
+                    // baseline must match what refresh-time normalization will produce.
+                    workspace.normalizeContainers()
+                    window.floatingRestorePostSpine = workspace.currentTilingSpine()
+                }
                 if let size = window.lastFloatingSize {
                     window.setAxFrame(nil, size)
                 }

@@ -15,6 +15,13 @@ open class Window: TreeNode, Hashable {
     /// i3-like floating toggle: when floated from tiling, remember neighbors so unfloat
     /// re-inserts without scrambling sibling order.
     var floatingRestoreSlot: FloatingRestoreSlot? = nil
+    /// Exact workspace spine right before this window floated (window still included). When the
+    /// spine is unchanged at unfloat time, restore materializes this verbatim — undoing the
+    /// container flatten that removal triggered (neighbor slots can't reconstruct lost structure).
+    var floatingRestorePreSpine: PersistentTilingNode? = nil
+    /// Spine right after the float settled (window removed, containers normalized) — the
+    /// "nothing changed while floating" comparison baseline.
+    var floatingRestorePostSpine: PersistentTilingNode? = nil
 
     @MainActor
     init(id: UInt32, _ app: any AbstractApp, lastFloatingSize: CGSize?, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {
@@ -89,12 +96,21 @@ enum LayoutReason: Equatable {
 }
 
 /// Snapshot of a window's place in the tiling tree when it is floated (i3 floating toggle).
+///
+/// Neighbors are the nearest **leaf** windows inside the adjacent sibling subtrees, plus how many
+/// levels that leaf sits below the sibling root (`ascent`). A direct window sibling has ascent 0;
+/// a container sibling records its edge leaf so restore can find the container again by walking
+/// up from the leaf — direct-window-only capture used to bail to fallback placement whenever the
+/// neighbor was a split or accordion group.
 struct FloatingRestoreSlot: Equatable, Sendable {
     var workspaceName: String
-    /// Sibling window immediately before this one in the parent container (nil if first).
+    /// Nearest leaf window in the sibling subtree before this one (nil if first in parent).
     var neighborBeforeId: UInt32?
-    /// Sibling window immediately after this one (nil if last).
+    /// Levels from that leaf up to the sibling subtree root (0 = the sibling is the window itself).
+    var neighborBeforeAscent: Int
+    /// Nearest leaf window in the sibling subtree after this one (nil if last in parent).
     var neighborAfterId: UInt32?
+    var neighborAfterAscent: Int
     var weight: CGFloat
 
     /// Capture slot from a currently tiling window. Returns nil if not under a tiling container.
@@ -105,15 +121,33 @@ struct FloatingRestoreSlot: Equatable, Sendable {
               let index = window.ownIndex
         else { return nil }
         let kids = parent.children
-        let before: UInt32? = index > 0 ? (kids[index - 1] as? Window)?.windowId : nil
-        let after: UInt32? = index + 1 < kids.count ? (kids[index + 1] as? Window)?.windowId : nil
+        let before = index > 0 ? edgeLeaf(kids[index - 1], last: true) : nil
+        let after = index + 1 < kids.count ? edgeLeaf(kids[index + 1], last: false) : nil
         let weight = window.getWeight(parent.orientation)
         return FloatingRestoreSlot(
             workspaceName: workspace.name,
-            neighborBeforeId: before,
-            neighborAfterId: after,
+            neighborBeforeId: before?.id,
+            neighborBeforeAscent: before?.ascent ?? 0,
+            neighborAfterId: after?.id,
+            neighborAfterAscent: after?.ascent ?? 0,
             weight: weight,
         )
+    }
+
+    /// Edge leaf window of a sibling subtree: the window itself (ascent 0), or the first/last
+    /// leaf of a container with how many levels it sits below the subtree root.
+    @MainActor
+    private static func edgeLeaf(_ node: TreeNode, last: Bool) -> (id: UInt32, ascent: Int)? {
+        if let window = node as? Window { return (window.windowId, 0) }
+        var ascent = 0
+        var current: TreeNode? = node
+        while let container = current as? TilingContainer {
+            guard let child = last ? container.children.last : container.children.first else { return nil }
+            ascent += 1
+            if let window = child as? Window { return (window.windowId, ascent) }
+            current = child
+        }
+        return nil
     }
 }
 

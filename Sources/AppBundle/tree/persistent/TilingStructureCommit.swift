@@ -46,7 +46,9 @@ extension Workspace {
     }
 
     /// Re-insert a window that was floated from tiling, preferring its original neighbor slots
-    /// (i3 floating toggle: unfloat does not scramble sibling order).
+    /// (i3 floating toggle: unfloat does not scramble sibling order). Neighbor leaves inside
+    /// container siblings resolve via the recorded ascent (see FloatingRestoreSlot). Returns
+    /// false when neither neighbor resolves — caller falls back to `commitTilingUnfloat`.
     @discardableResult
     func commitTilingRestoreFloatingSlot(windowId: UInt32, slot: FloatingRestoreSlot) -> Bool {
         commitTilingTransform { spine in
@@ -54,14 +56,39 @@ extension Workspace {
             let base = spine.path(ofWindowId: windowId).flatMap { spine.removing(at: $0)?.root } ?? spine
             let child = PersistentTilingNode.window(id: windowId, weight: slot.weight)
             if let afterId = slot.neighborAfterId,
-               let path = base.path(ofWindowId: afterId),
-               !path.isRoot,
-               let idx = path.indices.last
+               let leafPath = base.path(ofWindowId: afterId),
+               !leafPath.isRoot
             {
-                return base.inserting(child: child, at: idx, intoContainerAt: path.dropLast)
+                let sibling = leafPath.ascending(by: slot.neighborAfterAscent)
+                if let idx = sibling.indices.last {
+                    return base.inserting(child: child, at: idx, intoContainerAt: sibling.dropLast)
+                }
             }
             if let beforeId = slot.neighborBeforeId,
-               let path = base.path(ofWindowId: beforeId),
+               let leafPath = base.path(ofWindowId: beforeId),
+               !leafPath.isRoot
+            {
+                let sibling = leafPath.ascending(by: slot.neighborBeforeAscent)
+                if let idx = sibling.indices.last {
+                    return base.inserting(child: child, at: idx + 1, intoContainerAt: sibling.dropLast)
+                }
+            }
+            return nil
+        }
+    }
+
+    /// i3 `floating_disable` 1:1 (src/floating.c): re-insert AFTER the workspace's most recently
+    /// focused tiling leaf (`con_descend_tiling_focused` skips floats) as its plain sibling with
+    /// reset weight — no dwindle split, no restore guesswork. Empty workspace → attach to root.
+    @discardableResult
+    func commitTilingUnfloat(windowId: UInt32) -> Bool {
+        let mruId = rootTilingContainer.mostRecentWindowRecursive?
+            .takeIf { $0.windowId != windowId }?.windowId
+        return commitTilingTransform { spine in
+            let base = spine.path(ofWindowId: windowId).flatMap { spine.removing(at: $0)?.root } ?? spine
+            let child = PersistentTilingNode.window(id: windowId, weight: 1)
+            if let mruId,
+               let path = base.path(ofWindowId: mruId),
                !path.isRoot,
                let idx = path.indices.last
             {
