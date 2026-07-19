@@ -1,4 +1,5 @@
 import Common
+import CoreGraphics
 import Foundation
 
 /// Minimal SIP-safe SkyLight (WindowServer) bindings.
@@ -24,6 +25,33 @@ enum SkyLight {
     // SLSRequestNotificationsForWindows(cid, window_list, window_count) -> error
     // Required for continuous move/resize delivery (JankyBorders/yabai); register alone is not enough.
     private typealias RequestNotificationsFun = @convention(c) (Int32, UnsafeMutablePointer<UInt32>, Int32) -> Int32
+    // SLSManagedDisplayGetCurrentSpace(cid, display_uuid) -> space_id (0 on failure)
+    private typealias ManagedDisplayGetCurrentSpaceFun = @convention(c) (Int32, CFString) -> UInt64
+    // SLSSpaceGetType(cid, space_id) -> type (0 user, 4 native fullscreen — yabai/JankyBorders)
+    private typealias SpaceGetTypeFun = @convention(c) (Int32, UInt64) -> Int32
+    // CGDisplayCreateUUIDFromDisplayID — not exposed to Swift on newer SDKs; resolved at runtime
+    private typealias DisplayCreateUUIDFun = @convention(c) (UInt32) -> Unmanaged<CFUUID>?
+    // SLSFindWindowAndOwner(cid, filter_wid, 1, 0, &screen_point, &window_point, &wid, &wcid)
+    // WindowServer's event-routing hit test (yabai) — honors ignores-mouse-events + all levels
+    private typealias FindWindowAndOwnerFun = @convention(c) (
+        Int32, Int32, Int32, Int32,
+        UnsafeMutablePointer<CGPoint>, UnsafeMutablePointer<CGPoint>,
+        UnsafeMutablePointer<UInt32>, UnsafeMutablePointer<Int32>,
+    ) -> Int32
+
+    private static let displayCreateUUID: DisplayCreateUUIDFun? = {
+        // macOS 26 dropped the symbol from CoreGraphics; it still lives in ColorSync
+        for path in [
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
+            "/System/Library/Frameworks/ColorSync.framework/ColorSync",
+        ] {
+            guard let handle = unsafe dlopen(path, RTLD_LAZY) else { continue }
+            if let sym = unsafe dlsym(handle, "CGDisplayCreateUUIDFromDisplayID") {
+                return unsafe unsafeBitCast(sym, to: DisplayCreateUUIDFun.self)
+            }
+        }
+        return nil
+    }()
 
     /// WindowServer event ids (from JankyBorders' reverse-engineered set)
     enum WindowEvent: UInt32 { case move = 806, resize = 807 }
@@ -33,6 +61,9 @@ enum SkyLight {
         let getWindowBounds: GetWindowBoundsFun
         let registerNotifyProc: RegisterNotifyProcFun?
         let requestNotifications: RequestNotificationsFun?
+        let managedDisplayGetCurrentSpace: ManagedDisplayGetCurrentSpaceFun?
+        let spaceGetType: SpaceGetTypeFun?
+        let findWindowAndOwner: FindWindowAndOwnerFun?
     }
 
     private static let impl: Impl? = {
@@ -46,13 +77,60 @@ enum SkyLight {
         let requestNotifications = unsafe dlsym(handle, "SLSRequestNotificationsForWindows").map {
             unsafe unsafeBitCast($0, to: RequestNotificationsFun.self)
         }
+        let managedDisplayGetCurrentSpace = unsafe dlsym(handle, "SLSManagedDisplayGetCurrentSpace").map {
+            unsafe unsafeBitCast($0, to: ManagedDisplayGetCurrentSpaceFun.self)
+        }
+        let spaceGetType = unsafe dlsym(handle, "SLSSpaceGetType").map {
+            unsafe unsafeBitCast($0, to: SpaceGetTypeFun.self)
+        }
+        let findWindowAndOwner = unsafe dlsym(handle, "SLSFindWindowAndOwner").map {
+            unsafe unsafeBitCast($0, to: FindWindowAndOwnerFun.self)
+        }
         return unsafe Impl(
             connection: mainConnection(),
             getWindowBounds: getWindowBounds,
             registerNotifyProc: registerNotifyProc,
             requestNotifications: requestNotifications,
+            managedDisplayGetCurrentSpace: managedDisplayGetCurrentSpace,
+            spaceGetType: spaceGetType,
+            findWindowAndOwner: findWindowAndOwner,
         )
     }()
+
+    /// WindowServer's event-routing hit test: the window that would receive a click at `point`
+    /// (Quartz global coords, y-down). Unlike CGWindowList reconstruction, this honors
+    /// ignores-mouse-events overlays, elevated window levels (menus, panels), and true z-order —
+    /// verified: a point covered by our click-through border overlay resolves to the window
+    /// beneath it. nil when the symbol is unavailable or the lookup fails.
+    static func findEventTargetWindow(at point: CGPoint) -> UInt32? {
+        guard let impl = unsafe impl, let find = unsafe impl.findWindowAndOwner else { return nil }
+        var screenPoint = point
+        var windowPoint = CGPoint.zero
+        var wid: UInt32 = 0
+        var ownerConnection: Int32 = 0
+        guard unsafe find(impl.connection, 0, 1, 0, &screenPoint, &windowPoint, &wid, &ownerConnection) == 0,
+              wid != 0
+        else { return nil }
+        return wid
+    }
+
+    /// True when the display's active Space is a native macOS fullscreen Space (type 4).
+    /// Overlays (borders / tab bars) describe the underlying workspace and must not paint over a
+    /// fullscreen app — collectionBehavior alone does not keep canJoinAllSpaces panels off
+    /// fullscreen Spaces, so callers hide their content based on this check (JankyBorders parity).
+    /// Symbol drift or a failed lookup degrades to `false` (overlays stay visible).
+    static func currentSpaceIsFullscreen(displayId: CGDirectDisplayID) -> Bool {
+        guard let impl = unsafe impl,
+              let getSpace = unsafe impl.managedDisplayGetCurrentSpace,
+              let getType = unsafe impl.spaceGetType,
+              let createUUID = unsafe displayCreateUUID,
+              let uuid = unsafe createUUID(displayId)?.takeRetainedValue(),
+              let uuidString = CFUUIDCreateString(nil, uuid)
+        else { return false }
+        let space = unsafe getSpace(impl.connection, uuidString)
+        guard space != 0 else { return false }
+        return unsafe getType(impl.connection, space) == 4
+    }
 
     /// Subscribe `proc` to window move/resize events. Pair with `requestNotifications(for:)` so
     /// WindowServer actually delivers continuous move/resize for the tracked window ids
