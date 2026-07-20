@@ -12,6 +12,12 @@ open class Window: TreeNode, Hashable {
     var isAlwaysOnTop: Bool = false
     /// The window follows the active workspace of its monitor. See sticky command
     var isSticky: Bool = false
+    /// True only when the USER explicitly floated this window via `layout floating` (alt-shift-space).
+    /// Auto-classified floats (dialogs, OAuth popups, panels bound to the floating container by
+    /// window detection) are NOT user floats. The i3-style float quirks — click-without-raise
+    /// interception and the float-layer settle — apply ONLY to user floats; everything else must
+    /// behave exactly like a stock window (natural focus/raise/ordering).
+    var isUserFloat: Bool = false
     /// i3-like floating toggle: when floated from tiling, remember neighbors so unfloat
     /// re-inserts without scrambling sibling order.
     var floatingRestoreSlot: FloatingRestoreSlot? = nil

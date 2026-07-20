@@ -184,7 +184,12 @@ func settleFloatLayerKeepingTileKey(tileWindowId: UInt32) async {
     let tilePid = tile.app.pid
     var keyStealingFloatId: UInt32? = nil
     for workspace in Workspace.allUnsorted where workspace.isVisible {
-        let floats = workspace.floatingWindowsContainer.mruChildren.compactMap { $0 as? Window }
+        // Only raise USER floats to keep them above tiles (the i3 layer). Auto-classified floats
+        // (dialogs, OAuth popups, overlays) must keep their natural macOS z-order — force-raising
+        // them here is what pushed the Safari "Sign in with Google" popup behind the page.
+        let floats = workspace.floatingWindowsContainer.mruChildren
+            .compactMap { $0 as? Window }
+            .filter(\.isUserFloat)
         for window in floats.reversed() {
             if Task.isCancelled { return }
             await window.nativeRaiseAndWait()
@@ -391,6 +396,15 @@ private func evaluateFloatClickAction(
                 }
                 if motion, leftButtonDown || type == .leftMouseDragged {
                     if FloatClickWithoutRaisePolicy.isDrag(from: stream.downQuartz, to: quartzLocation) {
+                        // Tiling window: hand the drag to the normal path (moveWithMouse tile
+                        // swap / snap-back). The HID-drag handoff is drag-without-raise for FLOATS
+                        // only; for a tile it fights moveWithMouse and breaks swap/snap. The app
+                        // already holds the focus-without-raise mouseDown, so passing the drag
+                        // through lets it move the window and AXMoved drives the tile logic.
+                        if Window.get(byId: stream.windowId)?.isFloating != true {
+                            floatClickStream = nil
+                            return .passThrough
+                        }
                         stream.phase = .hidDrag
                         floatClickStream = stream
                         return .beginHidDrag(
@@ -444,7 +458,11 @@ private func evaluateFloatClickAction(
     }
 
     let workspace = top.nodeWorkspace ?? location.monitorApproximation.activeWorkspace
-    let hasFloats = !workspace.floatingWindows.isEmpty
+    // Click-without-raise is an i3 quirk for USER-floated windows only (alt-shift-space). It must
+    // NOT arm for auto-classified floats — dialogs, OAuth popups (Safari "Sign in with Google"),
+    // Zoom/PiP overlays — which must behave like stock windows: clicking a tile near them just
+    // works, and they focus/raise normally. Gating on isUserFloat (not isFloating) is the fix.
+    let hasFloats = workspace.floatingWindows.contains { $0.isUserFloat }
     let ok = FloatClickWithoutRaisePolicy.shouldIntercept(
         topmostIsFloating: top.isFloating,
         topmostIsTiling: !top.isFloating && top.parent is TilingContainer,

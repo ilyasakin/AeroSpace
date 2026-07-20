@@ -262,7 +262,8 @@ final class FloatClickWithoutRaiseTest: XCTestCase {
         workspace.rootTilingContainer.apply {
             tile = TestWindow.new(id: 1, parent: $0, adaptiveWeight: 1)
         }
-        _ = TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO)
+        let float = TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO)
+        float.isUserFloat = true // settle raises only user floats (alt-shift-space), not auto-floats
         _ = tile
 
         nonisolated(unsafe) var journal: [String] = []
