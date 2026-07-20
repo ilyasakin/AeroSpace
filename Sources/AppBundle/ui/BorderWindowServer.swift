@@ -30,6 +30,8 @@ enum BorderSkyLight {
     fileprivate typealias TxnCommitFun = @convention(c) (CFTypeRef, Int32) -> Int32
     fileprivate typealias TxnOrderFun = @convention(c) (CFTypeRef, UInt32, Int32, UInt32) -> Int32
     fileprivate typealias TxnLevelFun = @convention(c) (CFTypeRef, UInt32, Int32) -> Int32
+    fileprivate typealias UpdateGateFun = @convention(c) (Int32) -> Int32
+    fileprivate typealias FlushContentFun = @convention(c) (Int32, UInt32, CFTypeRef?) -> Int32
 
     @unsafe fileprivate struct Impl {
         let cid: Int32
@@ -49,6 +51,9 @@ enum BorderSkyLight {
         let txnOrder: TxnOrderFun
         let txnSetLevel: TxnLevelFun
         let txnSetSubLevel: TxnLevelFun
+        let disableUpdate: UpdateGateFun?
+        let reenableUpdate: UpdateGateFun?
+        let flushContent: FlushContentFun?
     }
 
     fileprivate static let impl: Impl? = {
@@ -93,6 +98,9 @@ enum BorderSkyLight {
             txnOrder: txnOrder,
             txnSetLevel: txnSetLevel,
             txnSetSubLevel: txnSetSubLevel,
+            disableUpdate: s("SLSDisableUpdate", UpdateGateFun.self),
+            reenableUpdate: s("SLSReenableUpdate", UpdateGateFun.self),
+            flushContent: s("SLSFlushWindowContentRegion", FlushContentFun.self),
         )
     }()
 
@@ -166,6 +174,12 @@ final class BorderWindow {
         frame = newFrame
 
         let justCreated = wid == 0
+        // Freeze compositor updates while a brand-new border is created, drawn, and ordered so it
+        // appears fully formed in one frame — otherwise the empty window can composite a frame
+        // before its stroke flush lands (the initial-render blink).
+        if justCreated { _ = unsafe impl.disableUpdate?(impl.cid) }
+        defer { if justCreated { _ = unsafe impl.reenableUpdate?(impl.cid) } }
+
         if justCreated {
             createWindow(impl, frame: newFrame)
         } else if sizeChanged {
@@ -184,6 +198,12 @@ final class BorderWindow {
             appliedRadius = radius
             appliedFrameSize = newFrame.size
             draw(width: width, radius: radius, style: style)
+            if justCreated {
+                // Push the stroke onto the backing synchronously BEFORE the window is revealed
+                // (ordered in). ctx.flush() only queues the content; without this the reveal can
+                // composite one empty frame ahead of the stroke — the create-time blink.
+                _ = unsafe impl.flushContent?(impl.cid, wid, nil)
+            }
         }
         // A fresh window has no z-placement yet; otherwise only re-order when asked.
         if justCreated || reorder {

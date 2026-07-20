@@ -30,6 +30,20 @@ final class WindowBordersManager {
     private var observingWindowServer = false
     /// Per-window chrome class for corner-radius probes (plain vs toolbar). Filled async once.
     private var chromeCache: [UInt32: WindowCornerRadius.Chrome] = [:]
+    /// Session-persistent chrome per app bundle id. Seeds a new window's *first* paint with the
+    /// app's known chrome so it doesn't flash the .plain radius before the async probe corrects it
+    /// — the flicker that hit every new window and every workspace return (per-window cache is
+    /// cleared when a window leaves the visible set; this survives).
+    private var chromeByApp: [String: WindowCornerRadius.Chrome] = [:]
+    /// Monotonic deadline (systemUptime) until which a freshly-created border pins to its layout
+    /// target instead of tracking live move events. On a workspace switch / window appearance the
+    /// app animates the window into place; without this the border follows that entrance animation
+    /// (a "grows into position" blink). Cleared once the window settles.
+    private var settlingUntil: [UInt32: Double] = [:]
+    private static let settleDuration: Double = 0.4
+    /// Windows with a chrome probe currently in flight (dedup — paint retries the probe each refresh
+    /// while the border is deferred).
+    private var probing: Set<UInt32> = []
 
     /// Window ids currently carrying a border (for WS notify subscription during mouse-resize).
     var borderedWindowIds: [UInt32] { Array(entries.keys) }
@@ -45,6 +59,10 @@ final class WindowBordersManager {
             teardownAll()
             return
         }
+        // During startup, apps animate their windows into AeroSpace's layout over ~seconds and a
+        // border faithfully tracks that motion — a visible slide/jump on every launch. Skip border
+        // work until startup settles; the first post-startup refresh creates them in place.
+        if isStartup { return }
         if !observingWindowServer {
             observingWindowServer = true
             SkyLight.registerWindowEvents(windowBordersEventProc)
@@ -59,7 +77,6 @@ final class WindowBordersManager {
             for window in workspace.allLeafWindowsRecursive {
                 guard let rect = resolvedBorderRect(for: window) else { continue }
                 seen.insert(window.windowId)
-                ensureEntry(window.windowId)
                 paint(id: window.windowId, window: window, rect: rect, cfg: cfg, reorder: true)
             }
         }
@@ -68,6 +85,7 @@ final class WindowBordersManager {
             entries.removeValue(forKey: id)
             rects.removeValue(forKey: id)
             chromeCache.removeValue(forKey: id)
+            settlingUntil.removeValue(forKey: id)
         }
         requestWindowServerNotifications()
     }
@@ -97,6 +115,16 @@ final class WindowBordersManager {
             FloatingBorderTracker.kick(window)
         }
         guard entries[windowId] != nil, let window = Window.get(byId: windowId) else { return }
+        // Still settling after appearing: pin to the layout target so the entrance animation isn't
+        // tracked. A real mouse drag overrides (its own path / mouseManipulate resolves live).
+        if let until = settlingUntil[windowId], ProcessInfo.processInfo.systemUptime < until,
+           currentlyManipulatedWithMouseWindowId != windowId,
+           let target = window.lastAppliedLayoutPhysicalRect
+        {
+            paint(id: windowId, window: window, rect: target, cfg: config.windowBorders, reorder: false)
+            return
+        }
+        settlingUntil.removeValue(forKey: windowId)
         guard let rect = resolvedLiveBorderRect(windowId: windowId) else { return }
         // Hot path: a moving window keeps its z-order, so skip the reorder IPC (~225µs/frame).
         paint(id: windowId, window: window, rect: rect, cfg: config.windowBorders, reorder: false)
@@ -139,16 +167,40 @@ final class WindowBordersManager {
     /// Resolve style/radius/scale for `id` and (re)paint its border window. `reorder` reasserts the
     /// z-placement (create / focus / layout) and is skipped on the pure-move hot path.
     private func paint(id: UInt32, window: Window, rect: Rect, cfg: WindowBorders, reorder: Bool) {
+        let appId = window.app.rawAppBundleId
+        // This window's probed chrome, else the app's known chrome from a prior probe.
+        let knownChrome = chromeCache[id] ?? appId.flatMap { chromeByApp[$0] }
+        // Radius depends on chrome (plain vs toolbar). If detection is on and the chrome is not yet
+        // known, DEFER the border's first appearance until the async probe resolves — otherwise it
+        // paints at the plain radius and visibly snaps to toolbar ~100ms later (the focus/switch
+        // flicker). Cached chrome → paint immediately, no delay.
+        if cfg.detectCornerRadius, knownChrome == nil {
+            rects[id] = rect
+            scheduleChromeProbe(window) // its completion calls paint() again with chrome known
+            return
+        }
+        let isNew = entries[id] == nil
         ensureEntry(id)
         guard let entry = entries[id] else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if isNew {
+            // Pin to the layout target briefly so the entrance animation isn't tracked (see above).
+            settlingUntil[id] = now + Self.settleDuration
+        }
         rects[id] = rect
-        let style = id == activeId ? cfg.resolvedActiveStyle() : cfg.resolvedInactiveStyle()
-        let chrome = chromeCache[id] ?? .plain
-        let radius = cfg.cornerRadius(forAppId: window.app.rawAppBundleId, chrome: chrome)
-        if cfg.detectCornerRadius, chromeCache[id] == nil { scheduleChromeProbe(window) }
+        let isActive = id == activeId
+        let style = isActive ? cfg.resolvedActiveStyle() : cfg.resolvedInactiveStyle()
+        let radius = cfg.cornerRadius(forAppId: appId, chrome: knownChrome ?? .plain)
+        // Reorder only floating windows. Tiled windows don't overlap, so their border never needs
+        // re-asserting above the target after creation — re-inserting it in the global z-stack on
+        // every refresh is pure churn and flashes on focus (the "defocus/focus on click" blip).
+        // Floating/overlapping windows genuinely restack on raise, so they still reorder. Create
+        // always orders regardless (BorderWindow forces it on first make).
+        let settling = (settlingUntil[id]).map { now < $0 } ?? false
+        let needsReorder = reorder && window.isFloating && !settling
         entry.update(
             rect: rect, width: cfg.width, radius: radius, style: style,
-            scale: backingScale(forRect: rect), reorder: reorder,
+            scale: backingScale(forRect: rect), reorder: needsReorder,
         )
     }
 
@@ -157,6 +209,8 @@ final class WindowBordersManager {
         entries.removeAll()
         rects.removeAll()
         chromeCache.removeAll()
+        settlingUntil.removeAll()
+        probing.removeAll()
     }
 
     // MARK: - Corner radius chrome probe
@@ -164,16 +218,22 @@ final class WindowBordersManager {
     /// Classify window chrome (toolbar vs plain) once so radius can track Tahoe's split.
     private func scheduleChromeProbe(_ window: Window) {
         let id = window.windowId
+        guard !probing.contains(id) else { return } // one probe in flight per window
+        probing.insert(id)
         let appId = window.app.rawAppBundleId
         Task { @MainActor in
             let chrome = await detectWindowChrome(window)
+            probing.remove(id)
             let prev = chromeCache[id]
             chromeCache[id] = chrome
-            guard prev != chrome, entries[id] != nil, let rect = rects[id] ?? window.lastAppliedLayoutPhysicalRect
+            if let appId { chromeByApp[appId] = chrome } // seed future windows of this app
+            // Paint when the border was deferred waiting for this result (create), or when the
+            // chrome actually changed (radius restyle). Window must still be active (has a rect).
+            let deferredFirstPaint = entries[id] == nil
+            guard deferredFirstPaint || prev != chrome,
+                  let rect = rects[id] ?? window.lastAppliedLayoutPhysicalRect
             else { return }
-            // Radius-only restyle; z-order unchanged.
-            paint(id: id, window: window, rect: rect, cfg: config.windowBorders, reorder: false)
-            _ = appId
+            paint(id: id, window: window, rect: rect, cfg: config.windowBorders, reorder: deferredFirstPaint)
         }
     }
 
