@@ -249,9 +249,11 @@ func applyResizeWeights(_ window: Window, live: Rect?) -> Bool {
 
     var changed = false
     let ws = window.nodeWorkspace
+    // Save/restore rather than force-false, so a nested suppression scope isn't cancelled here.
+    let previousSuppression = unsafe Workspace.suppressTilingGenerationInvalidation
     unsafe Workspace.suppressTilingGenerationInvalidation = true
     defer {
-        unsafe Workspace.suppressTilingGenerationInvalidation = false
+        unsafe Workspace.suppressTilingGenerationInvalidation = previousSuppression
         if changed { ws?.invalidateTilingStructureGeneration() }
     }
 

@@ -19,7 +19,22 @@ extension Workspace {
 
     /// When true, `setWeight` must not invalidate the generation (used while syncing spine → live
     /// after layout so the published gen is not wiped mid-walk).
+    ///
+    /// Prefer `withSuppressedGenerationInvalidation` over touching this directly: it is a plain
+    /// boolean, so an early return / throw / cancellation between set and reset leaves it stuck
+    /// `true` — which silently disables invalidation for the WHOLE PROCESS, turning every later
+    /// dual-link mutation into a stale-spine desync. `layoutWorkspace` is `async throws`, so that
+    /// was reachable in practice.
     nonisolated(unsafe) static var suppressTilingGenerationInvalidation = false
+
+    /// Run `body` with generation invalidation suppressed, restoring the previous value even on
+    /// throw/cancellation. Nesting-safe (saves and restores rather than forcing `false`).
+    static func withSuppressedGenerationInvalidation<T>(_ body: () throws -> T) rethrows -> T {
+        let previous = unsafe suppressTilingGenerationInvalidation
+        unsafe suppressTilingGenerationInvalidation = true
+        defer { unsafe suppressTilingGenerationInvalidation = previous }
+        return try body()
+    }
 
     var tilingStructureGeneration: PersistentTilingNode? {
         get { unsafe Self._tilingSpineByName[name] }
@@ -74,9 +89,9 @@ extension Workspace {
             mruWindowId: mruWindowId,
         )
         // Sync live dual-link weights without invalidating, then publish generation once
-        unsafe Self.suppressTilingGenerationInvalidation = true
-        applyWeightsFromSpine(laidOut, live: rootTilingContainer, parentOrientation: nil)
-        unsafe Self.suppressTilingGenerationInvalidation = false
+        Self.withSuppressedGenerationInvalidation {
+            applyWeightsFromSpine(laidOut, live: rootTilingContainer, parentOrientation: nil)
+        }
         tilingStructureGeneration = laidOut
 
         // Mouse-drag hot path skips floating — only tiles need to reflow each frame.

@@ -180,14 +180,17 @@ extension Workspace {
               w1.parent is TilingContainer, w2.parent is TilingContainer
         else { return false }
         let before = tilingStructureGeneration ?? PersistentTilingNode.capture(rootTilingContainer)
-        guard let after = before.swappingWindows(id1: id1, id2: id2) else { return false }
-        unsafe Workspace.suppressTilingGenerationInvalidation = true
-        let binding2 = w2.unbindFromParent()
-        let binding1 = w1.unbindFromParent()
-        w2.bind(to: binding1.parent, adaptiveWeight: binding1.adaptiveWeight, index: binding1.index)
-        w1.bind(to: binding2.parent, adaptiveWeight: binding2.adaptiveWeight, index: binding2.index)
-        unsafe Workspace.suppressTilingGenerationInvalidation = false
-        tilingStructureGeneration = after
+        guard before.swappingWindows(id1: id1, id2: id2) != nil else { return false }
+        Workspace.withSuppressedGenerationInvalidation {
+            let binding2 = w2.unbindFromParent()
+            let binding1 = w1.unbindFromParent()
+            w2.bind(to: binding1.parent, adaptiveWeight: binding1.adaptiveWeight, index: binding1.index)
+            w1.bind(to: binding2.parent, adaptiveWeight: binding2.adaptiveWeight, index: binding2.index)
+        }
+        // Publish what the live tree now IS, not the intended transform (same reason as
+        // commitTilingTransform), then hold this path to the same invariant.
+        tilingStructureGeneration = PersistentTilingNode.capture(rootTilingContainer)
+        SpineInvariant.verify(self, context: "swap")
         return true
     }
 
@@ -198,12 +201,13 @@ extension Workspace {
               let parent = window.parent as? TilingContainer
         else { return false }
         let before = tilingStructureGeneration ?? PersistentTilingNode.capture(rootTilingContainer)
-        guard let after = before.movingWindow(id, toIndexInParent: index) else { return false }
-        unsafe Workspace.suppressTilingGenerationInvalidation = true
-        let prev = window.unbindFromParent()
-        window.bind(to: parent, adaptiveWeight: prev.adaptiveWeight, index: index)
-        unsafe Workspace.suppressTilingGenerationInvalidation = false
-        tilingStructureGeneration = after
+        guard before.movingWindow(id, toIndexInParent: index) != nil else { return false }
+        Workspace.withSuppressedGenerationInvalidation {
+            let prev = window.unbindFromParent()
+            window.bind(to: parent, adaptiveWeight: prev.adaptiveWeight, index: index)
+        }
+        tilingStructureGeneration = PersistentTilingNode.capture(rootTilingContainer)
+        SpineInvariant.verify(self, context: "moveWindow")
         return true
     }
 

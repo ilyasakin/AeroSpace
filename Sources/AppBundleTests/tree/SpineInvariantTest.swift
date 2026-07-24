@@ -55,6 +55,37 @@ final class SpineInvariantTest: XCTestCase {
         )
     }
 
+    /// The suppression flag is process-global. Before `withSuppressedGenerationInvalidation` it
+    /// was set/reset by bare assignment at three sites, so a throw or cancellation in between
+    /// (layoutWorkspace is `async throws`) left it stuck `true` — silently disabling invalidation
+    /// for the entire process and turning every later mutation into a stale-spine desync.
+    func testSuppressionIsRestoredWhenBodyThrows() {
+        struct Boom: Error {}
+        XCTAssertFalse(unsafe Workspace.suppressTilingGenerationInvalidation)
+        XCTAssertThrowsError(
+            try Workspace.withSuppressedGenerationInvalidation {
+                XCTAssertTrue(unsafe Workspace.suppressTilingGenerationInvalidation, "suppressed inside")
+                throw Boom()
+            },
+        )
+        XCTAssertFalse(
+            unsafe Workspace.suppressTilingGenerationInvalidation,
+            "a throwing body must not leave invalidation disabled process-wide",
+        )
+    }
+
+    /// Nesting must not have the inner scope cancel the outer one's suppression.
+    func testSuppressionNests() {
+        Workspace.withSuppressedGenerationInvalidation {
+            Workspace.withSuppressedGenerationInvalidation {}
+            XCTAssertTrue(
+                unsafe Workspace.suppressTilingGenerationInvalidation,
+                "inner scope must restore to the outer scope's value, not to false",
+            )
+        }
+        XCTAssertFalse(unsafe Workspace.suppressTilingGenerationInvalidation)
+    }
+
     func testNoGenerationPublishedIsNotAViolation() {
         let workspace = Workspace.get(byName: name)
         workspace.rootTilingContainer.apply { TestWindow.new(id: 1, parent: $0) }
