@@ -15,11 +15,22 @@ extension Workspace {
     /// Apply a pure path-copy transform to the tiling spine, then materialize live handles.
     /// Returns false if the transform fails (invalid path / shape).
     @discardableResult
-    func commitTilingTransform(_ transform: (PersistentTilingNode) -> PersistentTilingNode?) -> Bool {
+    func commitTilingTransform(
+        _ context: @autoclosure () -> String = "commitTilingTransform",
+        _ transform: (PersistentTilingNode) -> PersistentTilingNode?,
+    ) -> Bool {
         let before = tilingStructureGeneration ?? PersistentTilingNode.capture(rootTilingContainer)
         guard let after = transform(before) else { return false }
         materializeTilingSpine(after)
-        tilingStructureGeneration = after
+        // Publish what was ACTUALLY materialized, not what was intended. A transform can name a
+        // window id that has no live handle (closed mid-commit, stale generation, restore of a
+        // saved spine); materialize skips those leaves, so publishing `after` would leave the
+        // generation claiming windows the live tree doesn't have — a desync by construction.
+        // Re-capturing keeps "published describes live" true no matter what materialize could
+        // resolve. Cost is one walk over a tree of tens of nodes.
+        tilingStructureGeneration = PersistentTilingNode.capture(rootTilingContainer)
+        // The published spine must now describe the live tree. See SpineInvariant.
+        SpineInvariant.verify(self, context: context())
         return true
     }
 
@@ -27,7 +38,7 @@ extension Workspace {
     /// Window must already exist as a live handle (any parent); materialize rebinds it.
     @discardableResult
     func commitTilingInsertWindow(id: UInt32, weight: CGFloat = 1, at index: Int = INDEX_BIND_LAST) -> Bool {
-        commitTilingTransform { spine in
+        commitTilingTransform("insertWindow") { spine in
             spine.inserting(
                 child: .window(id: id, weight: weight),
                 at: index,
@@ -39,7 +50,7 @@ extension Workspace {
     /// Remove a window leaf from the tiling spine via path-copy, then materialize.
     @discardableResult
     func commitTilingRemoveWindow(id: UInt32) -> Bool {
-        commitTilingTransform { spine in
+        commitTilingTransform("removeWindow") { spine in
             guard let path = spine.path(ofWindowId: id) else { return nil }
             return spine.removing(at: path)?.root
         }
@@ -51,7 +62,7 @@ extension Workspace {
     /// false when neither neighbor resolves — caller falls back to `commitTilingUnfloat`.
     @discardableResult
     func commitTilingRestoreFloatingSlot(windowId: UInt32, slot: FloatingRestoreSlot) -> Bool {
-        commitTilingTransform { spine in
+        commitTilingTransform("restoreFloatingSlot") { spine in
             // Drop if somehow still present (stale gen).
             let base = spine.path(ofWindowId: windowId).flatMap { spine.removing(at: $0)?.root } ?? spine
             let child = PersistentTilingNode.window(id: windowId, weight: slot.weight)
@@ -84,7 +95,7 @@ extension Workspace {
     func commitTilingUnfloat(windowId: UInt32) -> Bool {
         let mruId = rootTilingContainer.mostRecentWindowRecursive?
             .takeIf { $0.windowId != windowId }?.windowId
-        return commitTilingTransform { spine in
+        return commitTilingTransform("unfloat") { spine in
             let base = spine.path(ofWindowId: windowId).flatMap { spine.removing(at: $0)?.root } ?? spine
             if let mruId,
                let path = base.path(ofWindowId: mruId),
@@ -123,7 +134,7 @@ extension Workspace {
            group.layout == .accordion
         {
             let absorbId = target.windowId
-            let ok = commitTilingTransform { spine in
+            let ok = commitTilingTransform("placeNewWindow.absorbGroup") { spine in
                 spine.insertWindowBeside(besideId: absorbId, newId: id)
             }
             if ok {
@@ -140,7 +151,7 @@ extension Workspace {
             let splitHorizontal = rect.map { $0.width > $0.height }
                 ?? ((target.parent as? TilingContainer)?.orientation == .v)
             let ratio = CGFloat(config.dwindleSplitPercent) / 100
-            let ok = commitTilingTransform { spine in
+            let ok = commitTilingTransform("placeNewWindow.dwindle") { spine in
                 // Target must already be in the spine; empty workspace falls through to insert
                 spine.dwindleSplit(
                     targetId: target.windowId,
@@ -156,7 +167,7 @@ extension Workspace {
         }
 
         let besideId = mru?.takeIf { $0.windowId != id }?.windowId
-        return commitTilingTransform { spine in
+        return commitTilingTransform("placeNewWindow.beside") { spine in
             spine.insertWindowBeside(besideId: besideId, newId: id)
         }
     }
