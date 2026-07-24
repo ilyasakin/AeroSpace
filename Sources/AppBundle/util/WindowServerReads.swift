@@ -102,12 +102,17 @@ func resolveBorderRect(
 ///
 /// - **Floating**: user owns the frame — always track live WS. lastApplied is only a
 ///   focus-follows-mouse / layout snapshot and freezes under free drag if preferred.
-/// - **Tiling + mouse manipulate**: prefer lastApplied so borders match the tile grid
-///   (live drag frame of the resize target ≠ sibling layout allocations → edge thrash).
+/// - **The mouse-manipulation TARGET follows live**: the user is looking at the window under
+///   the cursor; pinning its border to `lastApplied` froze the ring on the grid slot while the
+///   window traveled (the flagship "border not following window" bug — layout keeps rewriting
+///   lastApplied mid-drag for sibling coherence).
+/// - **Tiling siblings during a manipulation**: prefer lastApplied so their borders match the
+///   tile grid (live drag frame of the target ≠ sibling layout allocations → edge thrash).
 /// - **After our AX write**: prefer lastApplied until SkyLight catches up.
 func resolveLiveBorderRect(
     isFloating: Bool,
-    mouseManipulateActive: Bool,
+    isMouseManipulationTarget: Bool,
+    otherWindowManipulateActive: Bool,
     mayBeStale: Bool,
     lastApplied: Rect?,
     liveBounds: Rect?,
@@ -116,7 +121,10 @@ func resolveLiveBorderRect(
         if mayBeStale, let lastApplied { return lastApplied }
         return liveBounds ?? lastApplied
     }
-    if mouseManipulateActive, let lastApplied { return lastApplied }
+    if isMouseManipulationTarget {
+        return liveBounds ?? lastApplied
+    }
+    if otherWindowManipulateActive, let lastApplied { return lastApplied }
     if mayBeStale, let lastApplied { return lastApplied }
     return liveBounds
 }

@@ -141,7 +141,8 @@ final class WindowServerReadsTest: XCTestCase {
         let live = Rect(topLeftX: 120, topLeftY: 80, width: 400, height: 400)
         let r = resolveLiveBorderRect(
             isFloating: true,
-            mouseManipulateActive: true,
+            isMouseManipulationTarget: true,
+            otherWindowManipulateActive: false,
             mayBeStale: false,
             lastApplied: applied,
             liveBounds: live,
@@ -149,13 +150,31 @@ final class WindowServerReadsTest: XCTestCase {
         XCTAssertEqual(r, live)
     }
 
-    func testLiveBorderTilingPrefersLastAppliedDuringMouseDrag() {
-        // Tile-grid path: layout lastApplied must win so sibling edges don't thrash
+    func testLiveBorderTileDragTargetTracksLive() {
+        // Regression: dragging a tile by its title bar pinned the border to the layout slot
+        // (layout rewrites lastApplied mid-drag) while the window followed the mouse.
+        let applied = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
+        let live = Rect(topLeftX: 210, topLeftY: 90, width: 500, height: 1000)
+        let r = resolveLiveBorderRect(
+            isFloating: false,
+            isMouseManipulationTarget: true,
+            otherWindowManipulateActive: false,
+            mayBeStale: false,
+            lastApplied: applied,
+            liveBounds: live,
+        )
+        XCTAssertEqual(r, live)
+    }
+
+    func testLiveBorderTilingSiblingPrefersLastAppliedDuringDrag() {
+        // Tile-grid path for SIBLINGS of the drag target: layout lastApplied must win so
+        // sibling edges don't thrash against the live drag frame
         let applied = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
         let live = Rect(topLeftX: 10, topLeftY: 0, width: 520, height: 1000)
         let r = resolveLiveBorderRect(
             isFloating: false,
-            mouseManipulateActive: true,
+            isMouseManipulationTarget: false,
+            otherWindowManipulateActive: true,
             mayBeStale: false,
             lastApplied: applied,
             liveBounds: live,
@@ -168,7 +187,8 @@ final class WindowServerReadsTest: XCTestCase {
         let lagging = Rect(topLeftX: 0, topLeftY: 0, width: 300, height: 400)
         let r = resolveLiveBorderRect(
             isFloating: true,
-            mouseManipulateActive: false,
+            isMouseManipulationTarget: false,
+            otherWindowManipulateActive: false,
             mayBeStale: true,
             lastApplied: applied,
             liveBounds: lagging,

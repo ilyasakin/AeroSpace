@@ -167,6 +167,24 @@ enum WorkspaceDisplayLink {
 
     private static var states: [CGDirectDisplayID: LinkState] = [:]
 
+    /// Cross-thread pulse coalescing: the display-link thread marks, the main-queue pulse clears.
+    /// At most one pulse in flight per display — main-thread stalls skip frames instead of
+    /// replaying a burst of queued ones afterwards.
+    private nonisolated(unsafe) static var pendingPulses = Set<CGDirectDisplayID>()
+    private nonisolated(unsafe) static let pendingLock = NSLock()
+
+    nonisolated fileprivate static func tryMarkPulsePending(displayId: CGDirectDisplayID) -> Bool {
+        pendingLock.lock()
+        defer { pendingLock.unlock() }
+        return pendingPulses.insert(displayId).inserted
+    }
+
+    nonisolated fileprivate static func clearPulsePending(displayId: CGDirectDisplayID) {
+        pendingLock.lock()
+        defer { pendingLock.unlock() }
+        pendingPulses.remove(displayId)
+    }
+
     /// Nominal Hz of an active link, or nil if nothing is subscribed on that display.
     static func activeRefreshHz(for displayId: CGDirectDisplayID) -> Double? {
         states[displayId]?.hz
@@ -226,7 +244,13 @@ enum WorkspaceDisplayLink {
         CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, userInfo in
             guard let userInfo else { return kCVReturnSuccess }
             let id = userInfo.assumingMemoryBound(to: CGDirectDisplayID.self).pointee
+            // Coalesce: at most ONE pulse queued at a time. Without this, a ~200ms main-thread
+            // stall during a 120Hz drag queued ~24 pulses that burst-executed afterwards,
+            // amplifying the very hiccup vsync pacing exists to smooth (frames should be
+            // skipped, not replayed).
+            guard WorkspaceDisplayLink.tryMarkPulsePending(displayId: id) else { return kCVReturnSuccess }
             DispatchQueue.main.async {
+                WorkspaceDisplayLink.clearPulsePending(displayId: id)
                 MainActor.assumeIsolated { WorkspaceDisplayLink.pulse(displayId: id) }
             }
             return kCVReturnSuccess

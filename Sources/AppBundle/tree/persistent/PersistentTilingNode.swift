@@ -231,18 +231,36 @@ extension PersistentTilingNode {
         return updating(at: path, with: wrapper)
     }
 
+    /// Average child weight of the container at `path` (1 when empty/unresolvable). Persisted
+    /// weights become PIXEL SPANS after the first layout, so inserting a literal weight-1 leaf
+    /// beside ~800-span siblings produced a ~1px sliver tile. New leaves must enter at parity.
+    func averageChildWeight(ofContainerAt path: PersistentPath) -> CGFloat {
+        guard let target = node(at: path),
+              case .container(_, _, _, let children) = target,
+              !children.isEmpty
+        else { return 1 }
+        return children.reduce(CGFloat(0)) { $0 + $1.weight } / CGFloat(children.count)
+    }
+
     /// Insert new window after `besideId` in its parent container, or append at root if unknown.
-    func insertWindowBeside(besideId: UInt32?, newId: UInt32, weight: CGFloat) -> PersistentTilingNode? {
+    /// The new leaf enters with the destination container's AVERAGE child weight (equal share
+    /// after re-normalization), not an absolute weight — see `averageChildWeight`.
+    func insertWindowBeside(besideId: UInt32?, newId: UInt32) -> PersistentTilingNode? {
         if let besideId, let mruPath = path(ofWindowId: besideId), !mruPath.isRoot,
            let index = mruPath.indices.last
         {
+            let parentPath = mruPath.dropLast
             return inserting(
-                child: .window(id: newId, weight: weight),
+                child: .window(id: newId, weight: averageChildWeight(ofContainerAt: parentPath)),
                 at: index + 1,
-                intoContainerAt: mruPath.dropLast,
+                intoContainerAt: parentPath,
             )
         }
-        return inserting(child: .window(id: newId, weight: weight), at: INDEX_BIND_LAST, intoContainerAt: .root)
+        return inserting(
+            child: .window(id: newId, weight: averageChildWeight(ofContainerAt: .root)),
+            at: INDEX_BIND_LAST,
+            intoContainerAt: .root,
+        )
     }
 
     /// Swap two window leaves. Slot weights stay with the path (same as dual-link binding swap).
@@ -261,18 +279,17 @@ extension PersistentTilingNode {
     }
 
     /// Move window to a new index in its current parent (sibling reorder).
+    /// `newIndex` uses POST-removal indexing — the same semantics as the dual-link rebind in
+    /// `commitTilingMoveWindow` (unbind, then bind at index). The old pre-removal `-1` adjustment
+    /// made the published spine disagree with the live tree on every forward move ([A,B,C] move A
+    /// right → live [B,A,C], spine stayed [A,B,C]) and the desync compounded with each move.
     func movingWindow(_ id: UInt32, toIndexInParent newIndex: Int) -> PersistentTilingNode? {
         guard let path = path(ofWindowId: id), !path.isRoot,
-              let oldIndex = path.indices.last,
               let removed = removing(at: path)
         else { return nil }
-        var insertAt = newIndex
-        // After removal, indices after oldIndex shift down
-        if newIndex > oldIndex { insertAt = newIndex - 1 }
-        if newIndex == INDEX_BIND_LAST { insertAt = INDEX_BIND_LAST }
         return removed.root.inserting(
             child: removed.removed,
-            at: insertAt,
+            at: newIndex,
             intoContainerAt: path.dropLast,
         )
     }

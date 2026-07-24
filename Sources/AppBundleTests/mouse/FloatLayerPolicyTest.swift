@@ -89,21 +89,27 @@ final class FloatLayerPolicyTest: XCTestCase {
         XCTAssertEqual(port.raiseCalls, [401])
     }
 
-    /// Explicit ensureFloatsAboveTiling (raise-floating) still raises floats once.
-    func testEnsureFloatsAboveTilingExplicitRecoveryRaisesFloats() {
+    /// Explicit ensureFloatsAboveTiling (raise-floating): floats raised AWAITED, then the key
+    /// transfer (no setFrontProcess — the old fire-and-forget + focusWithoutRaise could restack
+    /// the tile back above the floats the command had just raised).
+    func testEnsureFloatsAboveTilingExplicitRecoveryRaisesFloats() async {
         let workspace = focus.workspace
         var tile: TestWindow!
         workspace.rootTilingContainer.apply {
             tile = TestWindow.new(id: 501, parent: $0, adaptiveWeight: 1)
         }
         _ = TestWindow.new(id: 502, parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO)
-        port.raiseCalls = []
-        port.focusWithoutRaiseCalls = []
+        nonisolated(unsafe) var raised: [UInt32] = []
+        TestWindow.onNativeRaiseAndWait = { raised.append($0) }
+        PrivateFocus.asyncSleepNanoseconds = { _ in }
+        defer {
+            TestWindow.onNativeRaiseAndWait = nil
+            PrivateFocus.asyncSleepNanoseconds = { try? await Task.sleep(nanoseconds: $0) }
+        }
 
-        FloatLayer.ensureFloatsAboveTiling(focusedTile: tile)
+        await FloatLayer.ensureFloatsAboveTiling(focusedTile: tile)
 
-        XCTAssertTrue(port.raiseCalls.contains(502))
-        XCTAssertTrue(port.focusWithoutRaiseCalls.contains(where: { $0.windowId == 501 }))
+        XCTAssertEqual(raised, [502], "float raised (awaited) exactly once before the key transfer")
     }
 
     func testPrivateFocusSymbolsResolveWithSipOn() {

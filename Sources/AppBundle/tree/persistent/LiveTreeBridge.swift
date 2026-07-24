@@ -41,13 +41,26 @@ private func getWeightOrNil(_ node: TreeNode) -> CGFloat? {
 
 extension PersistentTilingNode {
     /// Materialize this immutable tree under `parent`. Window leaves resolve via `Window.get(byId:)`.
-    /// Returns false if a window id cannot be resolved (stops early so indices stay consistent).
+    ///
+    /// Best-effort: an unresolvable window id (stale generation, closed window, foreign id) SKIPS
+    /// that leaf and continues — a WM must degrade, not die, on model drift. Returns true when at
+    /// least one leaf was bound (an all-dead spine returns false so callers can fall back).
     @MainActor
     @discardableResult
     func restore(parent: NonLeafTreeNodeObject, index: Int) -> Bool {
         switch self {
             case .window(let id, let weight):
                 guard let window = Window.get(byId: id) else { return false }
+                // Never yank a natively minimized/fullscreen/hidden window (or popup) into a
+                // tiling tree — it would occupy a dead tile slot and receive frame writes while
+                // macOS owns its presentation. It re-tiles via normalizeLayoutReason on exit.
+                switch window.windowParentCases {
+                    case .macosMinimizedWindowsContainer, .macosFullscreenWindowsContainer,
+                         .macosHiddenAppsWindowsContainer, .macosPopupWindowsContainer:
+                        return false
+                    case .tilingContainer, .floatingWindowsContainer, .unbound:
+                        break
+                }
                 window.bind(to: parent, adaptiveWeight: weight, index: index)
                 return true
             case .container(let orientation, let layout, let weight, let children):
@@ -58,10 +71,19 @@ extension PersistentTilingNode {
                     layout,
                     index: index,
                 )
-                for (i, child) in children.enumerated() {
-                    if !child.restore(parent: container, index: i) { return false }
+                var boundAny = false
+                var nextIndex = 0
+                for child in children {
+                    // Indices stay consistent because skipped leaves don't consume a slot
+                    if child.restore(parent: container, index: nextIndex) {
+                        boundAny = true
+                        nextIndex += 1
+                    }
                 }
-                return true
+                if !boundAny {
+                    container.unbindFromParent() // drop the empty shell
+                }
+                return boundAny
         }
     }
 }

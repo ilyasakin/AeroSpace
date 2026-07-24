@@ -39,7 +39,6 @@ private struct FloatClickStream {
     var lastQuartz: CGPoint
     var clickState: Int64
     var phase: Phase
-    var pidDownPosted: Bool
     /// OS/tree key before this gesture (often the float) — used to force same-app key transfer
     /// and to re-assert after AXRaise on floats steals key back.
     var previousKeyWindowId: UInt32?
@@ -136,12 +135,18 @@ private func removeFloatClickTap() {
 
 @MainActor
 private func endFloatClickStream(restoreFloatLayer: Bool) {
-    let windowId = floatClickStream?.windowId
-    let wasHid = floatClickStream?.phase == .hidDrag
+    guard let stream = floatClickStream else { return }
     floatClickStream = nil
-    if restoreFloatLayer, wasHid, let windowId {
+    // Balance the synthetic stream. Pending clicks deliver down+up together at release, so a
+    // torn-down pending stream has nothing outstanding. A HID drag posted a synthetic down —
+    // close it at the last known location or the system is left mid-drag with a pressed button
+    // (deterministic repro: toggle click-without-raise off while dragging a float).
+    if stream.phase == .hidDrag {
+        postHidMouse(type: .leftMouseUp, at: stream.lastQuartz, clickState: stream.clickState)
+    }
+    if restoreFloatLayer, stream.phase == .hidDrag {
         // HID raised the tile — floats last, then key transfer (no setFrontProcess restack).
-        scheduleFloatLayerSettle(tileWindowId: windowId)
+        scheduleFloatLayerSettle(tileWindowId: stream.windowId)
     }
 }
 
@@ -201,6 +206,9 @@ func settleFloatLayerKeepingTileKey(tileWindowId: UInt32) async {
     await PrivateFocus.asyncSleepNanoseconds(20_000_000)
     if Task.isCancelled { return }
     await floatClickKeyTransfer(tilePid, tileWindowId, keyStealingFloatId)
+    // A superseding gesture may have cancelled us DURING the transfer — its focus wins;
+    // stamping the stale tile here handed model/border focus back to the old window.
+    if Task.isCancelled { return }
     (tile.app as? MacApp)?.lastNativeFocusedWindowId = tileWindowId
     if let mac = tile as? MacWindow {
         mac.macApp.setMainWithoutRaise(tileWindowId)
@@ -241,18 +249,32 @@ private enum FloatClickAction {
     case passThrough
     case swallow
     case beginPending(windowId: UInt32, pid: pid_t, clickState: Int64)
-    case deliverPidMouseUp(pid: pid_t, at: CGPoint, clickState: Int64)
+    /// Deliver the whole click (down + up) to the pid at release time.
+    case deliverPidClick(pid: pid_t, at: CGPoint, clickState: Int64)
+    /// Tile drag crossed the threshold: post one synthetic HID down at the press point for WS
+    /// ownership, then pass all further real events through to the normal drag machinery.
+    case handOffTileDrag(down: CGPoint, clickState: Int64)
     case beginHidDrag(down: CGPoint, current: CGPoint, clickState: Int64)
     case hidDragMove(at: CGPoint, clickState: Int64)
     case hidDragUp(at: CGPoint, clickState: Int64)
 }
 
 private let floatClickTapCallback: CGEventTapCallBack = { _, type, event, _ in
+    // The tap source lives on the main run loop, so callbacks are main-thread by construction.
+    // If that ever changes, degrade to pure pass-through IMMEDIATELY — the old per-branch
+    // Thread checks diverged (e.g. an off-main deliverPidMouseUp posted the up but never
+    // cleared the stream, swallowing every subsequent hover event system-wide).
+    guard Thread.isMainThread else {
+        return Unmanaged.passUnretained(event)
+    }
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if Thread.isMainThread {
-            MainActor.assumeIsolated {
-                if let tap = floatClickTap { CGEvent.tapEnable(tap: tap, enable: true) }
-            }
+        MainActor.assumeIsolated {
+            // Flush any in-flight stream FIRST: the real mouseUp was lost while the tap was
+            // disabled (>1s main-thread stall). Delivering the pending pid mouseUp at the
+            // last-known point (endFloatClickStream balances it) beats resuming a stale stream
+            // whose next event would deliver up at wherever the cursor is now (phantom drag).
+            endFloatClickStream(restoreFloatLayer: true)
+            if let tap = floatClickTap { CGEvent.tapEnable(tap: tap, enable: true) }
         }
         return Unmanaged.passUnretained(event)
     }
@@ -260,11 +282,9 @@ private let floatClickTapCallback: CGEventTapCallBack = { _, type, event, _ in
     if event.getIntegerValueField(.eventSourceUserData) == floatClickSyntheticUserData {
         return Unmanaged.passUnretained(event)
     }
-    if Thread.isMainThread {
-        let depth = MainActor.assumeIsolated { floatClickSyntheticDepth }
-        if depth > 0 {
-            return Unmanaged.passUnretained(event)
-        }
+    let depth = MainActor.assumeIsolated { floatClickSyntheticDepth }
+    if depth > 0 {
+        return Unmanaged.passUnretained(event)
     }
 
     guard FloatClickWithoutRaisePolicy.isTrackedEvent(type) else {
@@ -301,20 +321,31 @@ private let floatClickTapCallback: CGEventTapCallBack = { _, type, event, _ in
                 }
             }
             return nil
-        case .deliverPidMouseUp(let pid, let at, let clickState):
+        case .deliverPidClick(let pid, let at, let clickState):
+            // The full click (down THEN up) is delivered at release. Deferring the down until
+            // here means every teardown path before release has NOTHING to balance — the old
+            // eager pid-down orphaned a pressed button on any mid-press teardown, and duplicated
+            // the down when a drag later posted its own HID down.
+            postPidMouse(to: pid, type: .leftMouseDown, at: at, clickState: clickState)
             postPidMouse(to: pid, type: .leftMouseUp, at: at, clickState: clickState)
-            if Thread.isMainThread {
-                MainActor.assumeIsolated {
-                    let tileId = floatClickStream?.windowId
-                    floatClickStream = nil
-                    // orderFront on mouseDown may have sunk C. Raise floats **last** (awaited),
-                    // then transfer key (never setFrontProcess after raise — that put B above C).
-                    if let tileId {
-                        scheduleFloatLayerSettle(tileWindowId: tileId)
-                    }
+            MainActor.assumeIsolated {
+                let tileId = floatClickStream?.windowId
+                floatClickStream = nil
+                // orderFront on mouseDown may have sunk C. Raise floats **last** (awaited),
+                // then transfer key (never setFrontProcess after raise — that put B above C).
+                if let tileId {
+                    scheduleFloatLayerSettle(tileWindowId: tileId)
                 }
             }
             return nil
+        case .handOffTileDrag(let down, let clickState):
+            // Tile drag: establish real WindowServer press ownership with a synthetic HID down
+            // at the ORIGINAL press point, then pass every subsequent real event through — the
+            // normal moveWithMouse path (tile swap / snap-back) sees a consistent gesture. The
+            // old bare passThrough left WS with no mouse-down window: fast drags leaving the
+            // tile's frame stopped routing to the app and the up could land in another app.
+            postHidMouse(type: .leftMouseDown, at: down, clickState: clickState)
+            return Unmanaged.passUnretained(event)
         case .beginHidDrag(let down, let current, let clickState):
             postHidMouse(type: .leftMouseDown, at: down, clickState: clickState)
             postHidMouse(type: .leftMouseDragged, at: current, clickState: clickState)
@@ -324,8 +355,12 @@ private let floatClickTapCallback: CGEventTapCallBack = { _, type, event, _ in
             return nil
         case .hidDragUp(let at, let clickState):
             postHidMouse(type: .leftMouseUp, at: at, clickState: clickState)
-            if Thread.isMainThread {
-                MainActor.assumeIsolated { endFloatClickStream(restoreFloatLayer: true) }
+            MainActor.assumeIsolated {
+                // The HID up above balances the drag — clear without re-balancing, then settle
+                // (floats last, key back to the tile).
+                let tileId = floatClickStream?.windowId
+                floatClickStream = nil
+                if let tileId { scheduleFloatLayerSettle(tileWindowId: tileId) }
             }
             return nil
     }
@@ -391,19 +426,20 @@ private func evaluateFloatClickAction(
         switch stream.phase {
             case .pending:
                 if released {
+                    // Deliver the whole click at the ORIGINAL press point — the tap-timeout
+                    // recovery path can reach here with the cursor far away, and down+up at the
+                    // press point is a clean click instead of a phantom drag-select.
                     floatClickStream = stream
-                    return .deliverPidMouseUp(pid: stream.pid, at: quartzLocation, clickState: stream.clickState)
+                    return .deliverPidClick(pid: stream.pid, at: stream.downQuartz, clickState: stream.clickState)
                 }
                 if motion, leftButtonDown || type == .leftMouseDragged {
                     if FloatClickWithoutRaisePolicy.isDrag(from: stream.downQuartz, to: quartzLocation) {
                         // Tiling window: hand the drag to the normal path (moveWithMouse tile
-                        // swap / snap-back). The HID-drag handoff is drag-without-raise for FLOATS
-                        // only; for a tile it fights moveWithMouse and breaks swap/snap. The app
-                        // already holds the focus-without-raise mouseDown, so passing the drag
-                        // through lets it move the window and AXMoved drives the tile logic.
+                        // swap / snap-back). The HID-drag handoff is drag-without-raise for
+                        // FLOATS only; for a tile it fights moveWithMouse and breaks swap/snap.
                         if Window.get(byId: stream.windowId)?.isFloating != true {
                             floatClickStream = nil
-                            return .passThrough
+                            return .handOffTileDrag(down: stream.downQuartz, clickState: stream.clickState)
                         }
                         stream.phase = .hidDrag
                         floatClickStream = stream
@@ -441,9 +477,21 @@ private func evaluateFloatClickAction(
     if let targetId = SkyLight.findEventTargetWindow(at: quartzLocation) {
         if let managed = Window.get(byId: targetId) {
             top = managed
-        } else if NSApp.window(withWindowNumber: Int(targetId)) != nil {
-            // Our own alpha-passthrough overlays (tab bar / status bar) can win the WS hit test
-            // in their transparent regions — resolve what's really under the click via the model
+        } else if let ownWindow = NSApp.window(withWindowNumber: Int(targetId)) {
+            // Our own overlays (tab bar / status bar) win the WS hit test for their whole frame.
+            // WS knows nothing about NSView.hitTest pass-through, so ask the view tree: a hit on
+            // an INTERACTIVE subview (tab button, workspace chip) belongs to the bar — pass it
+            // through, or accordion tab switching dies whenever a user float exists. Only
+            // transparent/empty regions fall through to the model scan.
+            if let contentView = ownWindow.contentView {
+                let local = ownWindow.convertPoint(fromScreen: NSPoint(
+                    x: quartzLocation.x,
+                    y: mainMonitor.height - quartzLocation.y, // Quartz y-down → AppKit y-up
+                ))
+                if contentView.hitTest(contentView.convert(local, from: nil)) != nil {
+                    return .passThrough
+                }
+            }
             guard let scanned = topmostManagedWindow(at: location) else { return .passThrough }
             top = scanned
         } else {
@@ -492,7 +540,6 @@ private func beginFloatClickPending(windowId: UInt32, pid: pid_t, at quartz: CGP
         lastQuartz: quartz,
         clickState: clickState,
         phase: .pending,
-        pidDownPosted: false,
         previousKeyWindowId: previousKeyWindowId,
     )
     guard let window = Window.get(byId: windowId) else { return }
@@ -504,14 +551,9 @@ private func beginFloatClickPending(windowId: UInt32, pid: pid_t, at quartz: CGP
     // 2) OS keyboard focus without raise (before any float raise).
     assertTileKeyboardFocus(windowId: windowId, previousKeyWindowId: previousKeyWindowId)
 
-    // 3) Arm the app immediately (may orderFront the tile above C for the duration of the
-    //    press — accepted; the settle on mouseUp restores the float layer). No mid-press
-    //    reinforce here: a second settle racing the mouseUp one is what caused the thrash.
-    postPidMouse(to: pid, type: .leftMouseDown, at: quartz, clickState: clickState)
-    if var s = floatClickStream {
-        s.pidDownPosted = true
-        floatClickStream = s
-    }
+    // NOTE: no eager pid mouseDown here. The click (down+up) is delivered whole at release —
+    // an eager down had to be balanced on every teardown path (none did: stuck buttons, latched
+    // drags) and duplicated the down when a drag later posted its own synthetic one.
 
     if let token: RunSessionGuard = .isServerEnabled {
         Task { @MainActor in

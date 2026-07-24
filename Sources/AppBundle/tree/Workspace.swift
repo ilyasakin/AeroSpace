@@ -43,6 +43,13 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
     nonisolated private let nameLogicalSegments: StringLogicalSegments
     /// `assignedMonitorPoint` must be interpreted only when the workspace is invisible
     fileprivate var assignedMonitorPoint: CGPoint? = nil
+
+    /// Session restore: re-pin an invisible workspace to its saved monitor. Without this every
+    /// non-visible workspace fell back to the main monitor after a restart on multi-monitor.
+    @MainActor
+    func assignMonitorPointForSessionRestore(_ point: CGPoint) {
+        assignedMonitorPoint = point
+    }
     /// Set by the tiling-policy command. nil means "follow the config"
     var tilingPolicyOverride: TilingPolicy? = nil
 

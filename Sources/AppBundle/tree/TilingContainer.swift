@@ -4,7 +4,17 @@ import Common
 final class TilingContainer: TreeNode, NonLeafTreeNodeObject { // todo consider renaming to GenericContainer
     fileprivate var _orientation: Orientation
     var orientation: Orientation { _orientation }
+    /// Dirty-flag protocol: layout is part of the published tiling spine. Every mutation site must
+    /// call `setLayout` (or invalidate the generation itself) — a bare assignment leaves the stale
+    /// spine published: the command visually no-ops and live/spine mismatch can crash weight sync.
     var layout: Layout
+
+    @MainActor
+    func setLayout(_ newLayout: Layout) {
+        guard layout != newLayout else { return }
+        layout = newLayout
+        nodeWorkspace?.invalidateTilingStructureGeneration()
+    }
 
     @MainActor
     init(parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, _ orientation: Orientation, _ layout: Layout, index: Int) {
@@ -43,14 +53,22 @@ extension TilingContainer {
         } else {
             _orientation = targetOrientation
         }
+        // Orientation is spine-published state — see `layout` didSet
+        nodeWorkspace?.invalidateTilingStructureGeneration()
     }
 
+    @MainActor
     func normalizeOppositeOrientationForNestedContainers() {
+        var changed = false
         if orientation == (parent as? TilingContainer)?.orientation {
             _orientation = orientation.opposite
+            changed = true
         }
         for child in children {
             (child as? TilingContainer)?.normalizeOppositeOrientationForNestedContainers()
+        }
+        if changed {
+            nodeWorkspace?.invalidateTilingStructureGeneration()
         }
     }
 }

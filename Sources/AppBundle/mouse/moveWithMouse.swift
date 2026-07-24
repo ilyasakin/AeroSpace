@@ -159,7 +159,7 @@ extension CGPoint {
         let target: TreeNode? = switch tree.layout {
             case .tiles, .master:
                 tree.children.first(where: {
-                    (virtual ? $0.lastAppliedLayoutVirtualRect : $0.lastAppliedLayoutPhysicalRect)?.contains(point) == true
+                    effectiveHitRect($0, virtual: virtual)?.contains(point) == true
                 })
             case .accordion:
                 tree.mostRecentChild
@@ -170,4 +170,27 @@ extension CGPoint {
             case .tilingContainer(let container): _findWindowRecursively(in: container, virtual: virtual)
         }
     }
+}
+
+/// Hit-test rect for a tiling child. Containers carry NO lastApplied rects (every materialize
+/// rebuilds them fresh), which made nested splits hit-test dead zones — drag-to-swap over any
+/// nested container found no target. Derive a container's rect as the union of its descendants.
+@MainActor
+private func effectiveHitRect(_ node: TreeNode, virtual: Bool) -> Rect? {
+    if let own = virtual ? node.lastAppliedLayoutVirtualRect : node.lastAppliedLayoutPhysicalRect {
+        return own
+    }
+    guard node is TilingContainer else { return nil }
+    var acc: Rect? = nil
+    for child in node.children {
+        guard let r = effectiveHitRect(child, virtual: virtual) else { continue }
+        acc = acc.map { existing in
+            let minX = min(existing.topLeftX, r.topLeftX)
+            let minY = min(existing.topLeftY, r.topLeftY)
+            let maxX = max(existing.topLeftX + existing.width, r.topLeftX + r.width)
+            let maxY = max(existing.topLeftY + existing.height, r.topLeftY + r.height)
+            return Rect(topLeftX: minX, topLeftY: minY, width: maxX - minX, height: maxY - minY)
+        } ?? r
+    }
+    return acc
 }

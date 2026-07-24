@@ -44,6 +44,13 @@ final class WindowBordersManager {
     /// Windows with a chrome probe currently in flight (dedup — paint retries the probe each refresh
     /// while the border is deferred).
     private var probing: Set<UInt32> = []
+    /// Per-window relative stack fingerprint from the last refresh (the id of the next layer-0
+    /// window in front-to-back order). When it changes, the WindowServer restacked around this
+    /// window and its border must re-order — reordering only floats missed tile restacks (stale
+    /// rings over accordion cycles / cmd-tab raises); reordering everything flashed on click.
+    private var lastStackNeighbor: [UInt32: UInt32] = [:]
+    /// Fresh fingerprint computed at refresh() start; consumed by paint's reorder decision.
+    private var currentStackNeighbor: [UInt32: UInt32] = [:]
 
     /// Window ids currently carrying a border (for WS notify subscription during mouse-resize).
     var borderedWindowIds: [UInt32] { Array(entries.keys) }
@@ -69,6 +76,7 @@ final class WindowBordersManager {
         }
         activeId = focus.windowOrNil?.windowId
         invalidateOnScreenWindowSnapshot()
+        computeStackNeighbors()
 
         var seen = Set<UInt32>(minimumCapacity: entries.count)
         for workspace in Workspace.allUnsorted where workspace.isVisible {
@@ -83,10 +91,13 @@ final class WindowBordersManager {
         for (id, entry) in entries where !seen.contains(id) {
             entry.release()
             entries.removeValue(forKey: id)
-            rects.removeValue(forKey: id)
-            chromeCache.removeValue(forKey: id)
-            settlingUntil.removeValue(forKey: id)
         }
+        // Prune per-id state for anything out of the visible set — including ids that never got
+        // an entry (chrome-probe deferral), which used to leak and resurrect ghost rings.
+        for id in rects.keys where !seen.contains(id) { rects.removeValue(forKey: id) }
+        for id in chromeCache.keys where !seen.contains(id) { chromeCache.removeValue(forKey: id) }
+        for id in settlingUntil.keys where !seen.contains(id) { settlingUntil.removeValue(forKey: id) }
+        for id in lastStackNeighbor.keys where !seen.contains(id) { lastStackNeighbor.removeValue(forKey: id) }
         requestWindowServerNotifications()
     }
 
@@ -97,6 +108,10 @@ final class WindowBordersManager {
         let cfg = config.windowBorders
         guard cfg.enabled, TrayMenuModel.shared.isEnabled, BorderSkyLight.isAvailable else { return }
         activeId = focus.windowOrNil?.windowId
+        // Focus changes are when macOS restacks — refresh the stack fingerprint so tiles whose
+        // z-position moved get re-ordered (and only those).
+        invalidateOnScreenWindowSnapshot()
+        computeStackNeighbors()
         for (id, _) in entries {
             guard let window = Window.get(byId: id) else { continue }
             guard let rect = rects[id] ?? window.lastAppliedLayoutPhysicalRect else { continue }
@@ -134,6 +149,14 @@ final class WindowBordersManager {
     func sampleFloatingBorder(windowId: UInt32) {
         guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled, entries[windowId] != nil else { return }
         guard let window = Window.get(byId: windowId) else { return }
+        // Respect the settling pin (entrance animation) unless the user is actually dragging —
+        // otherwise this display-rate painter and the settle path fight over the border position
+        // and the ring flickers between the pin and the animation for the whole settle window.
+        if let until = settlingUntil[windowId], ProcessInfo.processInfo.systemUptime < until,
+           currentlyManipulatedWithMouseWindowId != windowId
+        {
+            return
+        }
         guard let live = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true) else { return }
         // Floating free-drag frame: geometry only, z-order unchanged.
         paint(id: windowId, window: window, rect: live, cfg: config.windowBorders, reorder: false)
@@ -144,11 +167,14 @@ final class WindowBordersManager {
         FloatingBorderTracker.stop()
     }
 
-    /// After mouse-drag layout: repaint **all** tile borders from layout geometry (lastApplied).
+    /// After mouse-drag layout: repaint tile borders from layout geometry (lastApplied) —
+    /// EXCEPT the drag target, whose border tracks live WS bounds (repainting it from
+    /// lastApplied here fought the live path and snapped the ring back to the grid slot).
     func syncAfterMouseLayout() {
         let cfg = config.windowBorders
         guard cfg.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
         for (id, _) in entries {
+            if id == currentlyManipulatedWithMouseWindowId { continue }
             guard let window = Window.get(byId: id) else { continue }
             guard let rect = window.lastAppliedLayoutPhysicalRect
                 ?? WindowServerReads.current.windowBounds(windowId: id, forOverlay: true)
@@ -160,6 +186,18 @@ final class WindowBordersManager {
 
     // MARK: - Paint
 
+    /// Fingerprint each candidate window's position in the WindowServer's layer-0 stack as
+    /// "the id in front of me" (skipping our own border windows). O(stack) per refresh.
+    private func computeStackNeighbors() {
+        currentStackNeighbor.removeAll(keepingCapacity: true)
+        var prev: UInt32 = 0 // 0 = frontmost
+        for item in onScreenWindowSnapshot().normalStack {
+            if BorderSkyLight.ownedWindowIds.contains(item.id) { continue }
+            currentStackNeighbor[item.id] = prev
+            prev = item.id
+        }
+    }
+
     private func ensureEntry(_ id: UInt32) {
         if entries[id] == nil { entries[id] = BorderWindow(targetWid: id) }
     }
@@ -167,6 +205,17 @@ final class WindowBordersManager {
     /// Resolve style/radius/scale for `id` and (re)paint its border window. `reorder` reasserts the
     /// z-placement (create / focus / layout) and is skipped on the pure-move hot path.
     private func paint(id: UInt32, window: Window, rect: Rect, cfg: WindowBorders, reorder: Bool) {
+        // A window covering an entire display is fullscreen content (VLC non-native fullscreen
+        // classified mid-transition as a float, or any window grown display-sized) — a ring around
+        // it is noise. Release the SLS window but KEEP the entry: handleWindowMoved guards on
+        // `entries`, so dropping it made the border unrecoverable until the next full refresh
+        // (drag a float fullscreen-sized and back → ring gone for the rest of the gesture).
+        // BorderWindow.update recreates the released window on the next non-covering paint.
+        if rectCoversAnyDisplay(rect) {
+            entries[id]?.release()
+            rects[id] = rect
+            return
+        }
         let appId = window.app.rawAppBundleId
         // This window's probed chrome, else the app's known chrome from a prior probe.
         let knownChrome = chromeCache[id] ?? appId.flatMap { chromeByApp[$0] }
@@ -191,13 +240,16 @@ final class WindowBordersManager {
         let isActive = id == activeId
         let style = isActive ? cfg.resolvedActiveStyle() : cfg.resolvedInactiveStyle()
         let radius = cfg.cornerRadius(forAppId: appId, chrome: knownChrome ?? .plain)
-        // Reorder only floating windows. Tiled windows don't overlap, so their border never needs
-        // re-asserting above the target after creation — re-inserting it in the global z-stack on
-        // every refresh is pure churn and flashes on focus (the "defocus/focus on click" blip).
-        // Floating/overlapping windows genuinely restack on raise, so they still reorder. Create
-        // always orders regardless (BorderWindow forces it on first make).
+        // Reorder policy: floats reorder on request (they restack on raise). Tiles reorder only
+        // when their WindowServer stack POSITION actually changed since the last refresh
+        // (accordion cycle, cmd-tab raise) — reordering every tile on every refresh flashed on
+        // click, and never reordering left stale rings over restacked windows.
         let settling = (settlingUntil[id]).map { now < $0 } ?? false
-        let needsReorder = reorder && window.isFloating && !settling
+        let stackChanged = currentStackNeighbor[id] != nil
+            && lastStackNeighbor[id] != nil
+            && currentStackNeighbor[id] != lastStackNeighbor[id]
+        if let neighbor = currentStackNeighbor[id] { lastStackNeighbor[id] = neighbor }
+        let needsReorder = reorder && !settling && (window.isFloating || stackChanged)
         entry.update(
             rect: rect, width: cfg.width, radius: radius, style: style,
             scale: backingScale(forRect: rect), reorder: needsReorder,
@@ -211,6 +263,9 @@ final class WindowBordersManager {
         chromeCache.removeAll()
         settlingUntil.removeAll()
         probing.removeAll()
+        lastStackNeighbor.removeAll()
+        currentStackNeighbor.removeAll()
+        FloatingBorderTracker.stop()
     }
 
     // MARK: - Corner radius chrome probe
@@ -228,12 +283,28 @@ final class WindowBordersManager {
             chromeCache[id] = chrome
             if let appId { chromeByApp[appId] = chrome } // seed future windows of this app
             // Paint when the border was deferred waiting for this result (create), or when the
-            // chrome actually changed (radius restyle). Window must still be active (has a rect).
+            // chrome actually changed (radius restyle). Deferred creates must ALSO still be in
+            // the visible set — otherwise a workspace switch during the ~100ms probe resurrected
+            // a ghost ring at the stale rect. And they must re-request WS notifications: the
+            // border wasn't in `entries` when refresh subscribed, so without this the new border
+            // never received move events (frozen border on the first window of every app).
             let deferredFirstPaint = entries[id] == nil
+            if deferredFirstPaint {
+                guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled,
+                      let workspace = window.nodeWorkspace, workspace.isVisible,
+                      !workspaceDisplayIsFullscreen(workspace)
+                else {
+                    rects.removeValue(forKey: id)
+                    return
+                }
+            }
             guard deferredFirstPaint || prev != chrome,
                   let rect = rects[id] ?? window.lastAppliedLayoutPhysicalRect
             else { return }
             paint(id: id, window: window, rect: rect, cfg: config.windowBorders, reorder: deferredFirstPaint)
+            if deferredFirstPaint {
+                requestWindowServerNotifications()
+            }
         }
     }
 
@@ -269,9 +340,11 @@ final class WindowBordersManager {
         let window = Window.get(byId: windowId)
         let live = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true)
         let applied = window?.lastAppliedLayoutPhysicalRect
+        let manipulated = currentlyManipulatedWithMouseWindowId
         return resolveLiveBorderRect(
             isFloating: window?.isFloating == true,
-            mouseManipulateActive: currentlyManipulatedWithMouseWindowId != nil,
+            isMouseManipulationTarget: manipulated == windowId,
+            otherWindowManipulateActive: manipulated != nil && manipulated != windowId,
             mayBeStale: skyLightFrameMayBeStale(windowId),
             lastApplied: applied,
             liveBounds: live,
@@ -290,6 +363,31 @@ final class WindowBordersManager {
 func workspaceDisplayIsFullscreen(_ workspace: Workspace) -> Bool {
     guard let displayId = DisplayRefresh.displayId(for: workspace) else { return false }
     return SkyLight.currentSpaceIsFullscreen(displayId: displayId)
+}
+
+/// True when the display is showing fullscreen *content* of either kind:
+/// - a native macOS fullscreen Space (Safari video, green-button fullscreen), or
+/// - a non-native fullscreen overlay: the frontmost normal-level window on the display covers its
+///   ENTIRE frame, menu-bar strip included (VLC default fullscreen, borderless-fullscreen games).
+/// The status bar / tab strips float above normal windows, so they must hide for both.
+@MainActor
+func displayShowsFullscreenContent(_ displayId: CGDirectDisplayID) -> Bool {
+    if SkyLight.currentSpaceIsFullscreen(displayId: displayId) { return true }
+    let display = CGDisplayBounds(displayId)
+    let tol: CGFloat = 2
+    for item in onScreenWindowSnapshot().normalStack {
+        // Skip our own border windows (layer 0, sized just past their target).
+        if BorderSkyLight.ownedWindowIds.contains(item.id) { continue }
+        let r = item.rect
+        guard r.topLeftX < display.maxX, r.topLeftX + r.width > display.minX,
+              r.topLeftY < display.maxY, r.topLeftY + r.height > display.minY
+        else { continue }
+        // Frontmost normal window on this display: fullscreen content iff it covers the display.
+        return r.topLeftX <= display.minX + tol && r.topLeftY <= display.minY + tol
+            && r.topLeftX + r.width >= display.maxX - tol
+            && r.topLeftY + r.height >= display.maxY - tol
+    }
+    return false
 }
 
 /// Backing scale of the display containing `rect` (retina = 2). Border windows draw in points;
@@ -314,11 +412,18 @@ enum FloatingBorderTracker {
     private static let subscriptionId = UUID()
     private static var subscribedDisplayId: CGDirectDisplayID?
     private static var lastSampled: Rect?
+    /// Consecutive pulses with an unchanged frame. The tracker is kicked by ANY WS move event on
+    /// a float (including programmatic stash/unstash moves), and mouse-up teardown only runs for
+    /// real drags — without an idle cutoff the display link ran at monitor Hz forever after any
+    /// workspace switch that repositioned a float.
+    private static var idlePulses = 0
+    private static let idleStopThreshold = 30 // ≈ 0.25–0.5s of no motion
 
     static func kick(_ window: Window) {
         guard window.isFloating else { return }
         guard config.windowBorders.enabled, TrayMenuModel.shared.isEnabled else { return }
         targetId = window.windowId
+        idlePulses = 0
         ensureNotifications(for: window)
         ensureSubscribed(for: window)
         sampleNow()
@@ -327,6 +432,7 @@ enum FloatingBorderTracker {
     static func stop() {
         targetId = nil
         lastSampled = nil
+        idlePulses = 0
         if let displayId = subscribedDisplayId {
             WorkspaceDisplayLink.unsubscribe(displayId: displayId, id: subscriptionId)
             subscribedDisplayId = nil
@@ -369,8 +475,19 @@ enum FloatingBorderTracker {
 
     private static func sampleNow() {
         guard let id = targetId else { return }
-        guard let live = WindowServerReads.current.windowBounds(windowId: id, forOverlay: true) else { return }
-        if live == lastSampled { return }
+        guard let live = WindowServerReads.current.windowBounds(windowId: id, forOverlay: true) else {
+            stop() // window gone — don't spin the link on a dead id
+            return
+        }
+        if live == lastSampled {
+            // A held-but-motionless drag still has the button down — keep sampling then.
+            if currentlyManipulatedWithMouseWindowId != id {
+                idlePulses += 1
+                if idlePulses >= idleStopThreshold { stop() }
+            }
+            return
+        }
+        idlePulses = 0
         lastSampled = live
         WindowBordersManager.shared.sampleFloatingBorder(windowId: id)
     }

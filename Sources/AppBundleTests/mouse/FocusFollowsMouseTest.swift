@@ -88,12 +88,12 @@ final class FocusFollowsMouseTest: XCTestCase {
         XCTAssertEqual(windowUnderMouseCheap(CGPoint(x: 400, y: 300))?.windowId, 2)
     }
 
-    func testRaiseFloatingWindowsAboveTilingIsNoOpWithoutFloats() {
+    func testRaiseFloatingWindowsAboveTilingIsNoOpWithoutFloats() async {
         // Smoke: no floats → must not crash
-        raiseFloatingWindowsAboveTiling()
+        await raiseFloatingWindowsAboveTiling()
     }
 
-    func testRaiseFloatingWindowsAboveTilingTouchesFloatsOnly() {
+    func testRaiseFloatingWindowsAboveTilingTouchesFloatsOnly() async {
         let workspace = focus.workspace
         var tile: Window!
         workspace.rootTilingContainer.apply {
@@ -103,7 +103,7 @@ final class FocusFollowsMouseTest: XCTestCase {
         XCTAssertTrue(floating.isFloating)
         XCTAssertFalse(tile.isFloating)
         // TestWindow.nativeRaise is a no-op; just ensure the helper enumerates without error
-        raiseFloatingWindowsAboveTiling()
+        await raiseFloatingWindowsAboveTiling()
     }
 
     func testNativeFocusRespectingFloatsDoesNotRaiseTileWhenFloatsExist() {

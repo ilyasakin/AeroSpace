@@ -147,6 +147,9 @@ enum SessionPipeline {
                 }
 
                 if plan.normalizeNativeState { try await phaseNormalizeNativeState() }
+                // A startup restore that found no windows (apps slower than AeroSpace at login)
+                // retries here now that discovery has run — before layout cements placements.
+                SessionLayoutStore.retryRestoreIfPending()
                 if plan.layout { try await phaseLayout(visibleOnly: false) }
                 // Immutable structural snapshot after layout (lock-screen / #1215 history)
                 TreeHistory.recordLive()

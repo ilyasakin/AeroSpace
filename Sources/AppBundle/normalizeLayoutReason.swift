@@ -68,6 +68,11 @@ private func _normalizeLayoutReason(workspace: Workspace, windows: [Window], det
                         window.bind(to: workspace.macOsNativeFullscreenWindowsContainer, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
                     case isMacosMinimized:
                         window.layoutReason = .macos(prevParentKind: parent.kind)
+                        // The minimized container is GLOBAL — it erases workspace identity, so
+                        // unminimize used to land on whatever workspace was focused. Remember.
+                        if let ws = window.nodeWorkspace {
+                            MacWindow.rememberWorkspace(windowId: window.windowId, workspaceName: ws.name)
+                        }
                         window.bind(to: macosMinimizedWindowsContainer, adaptiveWeight: 1, index: INDEX_BIND_LAST)
                     case isMacosWindowOfHiddenApp:
                         window.layoutReason = .macos(prevParentKind: parent.kind)
@@ -135,6 +140,9 @@ func exitMacOsNativeUnconventionalState(
     workspace: Workspace,
     _ cm: CancellationMode,
 ) async throws {
+    // Prefer the workspace the window lived on when it entered the unconventional state
+    // (minimize erases it via the global container). Falls back to the caller's workspace.
+    let workspace = MacWindow.recallWorkspace(windowId: window.windowId) ?? workspace
     window.layoutReason = .standard
     switch prevParentKind {
         case .floatingWindowsContainer:

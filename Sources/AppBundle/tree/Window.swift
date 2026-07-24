@@ -12,6 +12,14 @@ open class Window: TreeNode, Hashable {
     var isAlwaysOnTop: Bool = false
     /// The window follows the active workspace of its monitor. See sticky command
     var isSticky: Bool = false
+    /// Learned hard max size (e.g. System Settings caps its width ~723px). macOS exposes no
+    /// max-size AX attribute, so this is discovered by observing the window refuse to grow to the
+    /// size the tiling layout requested. `.infinity` in a dimension means "no cap there". Used by
+    /// the tiles layout to stop reserving space the window can't fill (waterfillTileSpans).
+    var learnedMaxSize: CGSize? = nil
+    /// Pending clamp observation — promoted to `learnedMaxSize` only when a second layout confirms
+    /// the same clamp, so a transient launch/animation size is never latched as a permanent cap.
+    var maxSizeCandidate: CGSize? = nil
     /// True only when the USER explicitly floated this window via `layout floating` (alt-shift-space).
     /// Auto-classified floats (dialogs, OAuth popups, panels bound to the floating container by
     /// window detection) are NOT user floats. The i3-style float quirks — click-without-raise

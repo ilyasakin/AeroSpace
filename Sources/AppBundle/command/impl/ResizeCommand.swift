@@ -58,6 +58,12 @@ struct ResizeCommand: Command {
             .forEach { $0.setWeight(parent.orientation, $0.getWeight(parent.orientation) - childDiff) }
 
         node.setWeight(orientation, node.getWeight(orientation) + diff)
+        // Manual resize overrides any learned max-size cap — clear it so a stale/mis-learned cap
+        // can't keep the window pinned; it re-learns if it still refuses to grow.
+        for window in node.allLeafWindowsRecursive {
+            window.learnedMaxSize = nil
+            window.maxSizeCandidate = nil
+        }
         return .succ
     }
 

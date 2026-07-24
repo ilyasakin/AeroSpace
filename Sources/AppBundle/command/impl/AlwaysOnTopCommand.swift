@@ -56,19 +56,31 @@ struct AlwaysOnTopCommand: Command {
 ///
 /// - Parameter preserveTileKeyboardFocus: after raising floats, re-assert keyboard focus on
 ///   the focused tile without raising it (i3: float stays on top, tile may stay key).
-@MainActor func raiseFloatingWindowsAboveTiling(preserveTileKeyboardFocus: Bool = true) {
+/// Ordering is load-bearing (same invariant as the click settle): raises are AWAITED before the
+/// key transfer, and the transfer never `setFrontProcess`es — the old fire-and-forget raises +
+/// `FloatLayer.focus` (which restacks the tile above the floats it just raised) raced, so the
+/// recovery command could un-fix the exact state it exists to fix.
+@MainActor func raiseFloatingWindowsAboveTiling(preserveTileKeyboardFocus: Bool = true) async {
     let focused = focus.windowOrNil
+    let focusedPid = focused?.app.pid
     var raisedAny = false
+    var keyStealingFloatId: UInt32? = nil
     for workspace in Workspace.allUnsorted where workspace.isVisible {
         let floats = workspace.floatingWindowsContainer.mruChildren.compactMap { $0 as? Window }
         guard !floats.isEmpty else { continue }
         // Oldest first → newest last (top of stack among floats)
         for window in floats.reversed() {
-            window.nativeRaise()
+            await window.nativeRaiseAndWait()
+            if let focusedPid, window.app.pid == focusedPid { keyStealingFloatId = window.windowId }
             raisedAny = true
         }
     }
     if preserveTileKeyboardFocus, raisedAny, let focused, !focused.isFloating {
-        FloatLayer.focus(focused, raise: false)
+        _ = await PrivateFocus.transferKeyAfterFloatRaise(
+            pid: focused.app.pid,
+            toWindowId: focused.windowId,
+            fromSameAppWindowId: keyStealingFloatId,
+        )
+        (focused.app as? MacApp)?.lastNativeFocusedWindowId = focused.windowId
     }
 }

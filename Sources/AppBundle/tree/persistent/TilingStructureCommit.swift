@@ -86,15 +86,19 @@ extension Workspace {
             .takeIf { $0.windowId != windowId }?.windowId
         return commitTilingTransform { spine in
             let base = spine.path(ofWindowId: windowId).flatMap { spine.removing(at: $0)?.root } ?? spine
-            let child = PersistentTilingNode.window(id: windowId, weight: 1)
             if let mruId,
                let path = base.path(ofWindowId: mruId),
                !path.isRoot,
                let idx = path.indices.last
             {
-                return base.inserting(child: child, at: idx + 1, intoContainerAt: path.dropLast)
+                let parentPath = path.dropLast
+                // Average-of-siblings weight: persisted weights are pixel spans (see
+                // insertWindowBeside) — i3's "reset percent" maps to an equal share, not 1
+                let weight = base.averageChildWeight(ofContainerAt: parentPath)
+                return base.inserting(child: .window(id: windowId, weight: weight), at: idx + 1, intoContainerAt: parentPath)
             }
-            return base.inserting(child: child, at: INDEX_BIND_LAST, intoContainerAt: .root)
+            let weight = base.averageChildWeight(ofContainerAt: .root)
+            return base.inserting(child: .window(id: windowId, weight: weight), at: INDEX_BIND_LAST, intoContainerAt: .root)
         }
     }
 
@@ -120,7 +124,7 @@ extension Workspace {
         {
             let absorbId = target.windowId
             let ok = commitTilingTransform { spine in
-                spine.insertWindowBeside(besideId: absorbId, newId: id, weight: 1)
+                spine.insertWindowBeside(besideId: absorbId, newId: id)
             }
             if ok {
                 Window.get(byId: absorbId)?.markAsMostRecentChild()
@@ -143,7 +147,7 @@ extension Workspace {
                     newId: id,
                     splitHorizontal: splitHorizontal,
                     ratio: ratio,
-                ) ?? spine.insertWindowBeside(besideId: nil, newId: id, weight: 1)
+                ) ?? spine.insertWindowBeside(besideId: nil, newId: id)
             }
             if ok {
                 Window.get(byId: target.windowId)?.markAsMostRecentChild()
@@ -153,7 +157,7 @@ extension Workspace {
 
         let besideId = mru?.takeIf { $0.windowId != id }?.windowId
         return commitTilingTransform { spine in
-            spine.insertWindowBeside(besideId: besideId, newId: id, weight: 1)
+            spine.insertWindowBeside(besideId: besideId, newId: id)
         }
     }
 
@@ -202,6 +206,10 @@ extension Workspace {
     func materializeTilingSpine(_ spine: PersistentTilingNode) {
         let oldRoot = rootTilingContainer
         let leaves = oldRoot.allLeafWindowsRecursive
+        // Rebuilding containers destroys their MRU stacks (bind order = last child becomes MRU),
+        // which flips accordion fronts, misroutes close-focus, and breaks the fullscreen gate
+        // (`mostRecentWindowRecursive`). Capture the MRU leaf and re-mark it after restore.
+        let mruId = oldRoot.mostRecentWindowRecursive?.windowId
         oldRoot.unbindFromParent()
         // Test lookup walks workspace leaves only — park ids so restore can rebind
         if isUnitTest {
@@ -215,8 +223,20 @@ extension Workspace {
                 child.unbindFromParent()
             }
         }
-        check(spine.restore(parent: self, index: INDEX_BIND_LAST), "Failed to materialize tiling spine")
-        tilingStructureGeneration = spine
+        if spine.restore(parent: self, index: INDEX_BIND_LAST) {
+            tilingStructureGeneration = spine
+        } else {
+            // Entirely stale spine (every id dead/unbindable) — a WM must degrade, not die.
+            // Re-bind the previous leaves so no window is orphaned, and drop the generation so
+            // the next layout recaptures from live truth.
+            for window in leaves where window.parent == nil || window.parent === oldRoot {
+                window.bind(to: rootTilingContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
+            }
+            tilingStructureGeneration = nil
+        }
+        if let mruId, let mru = Window.get(byId: mruId), mru.nodeWorkspace === self {
+            mru.markAsMostRecentChild()
+        }
     }
 
     /// Dirty-flag protocol: if a generation is published, trust it. If nil, capture from live

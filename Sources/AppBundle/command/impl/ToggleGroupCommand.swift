@@ -31,7 +31,7 @@ struct ToggleGroupCommand: Command {
                 return .succ
             } else if parent.parent is Workspace {
                 // Root accordion: convert to tiles
-                parent.layout = .tiles
+                parent.setLayout(.tiles)
                 return .succ
             }
             return .fail(io.err("can't unwrap this group"))

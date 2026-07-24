@@ -17,19 +17,49 @@ final class MacWindow: Window {
     @MainActor static var allWindowsMap: [UInt32: MacWindow] = [:]
     @MainActor static var allWindows: [MacWindow] { Array(allWindowsMap.values) }
 
+    /// windowId → workspace name for recently departed windows (transient AX disappearance,
+    /// native fullscreen round-trips). Bounded FIFO so it can't grow unbounded.
+    @MainActor private static var rememberedWorkspace: [UInt32: String] = [:]
+    @MainActor private static var rememberedOrder: [UInt32] = []
+
+    @MainActor static func rememberWorkspace(windowId: UInt32, workspaceName: String) {
+        if rememberedWorkspace[windowId] == nil { rememberedOrder.append(windowId) }
+        rememberedWorkspace[windowId] = workspaceName
+        while rememberedOrder.count > 64 {
+            rememberedWorkspace.removeValue(forKey: rememberedOrder.removeFirst())
+        }
+    }
+
+    @MainActor static func recallWorkspace(windowId: UInt32) -> Workspace? {
+        guard let name = rememberedWorkspace.removeValue(forKey: windowId) else { return nil }
+        rememberedOrder.removeAll { $0 == windowId }
+        return Workspace.get(byName: name)
+    }
+
     @MainActor
     @discardableResult
     static func getOrRegister(windowId: UInt32, macApp: MacApp) async throws -> MacWindow {
         if let existing = allWindowsMap[windowId] { return existing }
         let rect = try await macApp.getAxRect(windowId, .cancellable)
-        let workspace = isStartup
-            ? (rect?.center.monitorApproximation ?? mainMonitor).activeWorkspace
-            : focus.workspace
         let windowLevel = getWindowLevel(for: windowId)
         let windowType = try await macApp.resolveWindowType(windowId, windowLevel, .cancellable)
 
         // atomic synchronous section
         if let existing = allWindowsMap[windowId] { return existing }
+
+        // Workspace choice, in trust order:
+        // 1. Session-restore grace (window discovered AFTER restoreIfPossible — slow AX at
+        //    startup). CONSUMED HERE, after every cancellable await: these sessions are cancelled
+        //    by any AX notification, and consuming before the awaits burned the placement on
+        //    registrations that never completed.
+        // 2. Recently-departed memory (transient AX disappearance / fullscreen round-trip —
+        //    the window's old workspace, not wherever the user happens to be now).
+        // 3. Startup: monitor approximation. Otherwise: the focused workspace.
+        let workspace = SessionLayoutStore.pendingWorkspace(for: windowId, appId: macApp.rawAppBundleId)
+            ?? MacWindow.recallWorkspace(windowId: windowId)
+            ?? (isStartup
+                ? (rect?.center.monitorApproximation ?? mainMonitor).activeWorkspace
+                : focus.workspace)
 
         let window: MacWindow
         switch windowType {
@@ -101,6 +131,13 @@ final class MacWindow: Window {
         }
         invalidateMacosNativeWindowStateCache(windowId: windowId)
         if !skipClosedWindowsCache { cacheClosedWindowIfNeeded() }
+        // Remember the workspace: windows can vanish from AX transiently (VLC/native fullscreen
+        // hides the windowed window; some apps drop windows from their AX list under load) and
+        // re-register moments later — without this they landed on whatever workspace was focused
+        // at re-registration ("VLC migrated ws1 → ws5 after a fullscreen round-trip").
+        if let ws = nodeWorkspace {
+            MacWindow.rememberWorkspace(windowId: windowId, workspaceName: ws.name)
+        }
         let parent = unbindFromParent().parent
         let deadWindowWorkspace = parent.nodeWorkspace
         let focus = focus

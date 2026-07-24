@@ -74,6 +74,52 @@ enum PrivateFocus {
         return true
     }
 
+    /// Async variant of `focusWithoutRaise` for main-thread callers (focus-follows-mouse).
+    ///
+    /// The sync version `usleep`s 40ms on the calling thread for the same-app 0x0d gap. On the
+    /// main thread — while our session-wide BLOCKING event tap also masks `mouseMoved` — that
+    /// stalls every mouse event on the machine per FFM hop, and accumulated stalls trip the tap
+    /// timeout. Here the gap is `Task.sleep`: the run loop keeps servicing the tap. A generation
+    /// counter drops the second half when a newer focus superseded this one mid-gap.
+    @MainActor private static var asyncFocusGeneration: UInt64 = 0
+
+    @discardableResult
+    @MainActor
+    static func focusWithoutRaiseAsyncGap(
+        pid: pid_t,
+        windowId: UInt32,
+        fallbackPreviousKeyWindowId: UInt32? = nil,
+        forcePreviousKeyWindowId: UInt32? = nil,
+    ) async -> Bool {
+        guard let prepared = prepareFocusWithoutRaise(
+            pid: pid,
+            windowId: windowId,
+            fallbackPreviousKeyWindowId: fallbackPreviousKeyWindowId,
+            forcePreviousKeyWindowId: forcePreviousKeyWindowId,
+        ) else { return false }
+        asyncFocusGeneration &+= 1
+        let generation = asyncFocusGeneration
+        if let switchPair = prepared.sameAppSwitch {
+            postEventBytes(
+                sameAppSwitchEventBytes(fromWindowId: switchPair.from, toWindowId: switchPair.to, phase: .unfocusPrevious),
+                psn: prepared.psn,
+                postEvent: prepared.postEvent,
+            )
+            await asyncSleepNanoseconds(UInt64(sameAppSwitchGapMicroseconds) * 1000)
+            // Superseded (newer focus started) or cancelled mid-gap: the newer transition owns
+            // the key — finishing here would re-key the stale window.
+            if generation != asyncFocusGeneration || Task.isCancelled { return false }
+            postEventBytes(
+                sameAppSwitchEventBytes(fromWindowId: switchPair.from, toWindowId: switchPair.to, phase: .focusNext),
+                psn: prepared.psn,
+                postEvent: prepared.postEvent,
+            )
+        }
+        if generation != asyncFocusGeneration || Task.isCancelled { return false }
+        finishFocusWithoutRaise(prepared)
+        return true
+    }
+
     private struct PreparedFocus {
         var psn: ProcessSerialNumberBits
         var windowId: UInt32
@@ -161,12 +207,18 @@ enum PrivateFocus {
                 postEvent: impl.postEvent,
             )
             await asyncSleepNanoseconds(UInt64(sameAppSwitchGapMicroseconds) * 1000)
+            // Task.sleep returns IMMEDIATELY when the task is cancelled — a superseded settle
+            // (user clicked another tile mid-settle) must NOT resume and re-key the STALE tile
+            // (keyboard went to the old window while the user looked at the new one, and the
+            // tracking corruption poisoned the next same-app 0x0d dance).
+            if Task.isCancelled { return false }
             postEventBytes(
                 sameAppSwitchEventBytes(fromWindowId: fromId, toWindowId: toWindowId, phase: .focusNext),
                 psn: psn,
                 postEvent: impl.postEvent,
             )
         }
+        if Task.isCancelled { return false }
         makeKeyWindow(psn: psn, windowId: toWindowId, postEvent: impl.postEvent)
         unsafe lastFocusedPsn = psn
         unsafe lastFocusedWindowId = toWindowId
@@ -360,17 +412,30 @@ enum FloatLayer {
     }
 
     /// Explicit recovery only (`raise-floating` / manual).
+    ///
+    /// Ordering is load-bearing (same invariant as the click settle pipeline): raises must be
+    /// AWAITED before the key transfer, and the transfer must never `setFrontProcess` — the old
+    /// fire-and-forget raises + `focusWithoutRaise` (which restacks the tile above the floats it
+    /// just raised) could leave the command un-fixing the exact state it exists to fix.
     @MainActor
-    static func ensureFloatsAboveTiling(focusedTile: Window?) {
+    static func ensureFloatsAboveTiling(focusedTile: Window?) async {
         let workspaces = Workspace.allUnsorted.filter(\.isVisible)
+        var keyStealingFloatId: UInt32? = nil
+        let tilePid = focusedTile?.app.pid
         for workspace in workspaces {
             let floats = workspace.floatingWindowsContainer.mruChildren.compactMap { $0 as? Window }
             for w in floats.reversed() {
-                effectivePort.raiseWindow(windowId: w.windowId)
+                await w.nativeRaiseAndWait()
+                if let tilePid, w.app.pid == tilePid { keyStealingFloatId = w.windowId }
             }
         }
         if let focusedTile, !focusedTile.isFloating {
-            FloatLayer.focus(focusedTile, raise: false)
+            _ = await PrivateFocus.transferKeyAfterFloatRaise(
+                pid: focusedTile.app.pid,
+                toWindowId: focusedTile.windowId,
+                fromSameAppWindowId: keyStealingFloatId,
+            )
+            (focusedTile.app as? MacApp)?.lastNativeFocusedWindowId = focusedTile.windowId
         }
     }
 }
@@ -381,11 +446,19 @@ private final class ProductionFloatLayerPort: FloatLayerPort {
 
     func focusWithoutRaise(pid: pid_t, windowId: UInt32) -> Bool {
         let fallback = Window.get(byId: windowId).flatMap { ($0.app as? MacApp)?.lastNativeFocusedWindowId }
-        return PrivateFocus.focusWithoutRaise(
-            pid: pid,
-            windowId: windowId,
-            fallbackPreviousKeyWindowId: fallback,
-        )
+        // Async-gap variant: the sync one usleep()s 40ms on the MAIN thread for the same-app
+        // 0x0d gap. With the session-wide blocking event tap (which masks mouseMoved) alive,
+        // that stalled every mouse event on the machine per focus-follows-mouse hop and could
+        // trip the tap timeout. The first half posts synchronously; the finish lands after an
+        // awaited gap that keeps the run loop (and the tap) serviced.
+        Task { @MainActor in
+            _ = await PrivateFocus.focusWithoutRaiseAsyncGap(
+                pid: pid,
+                windowId: windowId,
+                fallbackPreviousKeyWindowId: fallback,
+            )
+        }
+        return true
     }
 
     func raiseWindow(windowId: UInt32) {

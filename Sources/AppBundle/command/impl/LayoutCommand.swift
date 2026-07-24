@@ -74,11 +74,14 @@ struct LayoutCommand: Command {
                         guard let workspace = container.nodeWorkspace else { return .fail(io.err(bugPrompt())) }
                         // Tier 1: nothing changed while floating → materialize the pre-float
                         // spine verbatim (exact structure + weights; undoes removal's flatten).
+                        // STRUCTURAL equality only: layout re-normalizes weights (they become
+                        // pixel spans) on every pass, so full == never matches and the tier was
+                        // dead code. Same ids + shape is the actual "nothing changed" signal.
                         let preSpine = window.floatingRestorePreSpine
                         let postSpine = window.floatingRestorePostSpine
                         window.floatingRestorePreSpine = nil
                         window.floatingRestorePostSpine = nil
-                        if let preSpine, let postSpine, workspace.currentTilingSpine() == postSpine {
+                        if let preSpine, let postSpine, workspace.currentTilingSpine().structureEquals(postSpine) {
                             window.floatingRestoreSlot = nil
                             workspace.materializeTilingSpine(preSpine)
                             return .succ
@@ -147,7 +150,7 @@ struct LayoutCommand: Command {
         case .tilingContainer(let parent):
             let targetOrientation = targetOrientation ?? parent.orientation
             let targetLayout = targetLayout ?? parent.layout
-            parent.layout = targetLayout
+            parent.setLayout(targetLayout)
             parent.changeOrientation(targetOrientation)
             return .succ
     }

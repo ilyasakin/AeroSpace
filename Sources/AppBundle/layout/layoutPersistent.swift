@@ -112,7 +112,12 @@ private func applyWeightsFromSpine(
         case .window(let id, let weight):
             guard let parentOrientation,
                   let window = Window.get(byId: id),
-                  window.parent is TilingContainer
+                  let parent = window.parent as? TilingContainer,
+                  // setWeight fatally die()s for accordion parents and for orientation mismatches
+                  // (live tree can drift from the spine mid-transition) — guard both instead of
+                  // crashing the WM (repro: `layout accordion` killed the app on next layout tick)
+                  parent.layout == .tiles || parent.layout == .master,
+                  parent.orientation == parentOrientation
             else { return }
             window.setWeight(parentOrientation, weight)
         case .container(let orientation, _, let weight, let children):
@@ -151,6 +156,64 @@ private func applyWeightsFromSpine(
     }
 }
 
+/// Discover a window's hard max size by observing it refuse to grow. `requested` is the frame we
+/// asked for last layout; if the live frame settled meaningfully smaller in a dimension, that's a
+/// cap. Confirmed across two consecutive observations (candidate → learned) so a transient
+/// launch/animation size is never latched. Cheap SkyLight read; no AX round-trip.
+@MainActor
+private func learnMaxSizeIfClamped(_ window: Window, requested: Rect) {
+    let tol: CGFloat = 24
+    // Never learn during a mouse manipulation: MouseResizeDriver relayouts every vsync and
+    // growing SIBLINGS lag their AX apply by a frame or two — two lagged observations latched a
+    // permanent bogus cap on a perfectly resizable window.
+    if currentlyManipulatedWithMouseWindowId != nil {
+        window.maxSizeCandidate = nil
+        return
+    }
+    guard let live = WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: false)
+    else { return }
+    // Unlearn on contrary evidence: if the window is ever LARGER than its supposed cap, the cap
+    // was mis-learned (AX lag, transient state) — drop it. This was the missing unlearn path
+    // (previously only a manual `resize` on the exact window cleared it).
+    if let learned = window.learnedMaxSize {
+        if (learned.width.isFinite && live.width > learned.width + tol)
+            || (learned.height.isFinite && live.height > learned.height + tol)
+        {
+            window.learnedMaxSize = nil
+            window.maxSizeCandidate = nil
+        }
+    }
+    // Only a window that ACCEPTED our position can prove a size clamp. A stashed/hidden window
+    // (moved to the off-screen corner) differs in position too — learning from it latched bogus
+    // caps (VLC "does not sit well in the tile" after a fullscreen round-trip).
+    guard abs(live.topLeftX - requested.topLeftX) < tol, abs(live.topLeftY - requested.topLeftY) < tol
+    else {
+        window.maxSizeCandidate = nil
+        return
+    }
+    let capW: CGFloat = live.width < requested.width - tol ? live.width : .infinity
+    let capH: CGFloat = live.height < requested.height - tol ? live.height : .infinity
+    guard capW.isFinite || capH.isFinite else {
+        // Filled the requested frame in both dimensions — no new clamp. Keep any prior learned cap
+        // (it simply doesn't bite in the current slot); just drop the pending candidate.
+        window.maxSizeCandidate = nil
+        return
+    }
+    let obs = CGSize(width: capW, height: capH)
+    if let cand = window.maxSizeCandidate,
+       maxCapsMatch(cand.width, obs.width, tol), maxCapsMatch(cand.height, obs.height, tol)
+    {
+        window.learnedMaxSize = obs // second matching observation → trust it
+    }
+    window.maxSizeCandidate = obs
+}
+
+/// Two per-dimension caps agree when both are unconstrained (.infinity) or within tolerance.
+private func maxCapsMatch(_ a: CGFloat, _ b: CGFloat, _ tol: CGFloat) -> Bool {
+    if a == .infinity || b == .infinity { return a == b }
+    return abs(a - b) < tol
+}
+
 /// Returns a weight-adjusted spine for the laid-out generation (path-copy of containers with new child weights).
 @MainActor
 private func layoutPersistentNode(
@@ -176,6 +239,12 @@ private func layoutPersistentNode(
                 window.layoutFullscreen(context)
             } else {
                 let prev = window.lastAppliedLayoutPhysicalRect
+                // Learn a hard max size: if we asked the window to grow wider/taller last time and
+                // it refused, record the clamp so tiles distribution stops over-allocating (the
+                // System Settings gap). Off the mouse-resize path (user owns that frame).
+                if !mouseTarget, let prev {
+                    learnMaxSizeIfClamped(window, requested: prev)
+                }
                 // Always record layout geometry — borders paint from lastApplied during drag so
                 // all tiles share one coherent frame (live WS on the drag target vs layout on
                 // siblings made the shared edge thrash left/right).
@@ -400,19 +469,45 @@ private func layoutPersistentTiles(
     var newChildren: [PersistentTilingNode] = []
     newChildren.reserveCapacity(children.count)
 
+    // Persisted weights (uncapped) preserve the user's ratios. Geometry uses `slotSpans`, which
+    // may cap a max-constrained window (System Settings) and give the freed span to its siblings.
+    // The slot cap is the learned window max + one gap (slot = window + gap). Containers uncapped.
+    let adjustedWeights = children.map { $0.weight + delta }
+    let caps: [CGFloat?] = children.map { child in
+        guard case .window(let id, _) = child,
+              let maxSize = Window.get(byId: id)?.learnedMaxSize else { return nil }
+        let dim = orientation == .h ? maxSize.width : maxSize.height
+        return dim.isFinite ? dim + rawGap : nil
+    }
+    let slotSpans = tileCapsAreActive(caps)
+        ? waterfillTileSpans(weights: adjustedWeights, caps: caps, span: span)
+        : adjustedWeights
+
+    // When capped windows can't fill the span and there are no growable siblings to absorb the
+    // rest (a lone max-constrained window, or all children capped), center the row in the leftover
+    // so the gap is symmetric rather than a lopsided trailing gap. No leftover in the normal case.
+    let leftover = max(span - slotSpans.reduce(0, +), 0)
+    if leftover > 0.5 {
+        point = point.addingOffset(orientation, leftover / 2)
+        virtualPoint = orientation == .h
+            ? virtualPoint.addingXOffset(leftover / 2)
+            : virtualPoint.addingYOffset(leftover / 2)
+    }
+
     for (i, child) in children.enumerated() {
-        let adjustedWeight = child.weight + delta
-        let adjustedChild = child.withWeight(adjustedWeight)
+        let adjustedWeight = adjustedWeights[i]
+        let slotSpan = slotSpans[i]
+        let adjustedChild = child.withWeight(adjustedWeight) // persist uncapped weight
 
         let gap = rawGap - (i == 0 ? rawGap / 2 : 0) - (i == lastIndex ? rawGap / 2 : 0)
         let childPoint = i == 0 ? point : point.addingOffset(orientation, rawGap / 2)
-        let childWidth = orientation == .h ? adjustedWeight - gap : width
-        let childHeight = orientation == .v ? adjustedWeight - gap : height
+        let childWidth = orientation == .h ? slotSpan - gap : width
+        let childHeight = orientation == .v ? slotSpan - gap : height
         let childVirtual = Rect(
             topLeftX: virtualPoint.x,
             topLeftY: virtualPoint.y,
-            width: orientation == .h ? adjustedWeight : width,
-            height: orientation == .v ? adjustedWeight : height,
+            width: orientation == .h ? slotSpan : width,
+            height: orientation == .v ? slotSpan : height,
         )
         let laidOut = try await layoutPersistentNode(
             adjustedChild,
@@ -425,11 +520,11 @@ private func layoutPersistentTiles(
         )
         newChildren.append(laidOut)
         virtualPoint = orientation == .h
-            ? virtualPoint.addingXOffset(adjustedWeight)
-            : virtualPoint.addingYOffset(adjustedWeight)
+            ? virtualPoint.addingXOffset(slotSpan)
+            : virtualPoint.addingYOffset(slotSpan)
         point = orientation == .h
-            ? point.addingXOffset(adjustedWeight)
-            : point.addingYOffset(adjustedWeight)
+            ? point.addingXOffset(slotSpan)
+            : point.addingYOffset(slotSpan)
     }
     return .container(orientation: orientation, layout: layout, weight: weight, children: newChildren)
 }

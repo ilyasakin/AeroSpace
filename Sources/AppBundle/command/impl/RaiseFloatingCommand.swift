@@ -16,7 +16,7 @@ struct RaiseFloatingCommand: Command {
             return .succ(io.err("No floating windows on visible workspaces"))
         }
         // Explicit user recovery only — not automatic after click/focus.
-        raiseFloatingWindowsAboveTiling(preserveTileKeyboardFocus: true)
+        await raiseFloatingWindowsAboveTiling(preserveTileKeyboardFocus: true)
         return .succ
     }
 }

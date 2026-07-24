@@ -61,8 +61,8 @@ private func smartLayoutAtStartup() {
     let workspace = focus.workspace
     let root = workspace.rootTilingContainer
     switch root.children.count <= 3 {
-        case true: root.layout = .tiles
-        case false: root.layout = .accordion
+        case true: root.setLayout(.tiles)
+        case false: root.setLayout(.accordion)
     }
 }
 
