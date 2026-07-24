@@ -58,10 +58,47 @@ enum SpineInvariant {
             hook(detail)
         } else if isUnitTest {
             die(detail)
+        } else {
+            // Real usage is the only place that exercises every mutation site; append so which
+            // sites actually break the contract is an observation, not a guess. Bounded by
+            // truncating at ~64KB — this file is diagnostics, never unbounded growth.
+            appendToLog(detail)
         }
         // Production: self-heal. Dropping the generation makes the next layout recapture from the
         // live tree, which is the observable truth the user is looking at.
         workspace.invalidateTilingStructureGeneration()
+    }
+}
+
+extension SpineInvariant {
+    /// `~/Library/Application Support/<appId>/spine-violations.log`
+    static var logUrl: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent(aeroSpaceAppId, isDirectory: true)
+            .appendingPathComponent("spine-violations.log")
+    }
+
+    private static func appendToLog(_ detail: String) {
+        let url = logUrl
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let entry = "[\(stamp)] \(detail)\n\n"
+        guard let data = entry.data(using: .utf8) else { return }
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+        )
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            // Keep it bounded: restart the file once it passes ~64KB.
+            if (try? handle.seekToEnd()) ?? 0 > 64 * 1024 {
+                try? handle.truncate(atOffset: 0)
+            }
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
     }
 }
 
