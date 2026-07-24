@@ -24,9 +24,11 @@ final class GroupTabBarManager {
         clearTabs()
 
         for workspace in Workspace.allUnsorted where workspace.isVisible {
-            // Native-fullscreen Space on this display: the group sits behind the fullscreen app,
-            // so its tab strip must not paint (see workspaceDisplayIsFullscreen).
-            if workspaceDisplayIsFullscreen(workspace) { continue }
+            // Fullscreen content on this display (native Space or non-native overlay like VLC):
+            // the group sits behind it, so its tab strip must not paint.
+            if let displayId = DisplayRefresh.displayId(for: workspace), displayShowsFullscreenContent(displayId) {
+                continue
+            }
             collectAccordionGroups(workspace.rootTilingContainer)
         }
 

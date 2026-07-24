@@ -105,6 +105,10 @@ enum BorderSkyLight {
     }()
 
     static var isAvailable: Bool { unsafe impl != nil }
+
+    /// Window ids of live border windows (layer 0, so they appear in CGWindowList normal stacks).
+    /// Scans that reason about "the frontmost normal window" must skip these.
+    @MainActor static var ownedWindowIds: Set<UInt32> = []
 }
 
 extension RgbaColor {
@@ -131,6 +135,7 @@ final class BorderWindow {
     private var appliedWidth = -1
     private var appliedRadius = -1
     private var appliedFrameSize: CGSize = .zero
+    private var appliedScale: Double = 0
 
     init(targetWid: UInt32) {
         self.targetWid = targetWid
@@ -180,6 +185,13 @@ final class BorderWindow {
         if justCreated { _ = unsafe impl.disableUpdate?(impl.cid) }
         defer { if justCreated { _ = unsafe impl.reenableUpdate?(impl.cid) } }
 
+        // Crossing to a display with a different backing scale: re-apply the SLS resolution and
+        // force a redraw, or the stroke renders blurry/double-scaled for the border's lifetime.
+        let scaleChanged = !justCreated && appliedScale != scale
+        if scaleChanged {
+            _ = unsafe impl.setRes(impl.cid, wid, scale)
+        }
+
         if justCreated {
             createWindow(impl, frame: newFrame)
         } else if sizeChanged {
@@ -189,9 +201,10 @@ final class BorderWindow {
             _ = unsafe impl.moveWindow(impl.cid, wid, &origin)
         }
         guard wid != 0 else { return }
+        appliedScale = scale
 
         let styleChanged = appliedStyle != style || appliedWidth != width
-            || appliedRadius != radius || appliedFrameSize != newFrame.size
+            || appliedRadius != radius || appliedFrameSize != newFrame.size || scaleChanged
         if styleChanged || sizeChanged {
             appliedStyle = style
             appliedWidth = width
@@ -213,6 +226,7 @@ final class BorderWindow {
 
     func release() {
         guard let impl = unsafe BorderSkyLight.impl, wid != 0 else { return }
+        BorderSkyLight.ownedWindowIds.remove(wid)
         _ = unsafe impl.releaseWindow(impl.cid, wid)
         wid = 0
         context = nil
@@ -232,6 +246,7 @@ final class BorderWindow {
         )
         guard err == 0, newId != 0 else { return }
         wid = newId
+        BorderSkyLight.ownedWindowIds.insert(newId)
         _ = unsafe impl.setRes(impl.cid, wid, scale)
         _ = unsafe impl.setOpacity(impl.cid, wid, false)
         // Empty event shape → fully click-through, so the border ring never intercepts a click

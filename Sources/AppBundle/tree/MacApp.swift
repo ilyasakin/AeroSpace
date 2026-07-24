@@ -254,7 +254,13 @@ final class MacApp: AbstractApp {
 
     func getAxUiElementWindowType(_ windowId: UInt32, _ windowLevel: MacOsWindowLevel?, _ cm: CancellationMode) async throws -> AxUiElementWindowType {
         return try await withWindow(windowId, cm) { [nsApp, axApp] window, job in
-            window.getWindowType(axApp: axApp.threadGuarded, nsApp.activationPolicy, windowLevel)
+            let frame = try? AppBundle.getAxRect(window: window, job: job)
+            return window.getWindowType(
+                axApp: axApp.threadGuarded,
+                nsApp.activationPolicy,
+                windowLevel,
+                coversFullDisplay: frame.map(rectCoversAnyDisplay) ?? false,
+            )
         } ?? .window
     }
 

@@ -22,11 +22,31 @@ enum AxUiElementWindowType: String {
 // - AXSubrole                 ~ _NET_WM_WINDOW_TYPE
 // - AXSize settability        ~ fixed-size windows (min size == max size WM_NORMAL_HINTS)
 // - activation policy         ~ dock/panel window types
+/// True when `rect` (global top-left coords, same space as AX frames) covers an entire display —
+/// including the menu-bar strip, which tiled/zoomed windows never occupy. Thread-safe (pure CG),
+/// so callable from AX threads.
+func rectCoversAnyDisplay(_ rect: Rect) -> Bool {
+    var count: UInt32 = 0
+    var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+    guard CGGetActiveDisplayList(UInt32(ids.count), &ids, &count) == .success else { return false }
+    let tol: CGFloat = 2
+    for i in 0 ..< Int(count) {
+        let b = CGDisplayBounds(ids[i])
+        if rect.topLeftX <= b.minX + tol, rect.topLeftY <= b.minY + tol,
+           rect.topLeftX + rect.width >= b.maxX - tol, rect.topLeftY + rect.height >= b.maxY - tol
+        {
+            return true
+        }
+    }
+    return false
+}
+
 extension AxUiElementMock {
     func getWindowType(
         axApp: AxUiElementMock,
         _ activationPolicy: NSApplication.ActivationPolicy,
         _ windowLevel: MacOsWindowLevel?,
+        coversFullDisplay: Bool = false,
     ) -> AxUiElementWindowType {
         // Note: a lot of windows don't have title on startup, so please don't rely on the title
         lazy var closeButton = get(Ax.closeButtonAttr)
@@ -87,6 +107,19 @@ extension AxUiElementMock {
         // Dialog-subrole windows with a disabled close button are quick-open style popups
         // (Xcode "Open Quickly", Xcode "Quick Actions")
         if subrole == kAXDialogSubrole, let closeButton, closeButton.get(Ax.enabledAttr) != true {
+            return .popup
+        }
+
+        // Non-native fullscreen overlays (VLC default fullscreen, borderless-fullscreen games):
+        // a buttonless, non-standard window covering an ENTIRE display — including the menu-bar
+        // strip no tiled/zoomed window occupies — positions itself and must not be managed at all.
+        // X11 analog: override-redirect / _NET_WM_STATE_FULLSCREEN. Fullscreen-capable windows
+        // (mpv exposes settable AXFullScreen) stay tiled — they're real windows playing big.
+        if coversFullDisplay,
+           !anyButton,
+           subrole != kAXStandardWindowSubrole,
+           isSettable(Ax.isFullscreenAttr) != true
+        {
             return .popup
         }
 

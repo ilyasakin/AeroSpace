@@ -51,10 +51,11 @@ final class StatusBarManager {
             seen.insert(key)
             let panel = panels[key] ?? StatusBarPanel()
             panels[key] = panel
-            // Native-fullscreen Space on this display: hide the bar (like the system menu bar).
-            // collectionBehavior does not keep the panel off fullscreen Spaces (see WindowBorders);
-            // the periodic refresh timer re-evaluates this even if the space-change notif races.
-            if let displayId = DisplayRefresh.displayId(for: mon), SkyLight.currentSpaceIsFullscreen(displayId: displayId) {
+            // Fullscreen content on this display — native fullscreen Space OR a non-native
+            // fullscreen overlay (VLC default fullscreen, borderless games): hide the bar like the
+            // system menu bar would. The periodic refresh timer re-evaluates this even if the
+            // space-change notification races the transition.
+            if let displayId = DisplayRefresh.displayId(for: mon), displayShowsFullscreenContent(displayId) {
                 panel.orderOut(nil)
                 continue
             }
@@ -242,6 +243,13 @@ private final class StatusBarPanel: NSPanelHud {
         collectionBehavior = [.canJoinAllSpaces, .stationary]
     }
 
+    /// AppKit's default constrain pushes windows below the menu-bar strip — which silently
+    /// relocated the bar from the notch level (y=5) to under the strip (y=38) no matter what
+    /// frame we set. The bar intentionally occupies that strip when the menu bar is auto-hidden.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+
     /// AX hit-testing (focus-follows-mouse → AXUIElementCopyElementAtPosition) can run off the
     /// main actor. Returning nil here keeps the bar invisible to AX so real app windows underneath
     /// are focused; mouse clicks still use the normal hitTest path on the main thread.
@@ -257,8 +265,33 @@ private final class StatusBarPanel: NSPanelHud {
         let full = monitor.rect
         let visible = monitor.visibleRect
         let menuBarInset = max(0, visible.topLeftY - full.topLeftY)
-        let barTopY = menuBarInset > 1 ? full.topLeftY + menuBarInset : full.topLeftY
+        var barTopY = menuBarInset > 1 ? full.topLeftY + menuBarInset : full.topLeftY
         let barH = CGFloat(config.height)
+
+        // Notch (built-in MacBook display): visibleRect ALWAYS excludes the notch-level strip,
+        // even when the menu bar is auto-hidden — so the inset branch above pushed the bar
+        // below the strip and the user saw "double bars" (empty notch strip + our bar under it).
+        // When the menu bar is auto-hidden, the strip is free real estate: occupy it like the
+        // menu bar would — bar at notch level, vertically centered in the strip, content laid
+        // out in the side flanks (auxiliaryTop*Area) and truncated at the notch band.
+        // When the menu bar is NOT auto-hidden it owns the strip; we stay below it (no change).
+        var notchGap: ClosedRange<CGFloat>? = nil
+        if let screen = DisplayRefresh.nsScreen(for: monitor),
+           screen.safeAreaInsets.top > 0,
+           UserDefaults.standard.bool(forKey: "_HIHideMenuBar"),
+           let leftFlank = screen.auxiliaryTopLeftArea,
+           let rightFlank = screen.auxiliaryTopRightArea
+        {
+            barTopY = full.topLeftY + max(0, (screen.safeAreaInsets.top - barH) / 2)
+            // Flank rects are global AppKit coords; the bar spans the full screen width, so
+            // content-view x = global x − screen origin x.
+            let gapStart = leftFlank.maxX - screen.frame.minX
+            let gapEnd = rightFlank.minX - screen.frame.minX
+            if gapStart < gapEnd {
+                notchGap = gapStart ... gapEnd
+            }
+        }
+
         let barRect = Rect(topLeftX: full.topLeftX, topLeftY: barTopY, width: full.width, height: barH)
         let ak = barRect.toAppKitFrame()
         setFrame(ak, display: true)
@@ -267,6 +300,7 @@ private final class StatusBarPanel: NSPanelHud {
             config: config,
             monitor: monitor,
             externalBlocks: externalBlocks,
+            notchGap: notchGap,
             onWorkspaceClick: { name in
                 // Same path as the tray menu — focus must run inside a light session.
                 guard let token: RunSessionGuard = .isServerEnabled else { return }
@@ -312,6 +346,7 @@ private final class StatusBarContentView: NSView {
         config: StatusBarConfig,
         monitor: Monitor,
         externalBlocks: [I3barBlock],
+        notchGap: ClosedRange<CGFloat>? = nil,
         onWorkspaceClick: @escaping (String) -> Void,
         onExternalClick: @escaping (I3barClickEvent) -> Void,
     ) {
@@ -542,10 +577,13 @@ private final class StatusBarContentView: NSView {
             return out
         }
 
-        // Left cluster
+        // Left cluster — on a notched display occupying the top strip, stop before the notch
+        // band (menu-bar semantics: overflow truncates rather than hiding under the housing).
         for item in items(for: config.modulesLeft) {
+            let w = width(of: item)
+            if let gap = notchGap, leftX + w > gap.lowerBound { break }
             place(item, x: leftX)
-            leftX += width(of: item) + 4
+            leftX += w + 4
         }
 
         // External i3bar blocks after left modules
@@ -557,6 +595,7 @@ private final class StatusBarContentView: NSView {
             let text = block.fullText
             let attr = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
             let w = max(attr.size().width + 12, CGFloat(block.minWidth ?? 0))
+            if let gap = notchGap, leftX + w > gap.lowerBound { break }
             let frameX = leftX
             let item: Placeable = .text(text, bg: bg, fg: color, action: name == nil ? nil : {
                 onExternalClick(I3barClickEvent(
@@ -572,6 +611,7 @@ private final class StatusBarContentView: NSView {
         }
 
         // Right cluster — pack from the right edge, preserving modules-right order L→R.
+        // Same notch rule from the other side: stop before entering the band.
         let right = items(for: config.modulesRight)
         var rightX = bounds.width > 0 ? bounds.width - 8 : CGFloat(monitor.width) - 8
         if bounds.width <= 0 {
@@ -581,6 +621,7 @@ private final class StatusBarContentView: NSView {
         for item in right.reversed() {
             let w = width(of: item)
             rightX -= w
+            if let gap = notchGap, rightX < gap.upperBound { break }
             place(item, x: rightX)
             rightX -= 4
         }
