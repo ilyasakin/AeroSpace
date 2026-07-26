@@ -17,14 +17,30 @@ struct ToggleGroupCommand: Command {
             if let grand = parent.parent as? TilingContainer {
                 let parentIndex = parent.ownIndex.orDie()
                 let kids = Array(parent.children)
-                var weights: [CGFloat] = []
+                // Weight SCALES differ between the group and its destination, and carrying the
+                // group's child weights across unchanged produced invisible slivers.
+                //
+                // Tiles containers have their child weights renormalized to spans by layout
+                // (~hundreds of px); accordion containers never normalize theirs, so accordion
+                // children keep their authored ratio scale (~1). Binding a weight-1 child in
+                // beside weight-800 siblings gives it 1/1600th of the span. (The old additive
+                // normalization masked this by equalizing everything; proportional normalization
+                // faithfully renders the mismatch.)
+                //
+                // Correct semantics: the group occupied ONE slot in `grand`, so its children
+                // subdivide exactly that slot, keeping their relative proportions.
+                let groupWeight = parent.getWeight(grand.orientation)
+                let childWeights = kids.map { $0.getWeight(parent.orientation) }
+                let weightSum = childWeights.reduce(0, +)
+                let rescaled: [CGFloat] = weightSum > 0
+                    ? childWeights.map { groupWeight * $0 / weightSum }
+                    : Array(repeating: groupWeight / CGFloat(max(kids.count, 1)), count: kids.count)
                 for child in kids {
-                    weights.append(child.getWeight(parent.orientation))
                     _ = child.unbindFromParent()
                 }
                 _ = parent.unbindFromParent()
                 var insertAt = parentIndex
-                for (child, weight) in zip(kids, weights) {
+                for (child, weight) in zip(kids, rescaled) {
                     child.bind(to: grand, adaptiveWeight: weight, index: insertAt)
                     insertAt += 1
                 }
