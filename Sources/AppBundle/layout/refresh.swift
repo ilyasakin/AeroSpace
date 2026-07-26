@@ -221,7 +221,7 @@ func layoutWorkspaces(includeInvisible: Bool = true) async throws {
     }
     guard includeInvisible else { return }
 
-    var monitorToOptimalHideCorner: [CGPoint: OptimalHideCorner] = [:]
+    var monitorToOptimalHideCorner: [DisplayId: OptimalHideCorner] = [:]
     for monitor in monitors {
         let xOff = monitor.width * 0.1
         let yOff = monitor.height * 0.1
@@ -243,10 +243,10 @@ func layoutWorkspaces(includeInvisible: Bool = true) async throws {
             monitors.sumOfInt { contains($0, brc1) + contains($0, brc2) + important * contains($0, brc3) }
             ? .bottomLeftCorner
             : .bottomRightCorner
-        monitorToOptimalHideCorner[monitor.rect.topLeftCorner] = corner
+        monitorToOptimalHideCorner[monitor.displayId] = corner
     }
     for workspace in Workspace.allUnsorted where !workspace.isVisible {
-        let corner = monitorToOptimalHideCorner[workspace.workspaceMonitor.rect.topLeftCorner] ?? .bottomRightCorner
+        let corner = monitorToOptimalHideCorner[workspace.workspaceMonitor.displayId] ?? .bottomRightCorner
         for window in workspace.allLeafWindowsRecursive {
             try await (window as! MacWindow).hideInCorner(corner) // todo as!
         }

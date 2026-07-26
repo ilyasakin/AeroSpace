@@ -10,11 +10,13 @@ import Common
 @MainActor private var closedWindowsCache = FrozenWorld(workspaces: [], monitors: [], windowIds: [])
 
 struct FrozenMonitor: Sendable {
-    let topLeftCorner: CGPoint
+    /// Identity, not geometry. Keyed on the top-left corner this could not tell two monitors apart
+    /// when their corners collided, and `singleOrNil()` below then silently declined to restore.
+    let displayId: DisplayId
     let visibleWorkspace: String
 
     @MainActor init(_ monitor: Monitor) {
-        topLeftCorner = monitor.rect.topLeftCorner
+        displayId = monitor.displayId
         visibleWorkspace = monitor.activeWorkspace.name
     }
 }
@@ -55,12 +57,11 @@ struct FrozenWorkspace: Sendable {
         return false
     }
     let monitors = monitors
-    let topLeftCornerToMonitor = monitors.grouped { $0.rect.topLeftCorner }
+    let monitorById = Dictionary(monitors.map { ($0.displayId, $0) }, uniquingKeysWith: { first, _ in first })
 
     for frozenWorkspace in closedWindowsCache.workspaces {
         let workspace = Workspace.get(byName: frozenWorkspace.name)
-        _ = topLeftCornerToMonitor[frozenWorkspace.monitor.topLeftCorner]?
-            .singleOrNil()?
+        _ = monitorById[frozenWorkspace.monitor.displayId]?
             .setActiveWorkspace(workspace)
         for frozenWindow in frozenWorkspace.floatingWindows {
             MacWindow.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
@@ -78,8 +79,7 @@ struct FrozenWorkspace: Sendable {
     }
 
     for monitor in closedWindowsCache.monitors {
-        _ = topLeftCornerToMonitor[monitor.topLeftCorner]?
-            .singleOrNil()?
+        _ = monitorById[monitor.displayId]?
             .setActiveWorkspace(Workspace.get(byName: monitor.visibleWorkspace))
     }
     return true

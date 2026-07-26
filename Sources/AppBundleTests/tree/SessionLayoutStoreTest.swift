@@ -21,6 +21,58 @@ final class SessionLayoutStoreTest: XCTestCase {
         XCTAssertTrue(violations.hasSuffix("spine-violations.log"))
     }
 
+    /// Adding the reboot-stable monitor key changed the on-disk format. A session file written by
+    /// the previous build has no `key` / `monitorKey`, and it must still load — otherwise upgrading
+    /// silently discards the user's workspace layout, which is the failure this store exists to
+    /// prevent.
+    ///
+    /// Rather than hand-writing JSON (which would encode a guess about the node format), this saves
+    /// the real thing, asserts the new fields are actually written, then STRIPS them to synthesise a
+    /// legacy file. That covers both directions of the compatibility contract. Safe to write for
+    /// real because persistent paths redirect under test.
+    @MainActor
+    func testMonitorKeyIsWrittenAndItsAbsenceStillLoads() throws {
+        setUpWorkspacesForTests()
+        let ws = focus.workspace
+        TestWindow.new(id: 4101, parent: ws.rootTilingContainer, adaptiveWeight: 1)
+        TestWindow.new(id: 4102, parent: ws.rootTilingContainer, adaptiveWeight: 1)
+
+        let url = SessionLayoutStore.fileUrl
+        defer { try? FileManager.default.removeItem(at: url) }
+        SessionLayoutStore.saveNow()
+
+        let written = try XCTUnwrap(try? Data(contentsOf: url), "saveNow should have written a file")
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: written) as? [String: Any],
+            "session file should be a JSON object",
+        )
+
+        // Direction 1: we write the stable key.
+        let monitorsOut = try XCTUnwrap(json["monitors"] as? [[String: Any]])
+        XCTAssertFalse(monitorsOut.isEmpty)
+        XCTAssertNotNil(monitorsOut[0]["key"], "the stable display key must be persisted")
+        let wsOut = try XCTUnwrap(json["workspaces"] as? [[String: Any]])
+        XCTAssertNotNil(wsOut.first?["monitorKey"], "each workspace records its display key")
+
+        // Direction 2: synthesise the legacy shape by removing exactly those fields.
+        json["monitors"] = monitorsOut.map { m -> [String: Any] in
+            var m = m; m.removeValue(forKey: "key"); return m
+        }
+        json["workspaces"] = wsOut.map { w -> [String: Any] in
+            var w = w; w.removeValue(forKey: "monitorKey"); return w
+        }
+        try JSONSerialization.data(withJSONObject: json).write(to: url, options: .atomic)
+
+        let loaded = try XCTUnwrap(SessionLayoutStore.load()?.snapshot, "a legacy file must still decode")
+        XCTAssertTrue(loaded.windowIds.contains(4101))
+        XCTAssertNil(
+            loaded.workspaces.first?.monitorKey,
+            "an absent key decodes as nil, not a fabricated value",
+        )
+        XCTAssertNil(loaded.monitorAssignments.first?.key)
+        XCTAssertFalse(loaded.monitorAssignments.isEmpty, "geometry-only assignments still load")
+    }
+
     func testFilteringWindowsDropsMissingAndPromotesSingleChild() {
         let tree: PersistentTilingNode = .container(
             orientation: .h,
@@ -70,6 +122,7 @@ final class SessionLayoutStoreTest: XCTestCase {
             workspaces: [
                 PersistentWorkspaceSnapshot(
                     name: "1",
+                    monitorKey: nil,
                     monitorTopLeft: .zero,
                     visibleWorkspaceName: "1",
                     rootTiling: root,
@@ -77,7 +130,7 @@ final class SessionLayoutStoreTest: XCTestCase {
                     unconventionalWindowIds: [],
                 ),
             ],
-            monitorAssignments: [(topLeft: .zero, workspace: "1")],
+            monitorAssignments: [(key: nil, topLeft: CGPoint.zero, workspace: "1")],
             windowIds: [10, 11, 99],
         )
         // Encode/decode via the store's private DTO by save/load would need disk; use structure equality on filter instead.

@@ -233,9 +233,24 @@ enum SessionLayoutStore {
         }
         armPendingPlacements(snap, savedApps: appsAfterTranslation, liveIds: liveIds)
 
-        let monByOrigin: [CGPoint: Monitor] = Dictionary(
-            uniqueKeysWithValues: monitors.map { ($0.rect.topLeftCorner, $0) },
+        // Resolve a saved monitor by STABLE KEY first, geometry only as a fallback.
+        //
+        // This used to be geometry only, matched with exact CGPoint equality. Any difference in
+        // display arrangement between sessions — a resolution change, displays waking in a different
+        // order, a scaling change, an external monitor absent at login — matched NOTHING, so every
+        // workspace fell through to the main monitor. That is the "everything ended up in the first
+        // workspace after a restart" report.
+        let monByKey: [String: Monitor] = Dictionary(
+            monitors.map { ($0.persistentKey, $0) },
+            uniquingKeysWith: { first, _ in first },
         )
+        let monByOrigin: [CGPoint: Monitor] = Dictionary(
+            monitors.map { ($0.rect.topLeftCorner, $0) },
+            uniquingKeysWith: { first, _ in first },
+        )
+        func resolveMonitor(key: String?, topLeft: CGPoint) -> Monitor? {
+            resolveSavedMonitor(key: key, topLeft: topLeft, byKey: monByKey, byOrigin: monByOrigin)
+        }
 
         // Drop discovery-layout generations before rebuild — materialize publishes the restored spine.
         Workspace.clearTilingStructureGenerations()
@@ -257,8 +272,8 @@ enum SessionLayoutStore {
             let workspace = Workspace.get(byName: wsSnap.name)
             // Restore the workspace's monitor assignment (multi-monitor): without this every
             // invisible workspace fell through to the main monitor after a restart.
-            if monByOrigin[wsSnap.monitorTopLeft] != nil {
-                workspace.assignMonitorPointForSessionRestore(wsSnap.monitorTopLeft)
+            if let mon = resolveMonitor(key: wsSnap.monitorKey, topLeft: wsSnap.monitorTopLeft) {
+                workspace.assignDisplayForSessionRestore(mon.displayId)
             }
             if let filteredRoot = wsSnap.rootTiling.filteringWindows(keeping: liveIds) {
                 workspace.materializeTilingSpine(filteredRoot)
@@ -271,7 +286,7 @@ enum SessionLayoutStore {
 
         // Monitor → visible workspace from last session
         for assignment in snap.monitorAssignments {
-            if let mon = monByOrigin[assignment.topLeft] {
+            if let mon = resolveMonitor(key: assignment.key, topLeft: assignment.topLeft) {
                 _ = mon.setActiveWorkspace(Workspace.get(byName: assignment.workspace))
             }
         }
@@ -375,6 +390,7 @@ extension PersistentWorldSnapshot {
         let ws = workspaces.map { w in
             PersistentWorkspaceSnapshot(
                 name: w.name,
+                monitorKey: w.monitorKey,
                 monitorTopLeft: w.monitorTopLeft,
                 visibleWorkspaceName: w.visibleWorkspaceName,
                 rootTiling: w.rootTiling.mappingWindowIds(map),
@@ -420,7 +436,7 @@ extension PersistentWorldSnapshot {
         }
         return monitorAssignments.count == other.monitorAssignments.count &&
             zip(monitorAssignments, other.monitorAssignments).allSatisfy {
-                $0.topLeft == $1.topLeft && $0.workspace == $1.workspace
+                $0.key == $1.key && $0.topLeft == $1.topLeft && $0.workspace == $1.workspace
             }
     }
 }
@@ -440,6 +456,9 @@ private struct SessionLayoutDTO: Codable {
         var x: Double
         var y: Double
         var workspace: String
+        /// Reboot-stable display key. Optional so files written before it decode fine; restore
+        /// prefers it and falls back to (x, y).
+        var key: String? = nil
     }
 
     struct WorkspaceDTO: Codable {
@@ -449,6 +468,8 @@ private struct SessionLayoutDTO: Codable {
         var root: NodeDTO
         var floating: [UInt32]
         var unconventional: [UInt32]
+        /// Reboot-stable display key; optional for backward compatibility (see MonitorDTO.key).
+        var monitorKey: String? = nil
     }
 
     indirect enum NodeDTO: Codable {
@@ -506,10 +527,11 @@ private struct SessionLayoutDTO: Codable {
                 root: NodeDTO(ws.rootTiling),
                 floating: ws.floatingWindowIds,
                 unconventional: ws.unconventionalWindowIds,
+                monitorKey: ws.monitorKey,
             )
         }
         monitors = snap.monitorAssignments.map {
-            MonitorDTO(x: $0.topLeft.x, y: $0.topLeft.y, workspace: $0.workspace)
+            MonitorDTO(x: $0.topLeft.x, y: $0.topLeft.y, workspace: $0.workspace, key: $0.key)
         }
         windowIds = Array(snap.windowIds)
     }
@@ -518,6 +540,7 @@ private struct SessionLayoutDTO: Codable {
         let ws = workspaces.map { w in
             PersistentWorkspaceSnapshot(
                 name: w.name,
+                monitorKey: w.monitorKey,
                 monitorTopLeft: CGPoint(x: w.monitorX, y: w.monitorY),
                 visibleWorkspaceName: nil,
                 rootTiling: w.root.toNode(),
@@ -526,7 +549,7 @@ private struct SessionLayoutDTO: Codable {
             )
         }
         let assignments = monitors.map {
-            (topLeft: CGPoint(x: $0.x, y: $0.y), workspace: $0.workspace)
+            (key: $0.key, topLeft: CGPoint(x: $0.x, y: $0.y), workspace: $0.workspace)
         }
         return PersistentWorldSnapshot(
             workspaces: ws,
@@ -566,4 +589,22 @@ extension SessionLayoutDTO.NodeDTO {
                 )
         }
     }
+}
+
+/// Resolve a monitor recorded in a saved session to one that is connected now.
+///
+/// Pure and generic so the decision is testable without displays. The order is the whole point:
+/// the reboot-stable key wins, and geometry is only a fallback for sessions written before the key
+/// existed. Matching on geometry alone — which is what this did — used exact `CGPoint` equality, so
+/// any change in display arrangement between sessions (a resolution change, displays waking in a
+/// different order, a scaling change, an external display absent at login) resolved NOTHING and
+/// every workspace fell through to the main monitor.
+func resolveSavedMonitor<M>(
+    key: String?,
+    topLeft: CGPoint,
+    byKey: [String: M],
+    byOrigin: [CGPoint: M],
+) -> M? {
+    if let key, let match = byKey[key] { return match }
+    return byOrigin[topLeft]
 }

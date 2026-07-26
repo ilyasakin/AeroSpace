@@ -27,9 +27,9 @@ struct ListWindowsCommand: Command {
                     }
                     .toSet()
             if !args.filteringOptions.monitors.isEmpty {
-                let monitors: Set<CGPoint> = args.filteringOptions.monitors.resolveMonitors(io)
+                let monitors: Set<DisplayId> = args.filteringOptions.monitors.resolveMonitors(io)
                 if monitors.isEmpty { return .fail }
-                workspaces = workspaces.filter { monitors.contains($0.workspaceMonitor.rect.topLeftCorner) }
+                workspaces = workspaces.filter { monitors.contains($0.workspaceMonitor.displayId) }
             }
             windows = workspaces.flatMap(\.allLeafWindowsRecursive)
             if let pid = args.filteringOptions.pidFilter {

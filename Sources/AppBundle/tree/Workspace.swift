@@ -6,28 +6,33 @@ import Common
 @MainActor private var workspaceListGeneration: UInt64 = 0
 @MainActor private var sortedWorkspacesCache: (generation: UInt64, list: [Workspace])?
 
-@MainActor private var screenPointToPrevVisibleWorkspace: [CGPoint: String] = [:]
-@MainActor private var screenPointToVisibleWorkspace: [CGPoint: Workspace] = [:]
-@MainActor private var visibleWorkspaceToScreenPoint: [Workspace: CGPoint] = [:]
+// Workspace<->monitor association is keyed on DISPLAY IDENTITY, never on geometry. Keying these on
+// `rect.topLeftCorner` meant the key moved whenever displays were rearranged, a resolution changed,
+// or a lid closed — and `rearrangeWorkspacesOnMonitors` then had to guess which old corner became
+// which new corner by nearest-Euclidean distance, silently dropping a workspace on any collision.
+// See `DisplayId`.
+@MainActor private var displayToPrevVisibleWorkspace: [DisplayId: String] = [:]
+@MainActor private var displayToVisibleWorkspace: [DisplayId: Workspace] = [:]
+@MainActor private var visibleWorkspaceToDisplay: [Workspace: DisplayId] = [:]
 
 // The returned workspace must be invisible and it must belong to the requested monitor
 @MainActor func getStubWorkspace(for monitor: Monitor) -> Workspace {
-    getStubWorkspace(forPoint: monitor.rect.topLeftCorner)
+    getStubWorkspace(for: monitor.displayId)
 }
 
 @MainActor
-private func getStubWorkspace(forPoint point: CGPoint) -> Workspace {
-    if let prev = screenPointToPrevVisibleWorkspace[point].map({ Workspace.get(byName: $0) }),
-       !prev.isVisible && prev.workspaceMonitor.rect.topLeftCorner == point && prev.forceAssignedMonitor == nil
+private func getStubWorkspace(for display: DisplayId) -> Workspace {
+    if let prev = displayToPrevVisibleWorkspace[display].map({ Workspace.get(byName: $0) }),
+       !prev.isVisible && prev.workspaceMonitor.displayId == display && prev.forceAssignedMonitor == nil
     {
         return prev
     }
     // Prefer the alphabetically first match (same as the old Workspace.all.first(where:) path).
     // Scan allUnsorted so we don't re-sort the whole set; still O(n) and stable if two parked
-    // workspaces share a monitor top-left corner.
+    // workspaces share a monitor.
     var best: Workspace?
     for candidate in Workspace.allUnsorted
-        where !candidate.isVisible && candidate.workspaceMonitor.rect.topLeftCorner == point
+        where !candidate.isVisible && candidate.workspaceMonitor.displayId == display
     {
         if best.map({ candidate < $0 }) ?? true { best = candidate }
     }
@@ -41,14 +46,14 @@ private func getStubWorkspace(forPoint point: CGPoint) -> Workspace {
 final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
     let name: String
     nonisolated private let nameLogicalSegments: StringLogicalSegments
-    /// `assignedMonitorPoint` must be interpreted only when the workspace is invisible
-    fileprivate var assignedMonitorPoint: CGPoint? = nil
+    /// `assignedDisplay` must be interpreted only when the workspace is invisible
+    fileprivate var assignedDisplay: DisplayId? = nil
 
     /// Session restore: re-pin an invisible workspace to its saved monitor. Without this every
     /// non-visible workspace fell back to the main monitor after a restart on multi-monitor.
     @MainActor
-    func assignMonitorPointForSessionRestore(_ point: CGPoint) {
-        assignedMonitorPoint = point
+    func assignDisplayForSessionRestore(_ display: DisplayId) {
+        assignedDisplay = display
     }
     /// Set by the tiling-policy command. nil means "follow the config"
     var tilingPolicyOverride: TilingPolicy? = nil
@@ -139,12 +144,15 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
 
 extension Workspace {
     @MainActor
-    var isVisible: Bool { visibleWorkspaceToScreenPoint.keys.contains(self) }
+    var isVisible: Bool { visibleWorkspaceToDisplay.keys.contains(self) }
     @MainActor
     var workspaceMonitor: Monitor {
+        // Exact identity match, then the saved assignment, then main. Previously these two middle
+        // steps were `monitorApproximation` over a stored POINT — nearest-monitor-to-a-coordinate —
+        // so a display that moved handed the workspace to whichever monitor was now closest.
         forceAssignedMonitor
-            ?? visibleWorkspaceToScreenPoint[self]?.monitorApproximation
-            ?? assignedMonitorPoint?.monitorApproximation
+            ?? visibleWorkspaceToDisplay[self]?.monitor
+            ?? assignedDisplay?.monitor
             ?? mainMonitor
     }
 }
@@ -152,10 +160,10 @@ extension Workspace {
 extension Monitor {
     @MainActor
     var activeWorkspace: Workspace {
-        if let existing = screenPointToVisibleWorkspace[rect.topLeftCorner] {
+        if let existing = displayToVisibleWorkspace[displayId] {
             return existing
         }
-        // What if monitor configuration changed? (frame.origin is changed)
+        // What if the monitor set changed? (a display appeared or disappeared)
         rearrangeWorkspacesOnMonitors()
         // Normally, recursion should happen only once more because we must take the value from the cache
         // (Unless, monitor configuration data race happens)
@@ -164,75 +172,80 @@ extension Monitor {
 
     @MainActor
     func setActiveWorkspace(_ workspace: Workspace) -> Bool {
-        rect.topLeftCorner.setActiveWorkspace(workspace)
+        displayId.setActiveWorkspace(workspace)
     }
 }
 
 @MainActor
 func gcMonitors() {
-    if screenPointToVisibleWorkspace.count != monitors.count {
+    if displayToVisibleWorkspace.count != monitors.count {
         rearrangeWorkspacesOnMonitors()
     }
 }
 
-extension CGPoint {
+extension DisplayId {
+    /// The monitor with this identity, if it is currently connected.
+    @MainActor var monitor: Monitor? { monitors.first { $0.displayId == self } }
+
     @MainActor
     fileprivate func setActiveWorkspace(_ workspace: Workspace) -> Bool {
-        if !isValidAssignment(workspace: workspace, screen: self) {
+        if !isValidAssignment(workspace: workspace, display: self) {
             return false
         }
-        if let prevMonitorPoint = visibleWorkspaceToScreenPoint[workspace] {
-            visibleWorkspaceToScreenPoint.removeValue(forKey: workspace)
-            screenPointToPrevVisibleWorkspace[prevMonitorPoint] =
-                screenPointToVisibleWorkspace.removeValue(forKey: prevMonitorPoint)?.name
+        if let prevDisplay = visibleWorkspaceToDisplay[workspace] {
+            visibleWorkspaceToDisplay.removeValue(forKey: workspace)
+            displayToPrevVisibleWorkspace[prevDisplay] =
+                displayToVisibleWorkspace.removeValue(forKey: prevDisplay)?.name
         }
-        if let prevWorkspace = screenPointToVisibleWorkspace[self] {
-            screenPointToPrevVisibleWorkspace[self] =
-                screenPointToVisibleWorkspace.removeValue(forKey: self)?.name
-            visibleWorkspaceToScreenPoint.removeValue(forKey: prevWorkspace)
+        if let prevWorkspace = displayToVisibleWorkspace[self] {
+            displayToPrevVisibleWorkspace[self] =
+                displayToVisibleWorkspace.removeValue(forKey: self)?.name
+            visibleWorkspaceToDisplay.removeValue(forKey: prevWorkspace)
         }
-        visibleWorkspaceToScreenPoint[workspace] = self
-        screenPointToVisibleWorkspace[self] = workspace
-        workspace.assignedMonitorPoint = self
+        visibleWorkspaceToDisplay[workspace] = self
+        displayToVisibleWorkspace[self] = workspace
+        workspace.assignedDisplay = self
         return true
     }
 }
 
+/// Re-establish the display→visible-workspace association after the monitor set changes.
+///
+/// Identity makes this trivial: a display that is still connected keeps its workspace, because it is
+/// the SAME key. There is nothing to guess and nothing to drop.
+///
+/// The previous version had to guess. Keyed on top-left corners, it mapped each old corner to the
+/// nearest new corner, and when two old corners resolved to one new corner it discarded the loser
+/// with a bare `continue` — so on any rearrangement that collapsed coordinates (unplugging a
+/// display, mirroring, a resolution change that shifted origins) a visible workspace lost its
+/// monitor and fell back to main. Workspaces that were merely INVISIBLE were never remapped at all,
+/// which is why parked workspaces collected on the main display after a topology change.
 @MainActor
 private func rearrangeWorkspacesOnMonitors() {
-    let newScreens = monitors.map(\.rect.topLeftCorner)
-    var newScreenToOldScreenMapping: [CGPoint: CGPoint] = [:]
-    for (oldScreen, _) in screenPointToVisibleWorkspace {
-        guard let newScreen = newScreens.minBy({ ($0 - oldScreen).vectorLength }) else { continue }
-        if let prevOldScreen = newScreenToOldScreenMapping[newScreen] {
-            if (prevOldScreen - newScreen).vectorLength <= (oldScreen - newScreen).vectorLength {
-                // newScreen has already been assigned to a closer oldScreen.
-                continue
-            }
-        }
-        newScreenToOldScreenMapping[newScreen] = oldScreen
-    }
+    let connected = monitors.map(\.displayId)
+    let previous = displayToVisibleWorkspace
+    displayToVisibleWorkspace = [:]
+    visibleWorkspaceToDisplay = [:]
 
-    let oldScreenPointToVisibleWorkspace = screenPointToVisibleWorkspace
-    screenPointToVisibleWorkspace = [:]
-    visibleWorkspaceToScreenPoint = [:]
-
-    for newScreen in newScreens {
-        if let existingVisibleWorkspace = newScreenToOldScreenMapping[newScreen].flatMap({ oldScreenPointToVisibleWorkspace[$0] }),
-           newScreen.setActiveWorkspace(existingVisibleWorkspace)
-        {
+    for display in connected {
+        // Still connected → same identity → keeps its workspace.
+        if let existing = previous[display], display.setActiveWorkspace(existing) {
             continue
         }
-        let stubWorkspace = getStubWorkspace(forPoint: newScreen)
-        check(newScreen.setActiveWorkspace(stubWorkspace),
-              "getStubWorkspace generated incompatible stub workspace (\(stubWorkspace)) for the monitor (\(newScreen)")
+        let stub = getStubWorkspace(for: display)
+        check(display.setActiveWorkspace(stub),
+              "getStubWorkspace generated incompatible stub workspace (\(stub)) for the monitor (\(display))")
     }
+
+    // A workspace pinned to a display that is now GONE keeps its assignment rather than being
+    // silently re-homed: if the display comes back (sleep, KVM switch, re-plug) the workspace
+    // returns to it. `workspaceMonitor` already falls back to main for as long as it is absent.
 }
 
 @MainActor
-private func isValidAssignment(workspace: Workspace, screen: CGPoint) -> Bool {
+private func isValidAssignment(workspace: Workspace, display: DisplayId) -> Bool {
     switch workspace.forceAssignedMonitor {
-        case let forceAssigned? where forceAssigned.rect.topLeftCorner != screen: false
+        case let forceAssigned? where forceAssigned.displayId != display: false
         default: true
     }
 }

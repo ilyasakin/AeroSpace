@@ -21,7 +21,7 @@ extension DynamicConfigValue {
                 return array
                     .lazy
                     .compactMap {
-                        $0.description.resolveMonitor(sortedMonitors: sortedMonitors)?.rect.topLeftCorner == monitor.rect.topLeftCorner
+                        $0.description.resolveMonitor(sortedMonitors: sortedMonitors)?.displayId == monitor.displayId
                             ? $0.value
                             : nil
                     }

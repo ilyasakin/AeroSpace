@@ -28,7 +28,7 @@ extension MonitorTarget {
                 return .success(targetMonitor)
             case .relative(let nextPrev):
                 let monitors = sortedMonitors
-                guard let curIndex = monitors.firstIndex(where: { $0.rect.topLeftCorner == currentMonitor.rect.topLeftCorner }) else {
+                guard let curIndex = monitors.firstIndex(where: { $0.displayId == currentMonitor.displayId }) else {
                     return .failure("Can't find current monitor")
                 }
                 let targetIndex = nextPrev == .next ? curIndex + 1 : curIndex - 1
@@ -57,10 +57,10 @@ extension Monitor {
     func findRelativeMonitor(inDirection direction: CardinalDirection) -> (monitorsInDirection: [Monitor], index: Int)? {
         let currentMonitor = self
         let monitors = sortedMonitors.filter {
-            currentMonitor.rect.topLeftCorner == $0.rect.topLeftCorner ||
+            currentMonitor.displayId == $0.displayId ||
                 $0.relation(to: currentMonitor) == direction.orientation
         }
-        guard let index = monitors.firstIndex(where: { $0.rect.topLeftCorner == currentMonitor.rect.topLeftCorner }) else { return nil }
+        guard let index = monitors.firstIndex(where: { $0.displayId == currentMonitor.displayId }) else { return nil }
         return (monitors, index + direction.focusOffset)
     }
 }

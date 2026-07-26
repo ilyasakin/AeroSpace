@@ -2,6 +2,7 @@ import AppKit
 import Common
 
 private struct MonitorImpl {
+    let displayId: DisplayId
     let monitorAppKitNsScreenScreensId: Int
     let name: String
     let rect: Rect
@@ -16,6 +17,9 @@ extension MonitorImpl: Monitor {
 
 /// Use it instead of NSScreen because it can be mocked in tests
 protocol Monitor: AeroAny {
+    /// Stable identity, independent of geometry. Use this — never `rect.topLeftCorner` — whenever
+    /// the question is "which monitor is this". See `MonitorId`.
+    var displayId: DisplayId { get }
     /// The index in NSScreen.screens array. 1-based index
     var monitorAppKitNsScreenScreensId: Int { get }
     var name: String { get }
@@ -28,6 +32,7 @@ protocol Monitor: AeroAny {
 
 final class LazyMonitor: Monitor {
     private let screen: NSScreen
+    let displayId: DisplayId
     let monitorAppKitNsScreenScreensId: Int
     let name: String
     let width: CGFloat
@@ -37,6 +42,7 @@ final class LazyMonitor: Monitor {
     private var _visibleRect: Rect?
 
     init(monitorAppKitNsScreenScreensId: Int, isMain: Bool, _ screen: NSScreen) {
+        self.displayId = screen.displayId(fallbackIndex: monitorAppKitNsScreenScreensId)
         self.monitorAppKitNsScreenScreensId = monitorAppKitNsScreenScreensId
         self.name = screen.localizedName
         self.width = screen.frame.width // Don't call rect because it would cause recursion during mainMonitor init
@@ -61,6 +67,7 @@ final class LazyMonitor: Monitor {
 extension NSScreen {
     fileprivate func toMonitor(monitorAppKitNsScreenScreensId: Int) -> Monitor {
         MonitorImpl(
+            displayId: displayId(fallbackIndex: monitorAppKitNsScreenScreensId),
             monitorAppKitNsScreenScreensId: monitorAppKitNsScreenScreensId,
             name: localizedName,
             rect: rect,
@@ -87,6 +94,7 @@ extension NSScreen {
 
 private let testMonitorRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
 private let testMonitor = MonitorImpl(
+    displayId: .test,
     monitorAppKitNsScreenScreensId: 1,
     name: "Test Monitor",
     rect: testMonitorRect,

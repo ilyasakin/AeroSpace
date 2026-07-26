@@ -527,7 +527,7 @@ private final class StatusBarContentView: NSView {
                                 continue
                             }
                             let visibleHere = ws.isVisible
-                                && ws.workspaceMonitor.rect.topLeftCorner == monitor.rect.topLeftCorner
+                                && ws.workspaceMonitor.displayId == monitor.displayId
                             let label = statusBarWorkspaceLabel(name: ws.name, symbols: config.workspaceSymbols)
                             out.append(.text(
                                 label,

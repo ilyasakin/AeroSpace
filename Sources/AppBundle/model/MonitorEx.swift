@@ -12,8 +12,7 @@ extension Monitor {
     }
 
     var monitorId_oneBased: Int? {
-        let sorted = sortedMonitors
-        let origin = self.rect.topLeftCorner
-        return sorted.firstIndex { $0.rect.topLeftCorner == origin }.map { $0 + 1 }
+        let id = displayId
+        return sortedMonitors.firstIndex { $0.displayId == id }.map { $0 + 1 }
     }
 }

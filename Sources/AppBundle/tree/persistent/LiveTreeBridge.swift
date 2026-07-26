@@ -92,6 +92,9 @@ extension PersistentTilingNode {
 
 struct PersistentWorkspaceSnapshot: Equatable, Sendable {
     let name: String
+    /// Reboot-stable display key (display UUID). nil in files written before it existed, which is
+    /// why `monitorTopLeft` is retained as a fallback rather than replaced.
+    let monitorKey: String?
     let monitorTopLeft: CGPoint
     let visibleWorkspaceName: String?
     let rootTiling: PersistentTilingNode
@@ -101,7 +104,7 @@ struct PersistentWorkspaceSnapshot: Equatable, Sendable {
 
 struct PersistentWorldSnapshot: Equatable, Sendable {
     let workspaces: [PersistentWorkspaceSnapshot]
-    let monitorAssignments: [(topLeft: CGPoint, workspace: String)]
+    let monitorAssignments: [(key: String?, topLeft: CGPoint, workspace: String)]
     let windowIds: Set<UInt32>
 
     static func == (lhs: PersistentWorldSnapshot, rhs: PersistentWorldSnapshot) -> Bool {
@@ -109,7 +112,7 @@ struct PersistentWorldSnapshot: Equatable, Sendable {
             lhs.windowIds == rhs.windowIds &&
             lhs.monitorAssignments.count == rhs.monitorAssignments.count &&
             zip(lhs.monitorAssignments, rhs.monitorAssignments).allSatisfy {
-                $0.topLeft == $1.topLeft && $0.workspace == $1.workspace
+                $0.key == $1.key && $0.topLeft == $1.topLeft && $0.workspace == $1.workspace
             }
     }
 }
@@ -126,6 +129,7 @@ extension PersistentWorldSnapshot {
                 ws.macOsNativeFullscreenWindowsContainer.children.compactMap { ($0 as? Window)?.windowId }
             return PersistentWorkspaceSnapshot(
                 name: ws.name,
+                monitorKey: ws.workspaceMonitor.persistentKey,
                 monitorTopLeft: ws.workspaceMonitor.rect.topLeftCorner,
                 visibleWorkspaceName: ws.isVisible ? ws.name : nil,
                 rootTiling: PersistentTilingNode.capture(ws.rootTilingContainer),
@@ -134,7 +138,7 @@ extension PersistentWorldSnapshot {
             )
         }
         let assignments = monitors.map {
-            (topLeft: $0.rect.topLeftCorner, workspace: $0.activeWorkspace.name)
+            (key: Optional($0.persistentKey), topLeft: $0.rect.topLeftCorner, workspace: $0.activeWorkspace.name)
         }
         let ids = allWs.flatMap { collectAllWindowIdsRecursive($0) }.toSet()
         return PersistentWorldSnapshot(

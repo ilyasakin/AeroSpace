@@ -123,6 +123,21 @@ enum SkyLight {
         return wid
     }
 
+    /// Stable, reboot-surviving identity string for a display.
+    ///
+    /// `CGDirectDisplayID` is stable only while a display stays connected, so it is fine for
+    /// in-memory association but wrong for anything persisted: after a reboot or a re-plug the same
+    /// physical monitor can get a different number. The display UUID survives both, which is what
+    /// session restore needs in order to put a workspace back on the monitor it was actually on.
+    /// nil when the symbol is unavailable or the display is unknown — callers fall back to geometry.
+    static func displayUuid(_ displayId: CGDirectDisplayID) -> String? {
+        guard let createUUID = unsafe displayCreateUUID,
+              let uuid = unsafe createUUID(displayId)?.takeRetainedValue(),
+              let cf = CFUUIDCreateString(nil, uuid)
+        else { return nil }
+        return cf as String
+    }
+
     /// True when the display's active Space is a native macOS fullscreen Space (type 4).
     /// Overlays (borders / tab bars) describe the underlying workspace and must not paint over a
     /// fullscreen app — collectionBehavior alone does not keep canJoinAllSpaces panels off
