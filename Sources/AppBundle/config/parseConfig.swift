@@ -162,6 +162,11 @@ struct ConfigParserContext {
     var configVersion: ConfigVersion
     var errors: [ConfigParseDiagnostic]
     var warnings: [ConfigParseDiagnostic]
+    /// Key notations of bindings that failed to parse and were therefore DROPPED from the applied
+    /// config (e.g. `alt-hh`). Recorded at the drop site rather than reverse-engineered from error
+    /// backtraces, because not every error under a binding key drops the binding — a command that
+    /// fails to parse still leaves the binding installed.
+    var droppedBindings: [String] = []
 }
 
 protocol ParserProtocol<S>: Sendable {
@@ -308,6 +313,9 @@ struct ParseConfigResult {
     let config: Config
     let errors: [ConfigParseDiagnostic]
     let warnings: [ConfigParseDiagnostic]
+    /// See `ConfigParserContext.droppedBindings`. Surfaced so the reload dialog can name the keys
+    /// that stopped working instead of only saying that parsing failed.
+    var droppedBindingDescriptions: [String] = []
 
     var allowReloadConfig: Bool { errors.allSatisfy { !$0.preventConfigReload } }
 }
@@ -390,7 +398,12 @@ struct ParseConfigResult {
             "See https://nikitabobko.github.io/AeroSpace/guide#config-version for the migration guide."
         c.warnings.append(.init(.emptyRoot, msg))
     }
-    return ParseConfigResult(config: config, errors: c.errors, warnings: c.warnings)
+    return ParseConfigResult(
+        config: config,
+        errors: c.errors,
+        warnings: c.warnings,
+        droppedBindingDescriptions: c.droppedBindings,
+    )
 }
 
 func parseIndentForNestedContainersWithTheSameOrientation(_ _: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<Void> {

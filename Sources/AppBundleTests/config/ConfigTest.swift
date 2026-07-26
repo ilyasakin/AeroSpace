@@ -165,6 +165,46 @@ final class ConfigTest: XCTestCase {
         )
     }
 
+    /// The dialog for a recoverable error names the bindings that were dropped, so a typo can't
+    /// silently remove keys while the message only says parsing failed. Tracked at the drop site:
+    /// a binding whose COMMAND fails to parse is still installed and must not be listed here.
+    func testDroppedBindingsAreTracked() {
+        let result = parseConfig(
+            """
+            [mode.main.binding]
+                alt-hh = 'focus left'
+                aalt-j = 'focus down'
+                alt-k = 'focus up'
+            """,
+        )
+        assertEquals(result.droppedBindingDescriptions.sorted(), ["aalt-j", "alt-hh"])
+        // Recoverable: the good binding still applies, which is why naming the dropped ones matters
+        assertTrue(result.allowReloadConfig)
+        assertEquals(result.config.modes[mainModeId]?.bindings.count, 1)
+    }
+
+    func testCleanConfigDropsNoBindings() {
+        let result = parseConfig(
+            """
+            [mode.main.binding]
+                alt-h = 'focus left'
+            """,
+        )
+        assertEquals(result.droppedBindingDescriptions, [])
+    }
+
+    func testBindingWithUnparseableCommandIsNotReportedAsDropped() {
+        let result = parseConfig(
+            """
+            [mode.main.binding]
+                alt-h = 'definitely-not-a-command'
+            """,
+        )
+        // The key itself parsed, so it stays bound — listing it as "no longer works" would be wrong.
+        assertEquals(result.droppedBindingDescriptions, [])
+        assertTrue(!result.errors.isEmpty)
+    }
+
     func testPermanentWorkspaceNames() {
         let result = parseConfig(
             """

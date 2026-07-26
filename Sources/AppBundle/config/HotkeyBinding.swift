@@ -86,14 +86,17 @@ func parseBindings(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout 
         return [:]
     }
     var result: [String: HotkeyBinding] = [:]
-    for (binding, rawCommand): (String, OrderedJson) in rawTable {
-        let backtrace = backtrace + .key(binding)
-        let binding = parseBinding(binding, backtrace, mapping)
+    for (rawBinding, rawCommand): (String, OrderedJson) in rawTable {
+        let backtrace = backtrace + .key(rawBinding)
+        let binding = parseBinding(rawBinding, backtrace, mapping)
             .map { modifiers, key -> HotkeyBinding in
                 let commands = parseShellOfCommandsForConfig(rawCommand, backtrace, &c)
-                return HotkeyBinding(modifiers, key, commands, descriptionWithKeyNotation: binding)
+                return HotkeyBinding(modifiers, key, commands, descriptionWithKeyNotation: rawBinding)
             }
             .getOrNil(appendErrorTo: &c.errors)
+        // An unparseable binding is silently absent from the applied config. Record it so the
+        // reload dialog can tell the user which keys just stopped working.
+        if binding == nil { c.droppedBindings.append(rawBinding) }
         if let binding {
             if result.keys.contains(binding.descriptionWithKeyCode) {
                 c.errors.append(.init(backtrace, "'\(binding.descriptionWithKeyCode)' Binding redeclaration"))
