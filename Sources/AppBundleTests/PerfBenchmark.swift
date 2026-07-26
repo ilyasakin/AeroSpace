@@ -151,4 +151,48 @@ final class PerfBenchmark: XCTestCase {
         }
 
     }
+
+    /// Measures the load-bearing assumption behind "skip-when-unchanged": that deciding a plan is
+    /// unchanged is far cheaper than recomputing and re-applying it.
+    ///
+    /// The proposed architecture's headline performance claim is that a pure `plan()` lets an entire
+    /// layout-and-effect pass be retired by one equality check. That is only true if the check is
+    /// cheap relative to the pass. `capture` + `structureEquals` on the persistent spine is the
+    /// closest thing in today's code to that check, so it bounds the real cost.
+    func testPlanEqualityCostVsLayoutCost() async throws {
+        for (windows, label) in [(12, "12 windows (typical)"), (60, "60 windows (heavy)"), (240, "240 windows (extreme)")] {
+            setUpWorkspacesForTests()
+            let ws = focus.workspace
+            var id: UInt32 = 1
+            var parent: TilingContainer = ws.rootTilingContainer
+            for i in 0 ..< windows {
+                TestWindow.new(id: id, parent: parent)
+                id += 1
+                if i % 4 == 3 {
+                    parent = TilingContainer.newVTiles(parent: parent, adaptiveWeight: 1, index: INDEX_BIND_LAST)
+                }
+            }
+            try? await ws.layoutWorkspace()
+
+            let captured = PersistentTilingNode.capture(ws.rootTilingContainer)
+
+            time("plan-equality/\(label): capture", iterations: 10_000) {
+                _ = PersistentTilingNode.capture(ws.rootTilingContainer)
+            }
+            time("plan-equality/\(label): structureEquals (already captured)", iterations: 10_000) {
+                _ = PersistentTilingNode.capture(ws.rootTilingContainer).structureEquals(captured)
+            }
+            time("plan-equality/\(label): structureEquals only", iterations: 100_000) {
+                _ = captured.structureEquals(captured)
+            }
+
+            // The thing an equality check would let us skip.
+            let start = DispatchTime.now()
+            let iterations = 200
+            for _ in 0 ..< iterations { try? await ws.layoutWorkspace() }
+            let nanos = unsafe DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+            let usPerLayout = Double(nanos) / Double(iterations) / 1000
+            print("BENCH plan-equality/\(label): FULL layoutWorkspace: \(String(format: "%.2f", usPerLayout)) µs")
+        }
+    }
 }
