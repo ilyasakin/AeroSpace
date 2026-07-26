@@ -21,6 +21,40 @@ final class SessionLayoutStoreTest: XCTestCase {
         XCTAssertTrue(violations.hasSuffix("spine-violations.log"))
     }
 
+    /// The format has carried a `version` field since it was written and nothing ever read it, so a
+    /// future format change had no way to announce itself. The dangerous direction is a DOWNGRADE: an
+    /// older build would decode a newer file as best it could and then save over it, destroying a
+    /// layout that re-upgrading would otherwise recover. Refusing to read must therefore also refuse
+    /// to WRITE, or the guard is decorative.
+    @MainActor
+    func testFileFromANewerBuildIsNeitherReadNorOverwritten() throws {
+        setUpWorkspacesForTests()
+        let url = SessionLayoutStore.fileUrl
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+        )
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            SessionLayoutStore.resetFormatGuardForTests()
+        }
+
+        let fromTheFuture = """
+        { "version": 9999, "windowIds": [], "monitors": [], "workspaces": [] }
+        """
+        let original = Data(fromTheFuture.utf8)
+        try original.write(to: url, options: .atomic)
+
+        XCTAssertNil(SessionLayoutStore.load(), "a newer format must not be half-read")
+
+        // And the save path must now decline, so the newer file survives intact.
+        TestWindow.new(id: 7101, parent: focus.workspace.rootTilingContainer, adaptiveWeight: 1)
+        SessionLayoutStore.saveNow()
+        XCTAssertEqual(
+            try Data(contentsOf: url), original,
+            "declining to read must also decline to overwrite, or downgrading destroys the session",
+        )
+    }
+
     /// Adding the reboot-stable monitor key changed the on-disk format. A session file written by
     /// the previous build has no `key` / `monitorKey`, and it must still load — otherwise upgrading
     /// silently discards the user's workspace layout, which is the failure this store exists to

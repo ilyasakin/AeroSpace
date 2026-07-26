@@ -9,6 +9,10 @@ if grep -E '( Task\.init| Task\s*\{| Task\()' -r ./Sources; then
     exit 1
 fi
 
+# Direct tree mutation must not spread to new files — see the script for why this is a ratchet
+# rather than a compiler-enforced capability.
+./script/tree-mutation-ratchet.sh
+
 ./script/install-dep.sh --swiftlint
 ./.deps/swiftlint/swiftlint lint --quiet
 

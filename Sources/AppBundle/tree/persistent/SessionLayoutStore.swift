@@ -2,6 +2,13 @@ import AppKit
 import Common
 import Foundation
 
+/// Bump when the on-disk session shape changes in a way older builds cannot read. Adding OPTIONAL
+/// fields (as the stable monitor key did) is backward compatible and does NOT need a bump.
+///
+/// Not inside `SessionLayoutStore` because the DTO is nonisolated and cannot read a `@MainActor`
+/// static as a property default.
+let sessionLayoutFormatVersion = 1
+
 /// Disk-backed session layout so tiling structure + workspace placement survive AeroSpace restarts
 /// (while apps stay open — CGWindowIDs remain valid for the WindowServer lifetime of each window).
 ///
@@ -9,6 +16,12 @@ import Foundation
 @MainActor
 enum SessionLayoutStore {
     private static let fileName = "session-layout.json"
+    /// Set when we declined to read a file written by a newer build. Preserves it, so downgrading and
+    /// re-upgrading does not lose a session. Sticky for the process: once we know the file on disk is
+    /// newer than us, nothing this process does should touch it.
+    private static var refuseToOverwrite = false
+
+    static func resetFormatGuardForTests() { refuseToOverwrite = false }
     private static var pendingSave: DispatchWorkItem?
     private static var lastSavedStructural: PersistentWorldSnapshot?
 
@@ -127,6 +140,7 @@ enum SessionLayoutStore {
 
     /// Debounced save after structural changes (layout sessions).
     static func scheduleSave() {
+        if refuseToOverwrite { return }
         if startupGraceActive { return }
         pendingSave?.cancel()
         let work = DispatchWorkItem {
@@ -138,6 +152,8 @@ enum SessionLayoutStore {
 
     /// Immediate save (quit / SIGTERM).
     static func saveNow() {
+        // Never overwrite a session written by a newer build (see `load`).
+        if refuseToOverwrite { return }
         // Quitting mid-grace: the tree may be half-restored — keep the last good file. But a
         // hard 60s blackout also meant sub-60s restart cycles (config iteration) silently lost
         // every change; after 15s the state is settled enough that keeping it beats dropping it.
@@ -181,6 +197,16 @@ enum SessionLayoutStore {
               let data = try? Data(contentsOf: url),
               let dto = try? JSONDecoder().decode(SessionLayoutDTO.self, from: data)
         else { return nil }
+        // The format has carried a `version` field since it was written, and nothing ever READ it.
+        // A future format change therefore had no way to announce itself, and a DOWNGRADE was the
+        // dangerous direction: an older build would decode a newer file as best it could, then save
+        // over it, destroying a layout that upgrading again would otherwise have recovered.
+        // Newer-than-known is refused, and `refuseToOverwrite` then stops the save path clobbering
+        // it. Older is accepted — new fields are optional precisely so old files still load.
+        if dto.version > sessionLayoutFormatVersion {
+            refuseToOverwrite = true
+            return nil
+        }
         var apps: [UInt32: String] = [:]
         for (key, value) in dto.apps ?? [:] {
             if let id = UInt32(key) { apps[id] = value }
@@ -444,7 +470,7 @@ extension PersistentWorldSnapshot {
 // MARK: - JSON DTO
 
 private struct SessionLayoutDTO: Codable {
-    var version: Int = 1
+    var version: Int = sessionLayoutFormatVersion
     var workspaces: [WorkspaceDTO]
     var monitors: [MonitorDTO]
     var windowIds: [UInt32]
