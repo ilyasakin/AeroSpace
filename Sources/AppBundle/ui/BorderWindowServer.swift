@@ -106,9 +106,19 @@ enum BorderSkyLight {
 
     static var isAvailable: Bool { unsafe impl != nil }
 
-    /// Window ids of live border windows (layer 0, so they appear in CGWindowList normal stacks).
-    /// Scans that reason about "the frontmost normal window" must skip these.
-    @MainActor static var ownedWindowIds: Set<UInt32> = []
+    /// Window ids of live border windows.
+    ///
+    /// Border windows are ordered at their TARGET's level (0 for normal windows), so they appear in
+    /// `CGWindowListCopyWindowInfo` exactly like app windows — and, being ordered directly above
+    /// their target and outset past it, they are the FIRST stack hit for any point inside a
+    /// bordered window. Every scan that reasons about "the frontmost normal window" must skip them,
+    /// which is why `onScreenWindowSnapshot` filters them out at the source rather than relying on
+    /// each consumer to remember.
+    ///
+    /// `nonisolated(unsafe)`: only mutated on the main thread (border create/release are MainActor),
+    /// but read from the snapshot builder, which is not actor-isolated. Same discipline as the
+    /// snapshot cache itself.
+    nonisolated(unsafe) static var ownedWindowIds: Set<UInt32> = []
 }
 
 extension RgbaColor {
@@ -226,7 +236,7 @@ final class BorderWindow {
 
     func release() {
         guard let impl = unsafe BorderSkyLight.impl, wid != 0 else { return }
-        BorderSkyLight.ownedWindowIds.remove(wid)
+        unsafe BorderSkyLight.ownedWindowIds.remove(wid)
         _ = unsafe impl.releaseWindow(impl.cid, wid)
         wid = 0
         context = nil
@@ -246,7 +256,7 @@ final class BorderWindow {
         )
         guard err == 0, newId != 0 else { return }
         wid = newId
-        BorderSkyLight.ownedWindowIds.insert(newId)
+        unsafe BorderSkyLight.ownedWindowIds.insert(newId)
         _ = unsafe impl.setRes(impl.cid, wid, scale)
         _ = unsafe impl.setOpacity(impl.cid, wid, false)
         // Empty event shape → fully click-through, so the border ring never intercepts a click

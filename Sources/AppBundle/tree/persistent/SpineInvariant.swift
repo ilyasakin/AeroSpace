@@ -19,7 +19,11 @@ import Foundation
 ///   the next layout recaptures from live truth (the dirty-flag protocol's own fallback). A
 ///   silent corruption becomes a self-correcting event.
 ///
-/// Cost is one `capture` walk (tens of nodes) per structural commit — not per frame.
+/// Cost is one `capture` walk (tens of nodes) per structural commit **and per layout pass** —
+/// layout publishes a generation every pass, so it is a publishing path like any other. That makes
+/// this a per-frame call during a mouse drag, so the violation path must stay allocation-light and
+/// must never block the main thread: reporting is deduplicated by signature and the disk write is
+/// pushed off-main. A steady-state desync therefore costs one log line, not one per frame.
 @MainActor
 enum SpineInvariant {
     /// Desyncs seen this session. Non-zero means some mutation site is bypassing the protocol;
@@ -32,10 +36,15 @@ enum SpineInvariant {
     /// guard itself can be tested against a deliberately desynced tree.
     static var onViolationForTests: ((String) -> Void)?
 
+    /// Signatures already written to disk. Because `verify` runs per layout pass, an unhealed
+    /// desync would otherwise write the same entry every frame.
+    private static var loggedSignatures: Set<String> = []
+
     static func resetForTests() {
         violationCount = 0
         recentViolations = []
         onViolationForTests = nil
+        loggedSignatures = []
     }
 
     /// Verify the published spine still matches the live tree. `context` names the mutation that
@@ -62,7 +71,11 @@ enum SpineInvariant {
             // Real usage is the only place that exercises every mutation site; append so which
             // sites actually break the contract is an observation, not a guess. Bounded by
             // truncating at ~64KB — this file is diagnostics, never unbounded growth.
-            appendToLog(detail)
+            // Deduplicated: the same desync recurring every layout pass logs once.
+            let signature = "\(context())|\(published.debugShape)|\(live.debugShape)"
+            if loggedSignatures.count < 64, loggedSignatures.insert(signature).inserted {
+                appendToLog(detail)
+            }
         }
         // Production: self-heal. Dropping the generation makes the next layout recapture from the
         // live tree, which is the observable truth the user is looking at.
@@ -80,24 +93,30 @@ extension SpineInvariant {
             .appendingPathComponent("spine-violations.log")
     }
 
+    /// Serialized off-main writer. `verify` can run on a per-frame path, so the file I/O must not
+    /// happen inline on the main thread; a dedicated serial queue also keeps appends ordered.
+    private static let logQueue = DispatchQueue(label: "\(aeroSpaceAppId).spine-violations")
+
     private static func appendToLog(_ detail: String) {
         let url = logUrl
         let stamp = ISO8601DateFormatter().string(from: Date())
         let entry = "[\(stamp)] \(detail)\n\n"
         guard let data = entry.data(using: .utf8) else { return }
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-        )
-        if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }
-            // Keep it bounded: restart the file once it passes ~64KB.
-            if (try? handle.seekToEnd()) ?? 0 > 64 * 1024 {
-                try? handle.truncate(atOffset: 0)
+        logQueue.async {
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+            )
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                // Keep it bounded: restart the file once it passes ~64KB.
+                if (try? handle.seekToEnd()) ?? 0 > 64 * 1024 {
+                    try? handle.truncate(atOffset: 0)
+                }
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: url)
             }
-            try? handle.write(contentsOf: data)
-        } else {
-            try? data.write(to: url)
         }
     }
 }

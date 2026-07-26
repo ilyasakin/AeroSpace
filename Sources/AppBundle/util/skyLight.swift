@@ -25,6 +25,10 @@ enum SkyLight {
     // SLSRequestNotificationsForWindows(cid, window_list, window_count) -> error
     // Required for continuous move/resize delivery (JankyBorders/yabai); register alone is not enough.
     private typealias RequestNotificationsFun = @convention(c) (Int32, UnsafeMutablePointer<UInt32>, Int32) -> Int32
+    // SLSRemoveNotificationsForWindows(cid, window_list, window_count) -> error
+    // The counterpart to the request above: without it WindowServer keeps delivering move/resize
+    // for windows we stopped drawing borders for, which is pure IPC waste on every drag.
+    private typealias RemoveNotificationsFun = @convention(c) (Int32, UnsafeMutablePointer<UInt32>, Int32) -> Int32
     // SLSManagedDisplayGetCurrentSpace(cid, display_uuid) -> space_id (0 on failure)
     private typealias ManagedDisplayGetCurrentSpaceFun = @convention(c) (Int32, CFString) -> UInt64
     // SLSSpaceGetType(cid, space_id) -> type (0 user, 4 native fullscreen — yabai/JankyBorders)
@@ -61,6 +65,7 @@ enum SkyLight {
         let getWindowBounds: GetWindowBoundsFun
         let registerNotifyProc: RegisterNotifyProcFun?
         let requestNotifications: RequestNotificationsFun?
+        let removeNotifications: RemoveNotificationsFun?
         let managedDisplayGetCurrentSpace: ManagedDisplayGetCurrentSpaceFun?
         let spaceGetType: SpaceGetTypeFun?
         let findWindowAndOwner: FindWindowAndOwnerFun?
@@ -77,6 +82,9 @@ enum SkyLight {
         let requestNotifications = unsafe dlsym(handle, "SLSRequestNotificationsForWindows").map {
             unsafe unsafeBitCast($0, to: RequestNotificationsFun.self)
         }
+        let removeNotifications = unsafe dlsym(handle, "SLSRemoveNotificationsForWindows").map {
+            unsafe unsafeBitCast($0, to: RemoveNotificationsFun.self)
+        }
         let managedDisplayGetCurrentSpace = unsafe dlsym(handle, "SLSManagedDisplayGetCurrentSpace").map {
             unsafe unsafeBitCast($0, to: ManagedDisplayGetCurrentSpaceFun.self)
         }
@@ -91,6 +99,7 @@ enum SkyLight {
             getWindowBounds: getWindowBounds,
             registerNotifyProc: registerNotifyProc,
             requestNotifications: requestNotifications,
+            removeNotifications: removeNotifications,
             managedDisplayGetCurrentSpace: managedDisplayGetCurrentSpace,
             spaceGetType: spaceGetType,
             findWindowAndOwner: findWindowAndOwner,
@@ -148,11 +157,26 @@ enum SkyLight {
     /// Call whenever the bordered / on-screen set changes. Empty list is a no-op.
     @MainActor static func requestNotifications(for windowIds: [UInt32]) {
         guard let impl = unsafe impl, let request = unsafe impl.requestNotifications else { return }
+        unsafe withIds(windowIds) { base, count in _ = unsafe request(impl.connection, base, count) }
+    }
+
+    /// Stop delivery for these ids — the counterpart of `requestNotifications`. Windows that lose
+    /// their border (closed, moved off the active workspace) otherwise keep pushing move/resize
+    /// events that every handler then discards.
+    @MainActor static func removeNotifications(for windowIds: [UInt32]) {
+        guard let impl = unsafe impl, let remove = unsafe impl.removeNotifications else { return }
+        unsafe withIds(windowIds) { base, count in _ = unsafe remove(impl.connection, base, count) }
+    }
+
+    private static func withIds(
+        _ windowIds: [UInt32],
+        _ body: (UnsafeMutablePointer<UInt32>, Int32) -> Void,
+    ) {
         guard !windowIds.isEmpty else { return }
         var ids = windowIds
-        ids.withUnsafeMutableBufferPointer { buf in
-            guard let base = buf.baseAddress else { return }
-            _ = unsafe request(impl.connection, base, Int32(buf.count))
+        unsafe ids.withUnsafeMutableBufferPointer { buf in
+            guard let base = unsafe buf.baseAddress else { return }
+            unsafe body(base, Int32(buf.count))
         }
     }
 

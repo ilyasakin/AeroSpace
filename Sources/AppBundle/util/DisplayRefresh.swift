@@ -159,10 +159,21 @@ enum DisplayRefresh {
 enum WorkspaceDisplayLink {
     private final class LinkState {
         var link: CVDisplayLink?
-        /// C callback context — owns the display id for the duration of the link.
-        var context: UnsafeMutablePointer<CGDirectDisplayID>?
         var subscribers: [UUID: () -> Void] = [:]
         var hz: Double = DisplayRefresh.fallbackHz
+    }
+
+    /// The C callback's context is the display id encoded **by value in the pointer bits**, not a
+    /// heap allocation. `CVDisplayLinkStop` does not join a callback already running on the link
+    /// thread, so a heap context deallocated right after Stop can be read after free. Passing the
+    /// id by value removes that lifetime hazard entirely. Offset by 1 so a 0 id can never produce
+    /// a null pointer (which the callback treats as "no context").
+    private static func encodeContext(_ displayId: CGDirectDisplayID) -> UnsafeMutableRawPointer? {
+        UnsafeMutableRawPointer(bitPattern: UInt(displayId) &+ 1)
+    }
+
+    private nonisolated static func decodeContext(_ ptr: UnsafeMutableRawPointer) -> CGDirectDisplayID {
+        CGDirectDisplayID(truncatingIfNeeded: UInt(bitPattern: ptr) &- 1)
     }
 
     private static var states: [CGDirectDisplayID: LinkState] = [:]
@@ -236,14 +247,10 @@ enum WorkspaceDisplayLink {
             screen: DisplayRefresh.nsScreen(forDisplayId: displayId),
         )
 
-        // C callback cannot capture Swift context — pass display id via userInfo pointer.
-        let ctx = UnsafeMutablePointer<CGDirectDisplayID>.allocate(capacity: 1)
-        ctx.initialize(to: displayId)
-        state.context = ctx
-
+        // C callback cannot capture Swift context — pass the display id in the userInfo bits.
         CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, userInfo in
             guard let userInfo else { return kCVReturnSuccess }
-            let id = userInfo.assumingMemoryBound(to: CGDirectDisplayID.self).pointee
+            let id = WorkspaceDisplayLink.decodeContext(userInfo)
             // Coalesce: at most ONE pulse queued at a time. Without this, a ~200ms main-thread
             // stall during a 120Hz drag queued ~24 pulses that burst-executed afterwards,
             // amplifying the very hiccup vsync pacing exists to smooth (frames should be
@@ -254,20 +261,16 @@ enum WorkspaceDisplayLink {
                 MainActor.assumeIsolated { WorkspaceDisplayLink.pulse(displayId: id) }
             }
             return kCVReturnSuccess
-        }, ctx)
+        }, encodeContext(displayId))
         CVDisplayLinkStart(link)
         state.link = link
     }
 
     private static func stopLink(state: LinkState) {
-        if let link = state.link {
-            CVDisplayLinkStop(link)
-        }
+        guard let link = state.link else { return }
+        CVDisplayLinkStop(link)
+        // Detach the callback so a link the system keeps alive briefly cannot pulse again.
+        CVDisplayLinkSetOutputCallback(link, nil, nil)
         state.link = nil
-        if let ctx = state.context {
-            ctx.deinitialize(count: 1)
-            ctx.deallocate()
-            state.context = nil
-        }
     }
 }

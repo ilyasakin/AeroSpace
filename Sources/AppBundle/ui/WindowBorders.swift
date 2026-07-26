@@ -51,6 +51,9 @@ final class WindowBordersManager {
     private var lastStackNeighbor: [UInt32: UInt32] = [:]
     /// Fresh fingerprint computed at refresh() start; consumed by paint's reorder decision.
     private var currentStackNeighbor: [UInt32: UInt32] = [:]
+    /// Window ids we have an outstanding WindowServer move/resize notify request for. Tracked so the
+    /// request set can be diffed and withdrawn instead of growing for the whole session.
+    private var notifiedWindowIds: Set<UInt32> = []
 
     /// Window ids currently carrying a border (for WS notify subscription during mouse-resize).
     var borderedWindowIds: [UInt32] { Array(entries.keys) }
@@ -132,14 +135,22 @@ final class WindowBordersManager {
         guard entries[windowId] != nil, let window = Window.get(byId: windowId) else { return }
         // Still settling after appearing: pin to the layout target so the entrance animation isn't
         // tracked. A real mouse drag overrides (its own path / mouseManipulate resolves live).
-        if let until = settlingUntil[windowId], ProcessInfo.processInfo.systemUptime < until,
-           currentlyManipulatedWithMouseWindowId != windowId,
-           let target = window.lastAppliedLayoutPhysicalRect
-        {
-            paint(id: windowId, window: window, rect: target, cfg: config.windowBorders, reorder: false)
-            return
+        //
+        // The deadline and the availability of a target rect are checked SEPARATELY on purpose. A
+        // single combined `if let` dropped the pin whenever `lastAppliedLayoutPhysicalRect` was nil
+        // — i.e. for windows we never wrote a frame for (fresh floats) — so the one case the pin
+        // exists to cover, the entrance animation, was tracked frame by frame instead of ignored.
+        if let until = settlingUntil[windowId] {
+            if ProcessInfo.processInfo.systemUptime < until, currentlyManipulatedWithMouseWindowId != windowId {
+                // No layout target yet: hold the border where it is rather than chasing the
+                // animation (matches sampleFloatingBorder, which also skips while settling).
+                if let target = window.lastAppliedLayoutPhysicalRect {
+                    paint(id: windowId, window: window, rect: target, cfg: config.windowBorders, reorder: false)
+                }
+                return
+            }
+            settlingUntil.removeValue(forKey: windowId)
         }
-        settlingUntil.removeValue(forKey: windowId)
         guard let rect = resolvedLiveBorderRect(windowId: windowId) else { return }
         // Hot path: a moving window keeps its z-order, so skip the reorder IPC (~225µs/frame).
         paint(id: windowId, window: window, rect: rect, cfg: config.windowBorders, reorder: false)
@@ -187,12 +198,12 @@ final class WindowBordersManager {
     // MARK: - Paint
 
     /// Fingerprint each candidate window's position in the WindowServer's layer-0 stack as
-    /// "the id in front of me" (skipping our own border windows). O(stack) per refresh.
+    /// "the id in front of me". Our own border windows are already absent from `normalStack`.
+    /// O(stack) per refresh.
     private func computeStackNeighbors() {
         currentStackNeighbor.removeAll(keepingCapacity: true)
         var prev: UInt32 = 0 // 0 = frontmost
         for item in onScreenWindowSnapshot().normalStack {
-            if BorderSkyLight.ownedWindowIds.contains(item.id) { continue }
             currentStackNeighbor[item.id] = prev
             prev = item.id
         }
@@ -248,8 +259,16 @@ final class WindowBordersManager {
         let stackChanged = currentStackNeighbor[id] != nil
             && lastStackNeighbor[id] != nil
             && currentStackNeighbor[id] != lastStackNeighbor[id]
-        if let neighbor = currentStackNeighbor[id] { lastStackNeighbor[id] = neighbor }
         let needsReorder = reorder && !settling && (window.isFloating || stackChanged)
+        // Commit the fingerprint only when the restack was actually ACTED on (or when there was
+        // nothing to react to). Committing unconditionally swallowed restacks that happened while a
+        // reorder was suppressed — the hot move path paints with `reorder: false` on every
+        // WindowServer notify, and the settle window suppresses too — so the next refresh compared
+        // against the already-updated neighbor, concluded "no change", and left a stale ring
+        // sitting under the window that had moved above it.
+        if needsReorder || !stackChanged, let neighbor = currentStackNeighbor[id] {
+            lastStackNeighbor[id] = neighbor
+        }
         entry.update(
             rect: rect, width: cfg.width, radius: radius, style: style,
             scale: backingScale(forRect: rect), reorder: needsReorder,
@@ -265,6 +284,10 @@ final class WindowBordersManager {
         probing.removeAll()
         lastStackNeighbor.removeAll()
         currentStackNeighbor.removeAll()
+        if !notifiedWindowIds.isEmpty {
+            SkyLight.removeNotifications(for: Array(notifiedWindowIds))
+            notifiedWindowIds.removeAll()
+        }
         FloatingBorderTracker.stop()
     }
 
@@ -352,8 +375,18 @@ final class WindowBordersManager {
     }
 
     /// Tell WindowServer which windows we care about for move/resize notify delivery.
+    ///
+    /// Diffed against the previous set, not re-requested wholesale: requests were never withdrawn,
+    /// so every window that ever had a border kept pushing move/resize events for the rest of the
+    /// session — the set only grew, and each event woke the handler just to be discarded.
     private func requestWindowServerNotifications() {
-        SkyLight.requestNotifications(for: Array(entries.keys))
+        let wanted = Set(entries.keys)
+        guard wanted != notifiedWindowIds else { return }
+        let added = wanted.subtracting(notifiedWindowIds)
+        let removed = notifiedWindowIds.subtracting(wanted)
+        if !added.isEmpty { SkyLight.requestNotifications(for: Array(added)) }
+        if !removed.isEmpty { SkyLight.removeNotifications(for: Array(removed)) }
+        notifiedWindowIds = wanted
     }
 }
 
@@ -376,8 +409,6 @@ func displayShowsFullscreenContent(_ displayId: CGDirectDisplayID) -> Bool {
     let display = CGDisplayBounds(displayId)
     let tol: CGFloat = 2
     for item in onScreenWindowSnapshot().normalStack {
-        // Skip our own border windows (layer 0, sized just past their target).
-        if BorderSkyLight.ownedWindowIds.contains(item.id) { continue }
         let r = item.rect
         guard r.topLeftX < display.maxX, r.topLeftX + r.width > display.minX,
               r.topLeftY < display.maxY, r.topLeftY + r.height > display.minY

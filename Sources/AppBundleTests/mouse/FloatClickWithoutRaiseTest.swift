@@ -101,6 +101,65 @@ final class FloatClickWithoutRaiseTest: XCTestCase {
         XCTAssertEqual(topmostManagedWindow(at: CGPoint(x: 50, y: 50))?.windowId, 1)
     }
 
+    /// Regression: our SLS border windows are layer 0 and ordered directly above their target,
+    /// outset by width+margin, so they are the FIRST stack hit for every point inside every
+    /// bordered window. `topmostManagedWindow` treats an unrecognized front hit as "unmanaged on
+    /// top: click is theirs" and returns nil → callers return `.passThrough`, which silently
+    /// disabled click-without-raise for ALL windows whenever borders were enabled.
+    /// The fix filters border ids inside the snapshot, so nothing downstream can forget.
+    func testBorderWindowInStackDoesNotSwallowTheClick() throws {
+        let workspace = focus.workspace
+        let tileRect = Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600)
+        var tile: Window!
+        workspace.rootTilingContainer.apply {
+            tile = TestWindow.new(id: 1, parent: $0, adaptiveWeight: 1, rect: tileRect)
+        }
+        tile.lastAppliedLayoutPhysicalRect = tileRect
+
+        // Border id 9001 is NOT a managed window and covers the tile, outset by 5pt.
+        let borderId: UInt32 = 9001
+        let raw: [[String: Any]] = [
+            [
+                kCGWindowNumber as String: Int(borderId), kCGWindowLayer as String: 0,
+                kCGWindowBounds as String: ["X": CGFloat(-5), "Y": CGFloat(-5),
+                                            "Width": CGFloat(810), "Height": CGFloat(610)],
+            ],
+            [
+                kCGWindowNumber as String: 1, kCGWindowLayer as String: 0,
+                kCGWindowBounds as String: ["X": CGFloat(0), "Y": CGFloat(0),
+                                            "Width": CGFloat(800), "Height": CGFloat(600)],
+            ],
+        ]
+
+        // Unfiltered, the border is the frontmost hit — this is the shape that broke the feature.
+        let unfiltered = parseOnScreenWindowSnapshot(raw, excludedIds: [])
+        XCTAssertEqual(unfiltered.normalStack.first?.id, borderId)
+
+        let filtered = parseOnScreenWindowSnapshot(raw, excludedIds: [borderId])
+        XCTAssertEqual(
+            filtered.normalStack.map { $0.id }, [1],
+            "border windows must not appear in the normal stack at all",
+        )
+        // Level info is still recorded for the border; only the stack excludes it
+        XCTAssertNotNil(filtered.levels[borderId])
+
+        let fake = FakeClickStackPort()
+        fake.snapshot = unfiltered
+        WindowServerReads.install(fake)
+        defer { WindowServerReads.install(nil) }
+        XCTAssertNil(
+            topmostManagedWindow(at: CGPoint(x: 400, y: 300)),
+            "sanity: an unfiltered border front hit is what caused the silent passThrough",
+        )
+
+        fake.snapshot = filtered
+        invalidateOnScreenWindowSnapshot()
+        XCTAssertEqual(
+            topmostManagedWindow(at: CGPoint(x: 400, y: 300))?.windowId, 1,
+            "with borders filtered out, the click resolves to the tile beneath them",
+        )
+    }
+
     func testPolicyDoesNotInterceptWhenHitIsFloating() {
         // Mirrors topmostManagedWindow preferring float: shouldIntercept must stay false.
         XCTAssertFalse(

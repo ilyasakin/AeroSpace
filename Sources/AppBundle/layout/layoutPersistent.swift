@@ -79,6 +79,17 @@ extension Workspace {
         let spine = currentTilingSpine()
         let mruWindowId = rootTilingContainer.mostRecentWindowRecursive?.windowId
 
+        // Layout assigns rects to windows only, so nested containers had none — making them dead
+        // zones for anything that hit-tests the tree (drag-to-swap over a nested split found no
+        // target; directional focus fallbacks misrouted). Derive them bottom-up so every reader
+        // sees container geometry instead of each call site working around its absence.
+        //
+        // In a `defer` because container rects are DERIVED from their windows': they must be
+        // re-derived even when the walk below throws partway (a window dying mid-layout). Deriving
+        // only on the success path left containers describing the PREVIOUS pass's geometry, so
+        // hit-testing read bounds that no longer contained their own children.
+        defer { assignContainerRects(rootTilingContainer) }
+
         let laidOut = try await layoutPersistentNode(
             spine,
             point: physicalRect.topLeftCorner,
@@ -99,12 +110,6 @@ extension Workspace {
         // the generation so the next layout recaptures from live. Weights are ignored by the
         // comparison, so the normalized spans in `laidOut` are preserved.
         SpineInvariant.verify(self, context: "layoutWorkspace")
-        // Layout assigns rects to windows only, so nested containers had none — making them dead
-        // zones for anything that hit-tests the tree (drag-to-swap over a nested split found no
-        // target; directional focus fallbacks misrouted). Derive them once here, bottom-up, so
-        // every reader sees container geometry instead of each call site working around its
-        // absence.
-        assignContainerRects(rootTilingContainer)
 
         // Mouse-drag hot path skips floating — only tiles need to reflow each frame.
         if !skipFloating {
@@ -185,13 +190,9 @@ private func applyWeightsFromSpine(
             else { return }
             window.setWeight(parentOrientation, weight)
         case .container(let orientation, _, let weight, let children):
-            let liveContainer: TilingContainer? = {
-                if let c = live as? TilingContainer { return c }
-                // Resolve nested container by matching leaf window set
-                guard let live else { return nil }
-                if let c = live as? TilingContainer { return c }
-                return nil
-            }()
+            // Nested containers are resolved by matching leaf window sets at the recursion site
+            // below, so by the time we get here `live` either IS the counterpart or is nil.
+            let liveContainer = live as? TilingContainer
             // Same guard as the window case above — a CONTAINER child of an accordion (produced by
             // `join-with`/`split`/`toggle-group` inside an accordion, which normalization keeps
             // because single-child accordions are exempt from flattening) would otherwise reach
