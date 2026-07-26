@@ -89,10 +89,12 @@ private func moveFloatingWindow(_ window: Window) {
 
 @MainActor
 private func moveTilingWindow(_ window: Window) {
+    // Drag ownership is expressed ONLY by this stamp — layout checks it (`mouseTarget`) and skips
+    // the AX write for the dragged window, and the border frame resolver reads it to track live
+    // bounds. This used to also nil `lastAppliedLayoutPhysicalRect` to "free the layout baseline",
+    // which never worked: layout unconditionally rewrites that field on the very next tick (it
+    // must, so sibling borders share one coherent frame). Two writers, one of them ineffective.
     currentlyManipulatedWithMouseWindowId = window.windowId
-    // Title-bar drag only: free the layout baseline so layout does not fight the drag visual.
-    // Must not run for resize-like drags (caller routes those to resizeWithMouse).
-    window.lastAppliedLayoutPhysicalRect = nil
     let mouseLocation = mouseLocation
     let targetWorkspace = mouseLocation.monitorApproximation.activeWorkspace
     let swapTarget = mouseLocation
@@ -172,9 +174,12 @@ extension CGPoint {
     }
 }
 
-/// Hit-test rect for a tiling child. Containers carry NO lastApplied rects (every materialize
-/// rebuilds them fresh), which made nested splits hit-test dead zones — drag-to-swap over any
-/// nested container found no target. Derive a container's rect as the union of its descendants.
+/// Hit-test rect for a tiling child.
+///
+/// Layout now assigns container rects (see `assignContainerRects`), so this is normally a plain
+/// read. The descendant-union fallback remains for the window between a materialize (which
+/// rebuilds containers, clearing their geometry) and the next layout pass — without it, a
+/// drag landing in that window would find no target over a nested split.
 @MainActor
 private func effectiveHitRect(_ node: TreeNode, virtual: Bool) -> Rect? {
     if let own = virtual ? node.lastAppliedLayoutVirtualRect : node.lastAppliedLayoutPhysicalRect {

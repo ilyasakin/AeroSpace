@@ -93,6 +93,12 @@ extension Workspace {
             applyWeightsFromSpine(laidOut, live: rootTilingContainer, parentOrientation: nil)
         }
         tilingStructureGeneration = laidOut
+        // Layout assigns rects to windows only, so nested containers had none — making them dead
+        // zones for anything that hit-tests the tree (drag-to-swap over a nested split found no
+        // target; directional focus fallbacks misrouted). Derive them once here, bottom-up, so
+        // every reader sees container geometry instead of each call site working around its
+        // absence.
+        assignContainerRects(rootTilingContainer)
 
         // Mouse-drag hot path skips floating — only tiles need to reflow each frame.
         if !skipFloating {
@@ -112,6 +118,43 @@ extension Workspace {
             }
             try await window.layoutFloatingWindow(context)
         }
+    }
+}
+
+/// Give every tiling container the bounding rect of its laid-out descendants (bottom-up).
+///
+/// Layout writes rects only on windows and the workspace. Containers are rebuilt by every
+/// materialize, so they never carried geometry — every consumer that needed a container's bounds
+/// (mouse drag-to-swap targeting, directional focus fallbacks) had to derive it or silently treat
+/// the container as a dead zone. Returns the union so parents can accumulate.
+@MainActor
+@discardableResult
+private func assignContainerRects(_ container: TilingContainer) -> (physical: Rect?, virtual: Rect?) {
+    var physical: Rect? = nil
+    var virtual: Rect? = nil
+    for child in container.children {
+        let childRects: (physical: Rect?, virtual: Rect?) = switch child.tilingTreeNodeCasesOrDie() {
+            case .window(let window): (window.lastAppliedLayoutPhysicalRect, window.lastAppliedLayoutVirtualRect)
+            case .tilingContainer(let nested): assignContainerRects(nested)
+        }
+        physical = physical.union(childRects.physical)
+        virtual = virtual.union(childRects.virtual)
+    }
+    container.lastAppliedLayoutPhysicalRect = physical
+    container.lastAppliedLayoutVirtualRect = virtual
+    return (physical, virtual)
+}
+
+extension Rect? {
+    /// Bounding box of two optional rects (nil is identity).
+    fileprivate func union(_ other: Rect?) -> Rect? {
+        guard let other else { return self }
+        guard let self else { return other }
+        let minX = min(self.topLeftX, other.topLeftX)
+        let minY = min(self.topLeftY, other.topLeftY)
+        let maxX = max(self.topLeftX + self.width, other.topLeftX + other.width)
+        let maxY = max(self.topLeftY + self.height, other.topLeftY + other.height)
+        return Rect(topLeftX: minX, topLeftY: minY, width: maxX - minX, height: maxY - minY)
     }
 }
 

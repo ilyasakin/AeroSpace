@@ -81,6 +81,43 @@ final class TileWeightNormalizationTest: XCTestCase {
         XCTAssertEqual(after.reduce(0, +), before.reduce(0, +), accuracy: 2, "span conserved")
     }
 
+    /// Layout must give containers geometry. It used to assign rects to windows only, so nested
+    /// containers were hit-test DEAD ZONES: mouse drag-to-swap over a nested split found no target
+    /// and directional-focus fallbacks misrouted. The container rect is the bounding box of its
+    /// laid-out descendants.
+    func testLayoutAssignsContainerRects() async throws {
+        let workspace = Workspace.get(byName: name)
+        var w2: Window!
+        var w3: Window!
+        workspace.rootTilingContainer.apply {
+            TestWindow.new(id: 1, parent: $0, adaptiveWeight: 1)
+            TilingContainer.newVTiles(parent: $0, adaptiveWeight: 1).apply {
+                w2 = TestWindow.new(id: 2, parent: $0, adaptiveWeight: 1)
+                w3 = TestWindow.new(id: 3, parent: $0, adaptiveWeight: 1)
+            }
+        }
+        try await workspace.layoutWorkspace()
+
+        let nested = try XCTUnwrap(
+            workspace.rootTilingContainer.children.compactMap { $0 as? TilingContainer }.first,
+            "expected a nested container",
+        )
+        let rect = try XCTUnwrap(nested.lastAppliedLayoutPhysicalRect, "container must carry geometry")
+        let r2 = try XCTUnwrap(w2.lastAppliedLayoutPhysicalRect)
+        let r3 = try XCTUnwrap(w3.lastAppliedLayoutPhysicalRect)
+
+        // Bounding box of its two stacked children.
+        XCTAssertEqual(rect.topLeftX, min(r2.topLeftX, r3.topLeftX), accuracy: 1)
+        XCTAssertEqual(rect.topLeftY, min(r2.topLeftY, r3.topLeftY), accuracy: 1)
+        XCTAssertEqual(
+            rect.topLeftY + rect.height,
+            max(r2.topLeftY + r2.height, r3.topLeftY + r3.height),
+            accuracy: 1,
+        )
+        // And it must actually contain a point inside its children — the dead-zone regression.
+        XCTAssertTrue(rect.contains(CGPoint(x: r2.topLeftX + r2.width / 2, y: r2.topLeftY + r2.height / 2)))
+    }
+
     /// Nested containers: the inner ratio must be independent of the outer one.
     ///
     /// Measured on the leaf WINDOWS, not the container: layout writes rects only on windows and
