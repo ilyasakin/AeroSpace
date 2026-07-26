@@ -108,8 +108,19 @@ final class SkyLightTest: XCTestCase {
         print("BENCH observed: FULL SNAPSHOT           \(String(format: "%.0f", total)) µs  = \(String(format: "%.1f", total / 16667 * 100))% of a 60Hz frame")
         print("BENCH observed: projected @ 60 windows  \(String(format: "%.0f", scanUs + perWindowUs * 60)) µs")
 
-        // Not a tight assertion — machine dependent. This guards the design premise: an eager
-        // snapshot must be a small fraction of a frame, not a multiple of one.
-        XCTAssertLessThan(total, 16667, "a per-tick snapshot must fit inside a 60Hz frame")
+        // CORRECTION to the first reading of these numbers: "479 µs is 2.9% of a frame, so build
+        // Observed eagerly every tick" compares against the WRONG baseline. A frame budget is what a
+        // full layout-and-effect pass gets. The drag path is not that: handleWindowMoved resolves a
+        // border from ONE `windowBounds` call (14.7 µs above) and never scans the window list, so a
+        // drag tick costs ~15–30 µs. Against that baseline an eager 479 µs snapshot is a 20–30×
+        // regression on the hottest path in the app, at 60–120 Hz.
+        //
+        // What the numbers actually say is that observation must be TIERED by cost, not uniform:
+        //   per-window SLS bounds   ~15 µs      cheap enough for the drag path
+        //   full CGWindowList scan  ~273 µs     structural/discovery events only, never per tick
+        //   AX reads                unbounded   never on a synchronous path at all (it can hang)
+        // A single undifferentiated per-tick `Observed` would put the middle tier on the hot path and
+        // the bottom tier's worst case into every tick's latency.
+        XCTAssertLessThan(total, 16667, "a full snapshot must at least fit inside one frame")
     }
 }
