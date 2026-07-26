@@ -104,13 +104,8 @@ enum SessionLayoutStore {
         }
     }
 
-    static var fileUrl: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let dir = base
-            .appendingPathComponent(aeroSpaceAppId, isDirectory: true)
-        return dir.appendingPathComponent(fileName)
-    }
+    /// Via AppSupportDir so a test can never resolve to the developer's live session file.
+    static var fileUrl: URL { AppSupportDir.file(fileName) }
 
     /// True while startup discovery may still be racing restore. Saving during this window can
     /// capture a half-restored state and overwrite a good session file — the oscillating

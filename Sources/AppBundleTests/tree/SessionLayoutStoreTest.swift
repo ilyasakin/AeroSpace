@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class SessionLayoutStoreTest: XCTestCase {
+    /// The suite runs under the same `aeroSpaceAppId` as the debug app, so an unguarded path put the
+    /// developer's LIVE session-restore file in reach of every test. It survived only by timing:
+    /// saves are debounced 0.4s onto the main queue and the process exited first. Assert the
+    /// redirect, because the failure mode is silent and destroys state the running WM reloads.
+    func testPersistentPathsNeverPointAtProductionUnderTest() {
+        let session = SessionLayoutStore.fileUrl.path
+        let violations = SpineInvariant.logUrl.path
+        for path in [session, violations] {
+            XCTAssertFalse(
+                path.contains("Library/Application Support"),
+                "test wrote to the real app-support directory: \(path)",
+            )
+        }
+        XCTAssertTrue(session.hasSuffix("session-layout.json"))
+        XCTAssertTrue(violations.hasSuffix("spine-violations.log"))
+    }
+
     func testFilteringWindowsDropsMissingAndPromotesSingleChild() {
         let tree: PersistentTilingNode = .container(
             orientation: .h,

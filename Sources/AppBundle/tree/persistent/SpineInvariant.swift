@@ -85,13 +85,9 @@ enum SpineInvariant {
 
 extension SpineInvariant {
     /// `~/Library/Application Support/<appId>/spine-violations.log`
-    static var logUrl: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base
-            .appendingPathComponent(aeroSpaceAppId, isDirectory: true)
-            .appendingPathComponent("spine-violations.log")
-    }
+    /// Via AppSupportDir. Unreachable under test today (the `isUnitTest` die branch precedes the
+    /// log write), so this is defense in depth against that ordering ever changing.
+    static var logUrl: URL { AppSupportDir.file("spine-violations.log") }
 
     /// Serialized off-main writer. `verify` can run on a per-frame path, so the file I/O must not
     /// happen inline on the main thread; a dedicated serial queue also keeps appends ordered.
