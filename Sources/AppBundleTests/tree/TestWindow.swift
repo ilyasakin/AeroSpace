@@ -18,6 +18,8 @@ final class TestWindow: Window, CustomStringConvertible {
     static func new(id: UInt32, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat = 1, rect: Rect? = nil) -> TestWindow {
         let wi = TestWindow(id, parent, adaptiveWeight, rect)
         TestApp.shared._windows.append(wi)
+        // Registry lookup, matching production's MacWindow.allWindowsMap
+        Window.testWindowRegistry[id] = wi
         return wi
     }
 
@@ -43,6 +45,8 @@ final class TestWindow: Window, CustomStringConvertible {
     }
 
     override func closeAxWindow() {
+        // Mirrors production garbageCollect: leaves the tree AND the registry.
+        Window.testWindowRegistry.removeValue(forKey: windowId)
         unbindFromParent()
     }
 

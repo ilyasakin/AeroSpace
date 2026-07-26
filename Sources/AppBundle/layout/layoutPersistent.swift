@@ -93,6 +93,12 @@ extension Workspace {
             applyWeightsFromSpine(laidOut, live: rootTilingContainer, parentOrientation: nil)
         }
         tilingStructureGeneration = laidOut
+        // Layout publishes a generation on EVERY pass, and the walk above contains `await`s — so a
+        // window that dies mid-walk leaves `laidOut` describing a tree that no longer exists. This
+        // was the hottest unverified publishing path; on violation the guard self-heals by dropping
+        // the generation so the next layout recaptures from live. Weights are ignored by the
+        // comparison, so the normalized spans in `laidOut` are preserved.
+        SpineInvariant.verify(self, context: "layoutWorkspace")
         // Layout assigns rects to windows only, so nested containers had none — making them dead
         // zones for anything that hit-tests the tree (drag-to-swap over a nested split found no
         // target; directional focus fallbacks misrouted). Derive them once here, bottom-up, so

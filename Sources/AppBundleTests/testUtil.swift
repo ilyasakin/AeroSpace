@@ -39,6 +39,9 @@ func setUpWorkspacesForTests() {
 
     TestApp.shared.focusedWindow = nil
     TestApp.shared.windows = []
+    // Registry has process lifetime (like production's allWindowsMap), so a previous test's ids
+    // must not stay resolvable for the next one.
+    Window.testWindowRegistry.removeAll()
 }
 
 extension ParsedCmd {

@@ -21,15 +21,10 @@ extension Workspace {
     ) -> Bool {
         let before = tilingStructureGeneration ?? PersistentTilingNode.capture(rootTilingContainer)
         guard let after = transform(before) else { return false }
+        // materializeTilingSpine publishes what it actually built and asserts the invariant, so a
+        // transform naming dead window ids cannot leave a generation claiming windows the live
+        // tree lacks. Re-verify with this call site's context so a violation names the command.
         materializeTilingSpine(after)
-        // Publish what was ACTUALLY materialized, not what was intended. A transform can name a
-        // window id that has no live handle (closed mid-commit, stale generation, restore of a
-        // saved spine); materialize skips those leaves, so publishing `after` would leave the
-        // generation claiming windows the live tree doesn't have — a desync by construction.
-        // Re-capturing keeps "published describes live" true no matter what materialize could
-        // resolve. Cost is one walk over a tree of tens of nodes.
-        tilingStructureGeneration = PersistentTilingNode.capture(rootTilingContainer)
-        // The published spine must now describe the live tree. See SpineInvariant.
         SpineInvariant.verify(self, context: context())
         return true
     }
@@ -211,13 +206,20 @@ extension Workspace {
         return true
     }
 
-    /// Rebuild the live dual-link tiling root from an immutable spine.
-    /// Windows are resolved by id; unit-test windows are parked floating first so `Window.get` finds them.
+    /// Rebuild the live dual-link tiling root from an immutable spine. Windows are resolved by id
+    /// through the registry, so unbinding the old root does not make them unresolvable.
     ///
-    /// Always publishes `tilingStructureGeneration = spine`. After session restore, discovery layout
-    /// may have left a **stale** generation; layout trusts that gen when present, so without this
-    /// publish the next layout would re-apply the pre-restore structure (e.g. horizontal tiles
-    /// after a vertical restore).
+    /// Always publishes a generation. After session restore, discovery layout may have left a
+    /// **stale** generation; layout trusts that gen when present, so without this publish the next
+    /// layout would re-apply the pre-restore structure (e.g. horizontal tiles after a vertical
+    /// restore).
+    ///
+    /// What gets published is what was ACTUALLY materialized, not the requested `spine` — a spine
+    /// can name window ids with no live handle (closed mid-commit, stale generation, a saved spine
+    /// restored after the windows died) and `restore` skips those leaves. Publishing the request
+    /// would leave the generation claiming windows the live tree does not have. Doing this here
+    /// rather than in the callers means the direct callers (tier-1 unfloat, session restore) get it
+    /// too, and the invariant holds for every path by construction.
     func materializeTilingSpine(_ spine: PersistentTilingNode) {
         let oldRoot = rootTilingContainer
         let leaves = oldRoot.allLeafWindowsRecursive
@@ -226,12 +228,6 @@ extension Workspace {
         // (`mostRecentWindowRecursive`). Capture the MRU leaf and re-mark it after restore.
         let mruId = oldRoot.mostRecentWindowRecursive?.windowId
         oldRoot.unbindFromParent()
-        // Test lookup walks workspace leaves only — park ids so restore can rebind
-        if isUnitTest {
-            for window in leaves {
-                window.bindAsFloatingWindow(to: self)
-            }
-        }
         // Drop any other residual tiling containers under the workspace
         for child in children {
             if child is TilingContainer {
@@ -239,7 +235,7 @@ extension Workspace {
             }
         }
         if spine.restore(parent: self, index: INDEX_BIND_LAST) {
-            tilingStructureGeneration = spine
+            tilingStructureGeneration = PersistentTilingNode.capture(rootTilingContainer)
         } else {
             // Entirely stale spine (every id dead/unbindable) — a WM must degrade, not die.
             // Re-bind the previous leaves so no window is orphaned, and drop the generation so
@@ -252,6 +248,7 @@ extension Workspace {
         if let mruId, let mru = Window.get(byId: mruId), mru.nodeWorkspace === self {
             mru.markAsMostRecentChild()
         }
+        SpineInvariant.verify(self, context: "materializeTilingSpine")
     }
 
     /// Dirty-flag protocol: if a generation is published, trust it. If nil, capture from live

@@ -45,9 +45,20 @@ open class Window: TreeNode, Hashable {
         super.init(parent: parent, adaptiveWeight: adaptiveWeight, index: index)
     }
 
+    /// Registry of unit-test windows, mirroring production's `MacWindow.allWindowsMap`.
+    ///
+    /// Production resolves ids through a registry, so a window is findable regardless of where — or
+    /// whether — it is bound in the tree. Tests used to resolve by WALKING workspace trees, so an
+    /// unbound window was invisible. That is why `materializeTilingSpine` had to park every leaf
+    /// into the floating container under `isUnitTest` before restoring: otherwise `restore` could
+    /// not resolve the ids it had just unbound. The consequence was that every materialize test
+    /// exercised a different code path (and different MRU/generation side effects) than production.
+    /// Registering here gives both environments the same lookup semantics.
+    @MainActor static var testWindowRegistry: [UInt32: Window] = [:]
+
     @MainActor static func get(byId windowId: UInt32) -> Window? { // todo make non optional
         isUnitTest
-            ? Workspace.all.flatMap { $0.allLeafWindowsRecursive }.first(where: { $0.windowId == windowId })
+            ? testWindowRegistry[windowId]
             : MacWindow.allWindowsMap[windowId]
     }
 
