@@ -15,6 +15,14 @@ final class MacApp: AbstractApp {
     var lastNativeFocusedWindowId: UInt32? = nil
     private var thread: Thread?
     private var setFrameJobs: [UInt32: RunLoopJob] = [:]
+    /// Frame writes still in flight, so "superseded" can mean what it says.
+    ///
+    /// `setFrameJobs` keeps the last job per window and is never cleared on completion, so the mere
+    /// presence of an entry does not mean a write is outstanding — an early version of the counter
+    /// below read it that way and reported 60-80% of writes discarded when in fact every one had
+    /// been delivered. `RunLoopJob` has no finished state (only `isCancelled`), so completion is
+    /// tracked here.
+    private var pendingFrameWrites: [UInt32: PendingFrameWrite] = [:]
     @MainActor private static var focusJob: RunLoopJob? = nil
 
     /*conforms*/ var name: String? { nsApp.localizedName }
@@ -207,7 +215,16 @@ final class MacApp: AbstractApp {
 
     func setAxFrame(_ windowId: UInt32, _ topLeft: CGPoint?, _ size: CGSize?) {
         setFrameJobs.removeValue(forKey: windowId)?.cancel()
-        setFrameJobs[windowId] = withWindowAsync(windowId, .cancellable) { [axApp] window, job in
+        // A write that is STILL IN FLIGHT and gets replaced discards an intent that belief has
+        // already recorded. That is the case worth counting; a previous write that already landed is
+        // not superseded by the next one.
+        if let previous = pendingFrameWrites.removeValue(forKey: windowId), !previous.isDone {
+            AxWriteStats.noteSuperseded()
+        }
+        AxWriteStats.noteSubmitted()
+        let pending = PendingFrameWrite()
+        pendingFrameWrites[windowId] = pending
+        setFrameJobs[windowId] = withWindowAsync(windowId, .cancellable, pending: pending) { [axApp] window, job in
             try disableAnimations(app: axApp.threadGuarded, job) {
                 try setFrame(window, topLeft, size, job)
             }
@@ -441,6 +458,7 @@ final class MacApp: AbstractApp {
 
     private func destroy() async {
         _ = await Task.startUnstructured { @MainActor [pid] in _ = MacApp.allAppsMap.removeValue(forKey: pid) }.result
+        pendingFrameWrites = [:]
         for (_, job) in setFrameJobs {
             job.cancel()
         }
@@ -460,10 +478,26 @@ final class MacApp: AbstractApp {
         }
     }
 
-    private func withWindowAsync(_ windowId: UInt32, _ cm: CancellationMode, _ body: @Sendable @escaping (AXUIElement, RunLoopJob) throws -> ()) -> RunLoopJob {
+    private func withWindowAsync(
+        _ windowId: UInt32,
+        _ cm: CancellationMode,
+        pending: PendingFrameWrite? = nil,
+        _ body: @Sendable @escaping (AXUIElement, RunLoopJob) throws -> (),
+    ) -> RunLoopJob {
         thread?.runInLoopAsync(job: RunLoopJob(cm)) { [windows] job in
-            guard let window = windows.threadGuarded[windowId] else { return }
-            try? body(window.ax, job)
+            defer { pending?.markDone() }
+            guard let window = windows.threadGuarded[windowId] else {
+                // The window died before its job ran. Previously indistinguishable from success,
+                // because the outcome was swallowed by `try?`.
+                if pending != nil { AxWriteStats.noteFailed() }
+                return
+            }
+            do {
+                try body(window.ax, job)
+                if pending != nil { AxWriteStats.noteDelivered() }
+            } catch {
+                if pending != nil { AxWriteStats.noteFailed() }
+            }
         } ?? .cancelled
     }
 }
@@ -573,4 +607,17 @@ enum AxTerminationBudget {
     }
 
     static func resetForTests() { unsafe deadline = nil }
+}
+
+
+/// In-flight marker for one AX frame write.
+///
+/// `RunLoopJob` only knows whether it was CANCELLED, not whether it ran, and the per-window job
+/// dictionary is never cleared on completion — so neither could answer "is a write still
+/// outstanding". Set from the app's AX thread when the job finishes, read from the main thread when
+/// the next write for that window arrives.
+private final class PendingFrameWrite: Sendable {
+    nonisolated(unsafe) private var _done: Int32 = 0
+    var isDone: Bool { unsafe _done == 1 }
+    func markDone() { unsafe OSAtomicCompareAndSwapInt(0, 1, &_done) }
 }

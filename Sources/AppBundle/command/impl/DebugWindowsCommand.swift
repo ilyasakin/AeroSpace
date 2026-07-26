@@ -30,6 +30,9 @@ struct DebugWindowsCommand: Command {
             }
             guard let a = try? await dumpWindowDebugInfo(window, .nonCancellable) else { return .fail(io.err(bugPrompt())) }
             io.out(a + "\n")
+            // Slow-clock accounting: how many frame requests we generated and how many were thrown
+            // away before reaching the app. See AxWriteStats.
+            io.out(AxWriteStats.report + "\n")
             io.out(disclaimer)
             return .succ
         }
