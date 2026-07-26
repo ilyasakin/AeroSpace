@@ -471,12 +471,7 @@ private func layoutPersistentTiles(
     guard !children.isEmpty else {
         return .container(orientation: orientation, layout: layout, weight: weight, children: children)
     }
-    let weightSum = CGFloat(children.sumOfDouble { Double($0.weight) })
     let span = orientation == .h ? width : height
-    guard let delta = (span - weightSum).div(children.count) else {
-        return .container(orientation: orientation, layout: layout, weight: weight, children: children)
-    }
-
     var point = point
     var virtualPoint = virtual.topLeftCorner
     let lastIndex = children.indices.last
@@ -484,10 +479,26 @@ private func layoutPersistentTiles(
     var newChildren: [PersistentTilingNode] = []
     newChildren.reserveCapacity(children.count)
 
-    // Persisted weights (uncapped) preserve the user's ratios. Geometry uses `slotSpans`, which
-    // may cap a max-constrained window (System Settings) and give the freed span to its siblings.
-    // The slot cap is the learned window max + one gap (slot = window + gap). Containers uncapped.
-    let adjustedWeights = children.map { $0.weight + delta }
+    // PROPORTIONAL normalization: each child gets its share of the span.
+    //
+    // This was additive (`weight + (span - weightSum)/count`), which preserves DIFFERENCES rather
+    // than ratios — so any authored ratio decayed on the first layout. `dwindle-split-percent = 70`
+    // emitted weights [1.4, 0.6] and became 500.4px/499.6px of a 1000px span: a 50/50 split, i.e.
+    // the setting was silently inert. Proportional normalization keeps ratios invariant under any
+    // span change, which is what every weight producer (dwindle ratios, master's ratio math,
+    // balance-sizes, WEIGHT_AUTO) already assumes.
+    //
+    // Weights continue to be written back as the resulting spans. Under proportional
+    // normalization that is just one valid relative encoding (ratios are unchanged by scale), and
+    // it keeps the pixel-denominated commands (`resize --width +50`, `resize-to`, mouse edge
+    // resize) working against `getWeight()` exactly as before.
+    //
+    // Geometry then uses `slotSpans`, which may cap a max-constrained window (System Settings)
+    // and give the freed span to its siblings. Cap = learned window max + one gap.
+    let rawWeightSum = CGFloat(children.sumOfDouble { Double(max($0.weight, 0)) })
+    let adjustedWeights: [CGFloat] = rawWeightSum > 0
+        ? children.map { span * max($0.weight, 0) / rawWeightSum }
+        : Array(repeating: span / CGFloat(children.count), count: children.count)
     let caps: [CGFloat?] = children.map { child in
         guard case .window(let id, _) = child,
               let maxSize = Window.get(byId: id)?.learnedMaxSize else { return nil }
