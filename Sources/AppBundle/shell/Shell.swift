@@ -164,3 +164,12 @@ extension Shell where T == any Command {
     originalIo.out(lastStdout)
     return rightmostNonZeroExitCode
 }
+
+extension Shell {
+    /// The single command in this chain, or nil when it is compound (pipe/and/or/seq/empty).
+    /// Used where a decision needs to inspect "the" command — e.g. letting `enable on` through the
+    /// server-disabled gate, which only makes sense for a lone command.
+    var singleCmdOrNil: T? {
+        if case .cmd(let cmd) = self { return cmd } else { return nil }
+    }
+}

@@ -34,7 +34,7 @@ struct EnableCommand: Command {
         } else {
             // Disabling stops layout; unpark any hide-in-corner windows so they are not left
             // as a 1px strip at the display edge while AeroSpace is "paused".
-            restoreAllWindowsFromHideCornerForDisable()
+            await restoreAllWindowsFromHideCornerForDisable()
             await activateMode_nonCancellable(nil)
         }
         return .succ
@@ -42,11 +42,17 @@ struct EnableCommand: Command {
 }
 
 /// Best-effort: put every managed window on-screen when tiling is turned off.
+///
+/// Deliberately does NOT use the `*ForTermination` AX helpers. Those block the main thread on a
+/// semaphore per window with no timeout, which is a tolerable trade only on the quit path where the
+/// process is going away anyway. `enable off` is a normal runtime command, so a single unresponsive
+/// app (beachballed Electron, an app mid-crash) would have frozen the whole WM indefinitely.
+/// The async read + fire-and-forget write below cannot stall the main thread.
 @MainActor
-private func restoreAllWindowsFromHideCornerForDisable() {
+private func restoreAllWindowsFromHideCornerForDisable() async {
     for window in MacWindow.allWindowsMap.values {
         window.unhideFromCorner()
-        let axRect = window.macApp.getAxRectForTermination(window.windowId)
+        let axRect = try? await window.getAxRect(.nonCancellable)
         let monitor = window.nodeMonitor
             ?? axRect.map { $0.center.monitorApproximation }
             ?? mainMonitor
@@ -57,6 +63,6 @@ private func restoreAllWindowsFromHideCornerForDisable() {
             ?? window.lastFloatingSize
         let size = terminationRestoreSize(preferred: preferred, visibleRect: visible)
         let point = centeredTopLeft(windowSize: size, in: visible)
-        window.macApp.setAxFrameForTermination(window.windowId, point, size)
+        window.setAxFrame(point, size)
     }
 }

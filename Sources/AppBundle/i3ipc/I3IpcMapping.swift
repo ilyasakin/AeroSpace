@@ -223,16 +223,42 @@ func i3RunCommandPayload(_ payload: String) async -> Data {
         let parsed = parseCommand(aero, allowExecAndForget: true, allowEval: false)
         switch parsed {
             case .cmd(let shell):
-                let io = CmdIoImpl(stdin: .emptyStdin)
-                let code = await shell.run(.defaultEnv, io)
-                if code.rawValue == EXIT_CODE_ZERO {
-                    results.append(["success": true])
-                } else {
-                    let err = io.stderr.joined(separator: "\n")
+                // Apply the SAME gate the native socket server applies. While the server is
+                // disabled (`aerospace enable off`) it refuses commands — but i3 IPC executed them
+                // regardless, so any i3-compatible client (i3-msg, polybar, a status bar, an
+                // editor plugin) could keep driving the WM while the user had explicitly paused it.
+                guard let token: RunSessionGuard = .isServerEnabled(orIsEnableCommand: shell.singleCmdOrNil) else {
                     results.append([
                         "success": false,
-                        "error": err.isEmpty ? "command failed: \(aero)" : err,
+                        "error": "\(aeroSpaceAppName) server is disabled and doesn't accept commands. " +
+                            "You can use 'aerospace enable on' to enable the server",
                     ])
+                    continue
+                }
+                // And run INSIDE a session. Commands are written on the assumption that a refresh
+                // session surrounds them — that is what normalizes the tree and applies layout
+                // afterwards. Calling `run` raw mutated the model with no pass to render it, so an
+                // i3 client's `focus`/`move` could leave windows where the tree said they weren't.
+                let io = CmdIoImpl(stdin: .emptyStdin)
+                let outcome = await Result {
+                    try await runLightSession(.i3IpcRunCommand(aero), token) {
+                        await shell.run(.defaultEnv, io)
+                    }
+                }
+                switch outcome {
+                    case .success(let code) where code.rawValue == EXIT_CODE_ZERO:
+                        results.append(["success": true])
+                    case .success:
+                        let err = io.stderr.joined(separator: "\n")
+                        results.append([
+                            "success": false,
+                            "error": err.isEmpty ? "command failed: \(aero)" : err,
+                        ])
+                    case .failure(let err):
+                        results.append([
+                            "success": false,
+                            "error": "Fail to await main thread. \(err.localizedDescription)",
+                        ])
                 }
             case .help:
                 results.append(["success": true])

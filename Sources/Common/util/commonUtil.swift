@@ -94,6 +94,9 @@ public enum RefreshSessionEvent: Sendable, CustomStringConvertible {
     case hotkeyBinding
     case startup
     case socketServer(any CmdArgs)
+    /// i3-compatible IPC `RUN_COMMAND`. Distinct from `socketServer` because an i3 command maps to a
+    /// whole shell chain rather than one `CmdArgs`, so there is no single arg set to carry.
+    case i3IpcRunCommand(String)
     case resetManipulatedWithMouse
     case ax(String)
     case focusFollowsMouse
@@ -130,7 +133,7 @@ public enum RefreshSessionEvent: Sendable, CustomStringConvertible {
         switch self {
             case .startup, .configAutoReload, .resetManipulatedWithMouse:
                 return true
-            case .hotkeyBinding, .menuBarButton, .socketServer, .globalObserver,
+            case .hotkeyBinding, .menuBarButton, .socketServer, .i3IpcRunCommand, .globalObserver,
                  .globalObserverLeftMouseUp, .ax, .focusFollowsMouse:
                 return false
         }
@@ -146,6 +149,7 @@ public enum RefreshSessionEvent: Sendable, CustomStringConvertible {
             case .menuBarButton: "menuBarButton"
             case .resetManipulatedWithMouse: "resetManipulatedWithMouse"
             case .socketServer(let args): "socketServer: \(args)"
+            case .i3IpcRunCommand(let cmd): "i3IpcRunCommand: \(cmd)"
             case .startup: "startup"
             case .focusFollowsMouse: "focusFollowsMouse"
         }

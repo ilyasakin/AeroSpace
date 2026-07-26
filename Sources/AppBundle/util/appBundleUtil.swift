@@ -154,7 +154,16 @@ extension CGPoint {
 
     var vectorLength: CGFloat { sqrt(x * x + y * y) }
 
-    var monitorApproximation: Monitor { monitors.minByOrDie { distance(toOuterFrame: $0.rect) } }
+    /// Nearest monitor to this point.
+    ///
+    /// `monitors` can be momentarily EMPTY — display reconfiguration, all displays asleep, clamshell
+    /// close, a KVM switch — and `minByOrDie` turned that transient into a hard WM kill from paths as
+    /// ordinary as a mouse move. `mainMonitor` carries its own empty-screens fallback, so degrade to
+    /// it instead of dying; every caller here is asking for an approximation ("which workspace is
+    /// under this point") and already treats the answer as best-effort.
+    var monitorApproximation: Monitor {
+        monitors.minBy { distance(toOuterFrame: $0.rect) } ?? mainMonitor
+    }
 
     var withYAxisFlipped: CGPoint {
         consuming get {

@@ -223,10 +223,9 @@ final class MacApp: AbstractApp {
             }
             semaphore.signal()
         }
-        switch job.isCancelled {
-            case true: return
-            case false: semaphore.wait()
-        }
+        guard !job.isCancelled else { return }
+        // Bounded: an app that never answers AX must not keep the process from exiting.
+        _ = semaphore.wait(timeout: .now() + AxTerminationBudget.claim())
     }
 
     func getAxWindowsCount(_ cm: CancellationMode) async throws -> Int? {
@@ -246,10 +245,9 @@ final class MacApp: AbstractApp {
         let job = withWindowAsync(windowId, .nonCancellable) { window, job in
             future.complete(try AppBundle.getAxRect(window: window, job: job))
         }
-        return switch job.isCancelled {
-            case true: nil
-            case false: future.blockingGet()
-        }
+        guard !job.isCancelled else { return nil }
+        // Bounded: see setAxFrameForTermination. nil (unknown rect) is already a handled outcome.
+        return future.blockingGet(timeout: AxTerminationBudget.claim()) ?? nil
     }
 
     func getAxUiElementWindowType(_ windowId: UInt32, _ windowLevel: MacOsWindowLevel?, _ cm: CancellationMode) async throws -> AxUiElementWindowType {
@@ -543,4 +541,36 @@ private func disableAnimations<T>(app: AXUIElement, _ job: RunLoopJob, _ body: (
     }
     try job.checkCancellation()
     return try body()
+}
+
+/// Wall-clock budget for the blocking AX waits on the quit path.
+///
+/// `beforeTermination` must finish its work before the process exits, so unlike every other AX call
+/// it blocks the main thread. Unbounded, a single unresponsive app (beachballed Electron, an app
+/// mid-crash, one that stopped serving AX) meant AeroSpace could never quit — the user's only way
+/// out was `kill -9`, which skips the restore sweep entirely and leaves windows parked off-screen.
+///
+/// The budget is TOTAL across the sweep rather than per window, because window count is unbounded:
+/// per-window timeouts would still let 40 windows × 200ms add up to a visible hang. Once it is
+/// exhausted, remaining waits return immediately and their windows keep whatever frame they have —
+/// a worse restore than blocking, but a bounded one.
+///
+/// `nonisolated(unsafe)`: the quit sweep runs on the main thread (`beforeTermination` is
+/// `@MainActor`) but the AX helpers that consume the budget are nonisolated, matching the rest of
+/// this file. Single-threaded by construction, so no lock.
+enum AxTerminationBudget {
+    static let total: TimeInterval = 2.0
+    private nonisolated(unsafe) static var deadline: Double?
+
+    /// Time the next blocking wait may take. Starts the clock on first use.
+    static func claim() -> TimeInterval {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let deadline = unsafe deadline else {
+            unsafe deadline = now + total
+            return total
+        }
+        return max(0, deadline - now)
+    }
+
+    static func resetForTests() { unsafe deadline = nil }
 }
