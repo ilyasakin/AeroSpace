@@ -445,3 +445,9 @@ func statusBarSystemModuleRender(_ id: String) -> StatusBarModuleRender? {
 func statusBarModuleNeedsFastRefresh(_ id: String) -> Bool {
     id == "cpu" || id == "gpu" || id == "network"
 }
+
+/// Whether the `network` module is configured anywhere in the bar. Gating the flow sampler on this
+/// matters because it subscribes to every TCP/UDP flow on the machine (see NetworkFlowStats).
+func statusBarUsesNetworkModule(_ cfg: StatusBarConfig) -> Bool {
+    cfg.modulesLeft.contains("network") || cfg.modulesRight.contains("network")
+}

@@ -192,7 +192,15 @@ private func applyWeightsFromSpine(
                 if let c = live as? TilingContainer { return c }
                 return nil
             }()
-            if let parentOrientation, let liveContainer, liveContainer.parent is TilingContainer {
+            // Same guard as the window case above — a CONTAINER child of an accordion (produced by
+            // `join-with`/`split`/`toggle-group` inside an accordion, which normalization keeps
+            // because single-child accordions are exempt from flattening) would otherwise reach
+            // setWeight's die() and kill the WM on the next layout tick.
+            if let parentOrientation, let liveContainer,
+               let parent = liveContainer.parent as? TilingContainer,
+               parent.layout == .tiles || parent.layout == .master,
+               parent.orientation == parentOrientation
+            {
                 liveContainer.setWeight(parentOrientation, weight)
             }
             guard let liveContainer else {

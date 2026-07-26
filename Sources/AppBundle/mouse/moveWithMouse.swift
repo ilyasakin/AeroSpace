@@ -81,8 +81,13 @@ private func moveFloatingWindow(_ window: Window) {
     // Mouse location is free; AX getCenter every drag tick serialized the main actor and
     // delayed border paint by many frames. During a title-bar drag the pointer is on the window.
     let targetWorkspace = mouseLocation.monitorApproximation.activeWorkspace
-    guard let parent = window.parent else { return }
-    if targetWorkspace != parent {
+    guard window.parent != nil else { return }
+    // Compare against the window's WORKSPACE, not its parent. `window.parent` during a float drag
+    // is the FloatingWindowsContainer; comparing a Workspace to it went through TreeNode's identity
+    // `==` and was therefore ALWAYS true, so every AX moved tick rebound the window — reordering it
+    // to the end of the floating container and pushing MRU up the whole chain each frame, which
+    // corrupts the float z-order that click and focus-follows-mouse hit-testing read.
+    if targetWorkspace != window.nodeWorkspace {
         window.bindAsFloatingWindow(to: targetWorkspace)
     }
 }

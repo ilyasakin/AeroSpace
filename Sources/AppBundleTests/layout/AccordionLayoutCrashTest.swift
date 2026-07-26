@@ -30,6 +30,32 @@ final class AccordionLayoutCrashTest: XCTestCase {
         XCTAssertEqual(layout, .accordion)
     }
 
+    /// A CONTAINER child of an accordion also reaches setWeight's die(). The window-leaf case was
+    /// guarded first; this shape is produced by `join-with` / `split` / `toggle-group` inside an
+    /// accordion and survives normalization (single-child accordions are exempt from flattening),
+    /// so `layout accordion` + `join-with right` crashed the WM on the next layout tick.
+    func testFullLayoutPassOverContainerInsideAccordionDoesNotCrash() async throws {
+        let workspace = Workspace.get(byName: name)
+        workspace.rootTilingContainer.apply {
+            TestWindow.new(id: 1, parent: $0)
+            // A tiles container nested directly inside an accordion parent
+            TilingContainer.newVTiles(parent: $0, adaptiveWeight: 1).apply {
+                TestWindow.new(id: 2, parent: $0)
+                TestWindow.new(id: 3, parent: $0)
+            }
+        }
+        workspace.rootTilingContainer.setLayout(.accordion)
+
+        try await workspace.layoutWorkspace() // used to die() here
+
+        XCTAssertEqual(workspace.rootTilingContainer.layout, .accordion)
+        XCTAssertEqual(
+            workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId).sorted(),
+            [1, 2, 3],
+            "all windows survive the layout pass",
+        )
+    }
+
     func testLayoutCommandAccordionRoundTrip() async throws {
         let workspace = Workspace.get(byName: name)
         var w1: Window!

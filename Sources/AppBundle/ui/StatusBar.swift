@@ -71,6 +71,8 @@ final class StatusBarManager {
         lastCfgEnabled = false
         clockTimer?.invalidate()
         clockTimer = nil
+        // Release the machine-wide flow subscription with the feature that needed it.
+        NetworkFlowStats.shared.stop()
         stopExternal()
         lastStatusCommand = []
         externalFailCount = 0
@@ -97,7 +99,13 @@ final class StatusBarManager {
                     _ = StatusBarCpuSampler.shared.sample()
                     _ = StatusBarGpuSampler.shared.sample()
                 }
-                StatusBarNetSampler.shared.sample()
+                // Only sample when the `network` module is actually configured. This subscribes to
+                // EVERY TCP/UDP flow on the machine (ntstat), so sampling unconditionally attached
+                // an nettop-class monitor for anyone who merely enabled the bar — continuous CPU
+                // and battery cost with, say, only a clock configured.
+                if statusBarUsesNetworkModule(config.statusBar) {
+                    StatusBarNetSampler.shared.sample()
+                }
                 self?.refresh()
             }
         }

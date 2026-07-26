@@ -27,8 +27,32 @@ final class NetworkFlowStats: @unchecked Sendable {
     private var closedRx: UInt64 = 0
     private var closedTx: UInt64 = 0
     private var liveCounts: [OpaquePointer: (rx: UInt64, tx: UInt64)] = [:]
+    /// Sources whose `removed` callback already folded their bytes into the closed accumulator. A
+    /// `counts` callback can still land afterwards; without this, the entry would be resurrected
+    /// for a flow that will never be removed again and its bytes counted TWICE (once closed, once
+    /// live), permanently inflating the reported rate baseline.
+    private var retiredSources: Set<OpaquePointer> = []
+    private var destroyManager: ManagerVoidFun?
 
     private init() {}
+
+    /// Tear the subscription down (bar disabled / network module removed). Subscribing to every
+    /// TCP+UDP flow is not free — the kernel walks every flow per query and delivers one callback
+    /// per flow — so it must not outlive the feature that needs it.
+    func stop() {
+        queue.sync {
+            if let manager, let destroyManager { destroyManager(manager) }
+            manager = nil
+            queryAll = nil
+            destroyManager = nil
+            started = false
+            queryInFlight = false
+            closedRx = 0
+            closedTx = 0
+            liveCounts.removeAll()
+            retiredSources.removeAll()
+        }
+    }
 
     /// Cumulative (rx, tx) as of the last completed query, then kicks the next async query —
     /// values are one poll interval stale, which is fine for a 1 Hz rate display.
@@ -65,6 +89,9 @@ final class NetworkFlowStats: @unchecked Sendable {
               let setRemovedSym = unsafe dlsym(handle, "NStatSourceSetRemovedBlock"),
               let queryAllSym = unsafe dlsym(handle, "NStatManagerQueryAllSources")
         else { return }
+        destroyManager = unsafe dlsym(handle, "NStatManagerDestroy").map {
+            unsafe unsafeBitCast($0, to: ManagerVoidFun.self)
+        }
         let create = unsafe unsafeBitCast(createSym, to: ManagerCreateFun.self)
         let addTcp = unsafe unsafeBitCast(addTcpSym, to: ManagerVoidFun.self)
         let addUdp = unsafe unsafeBitCast(addUdpSym, to: ManagerVoidFun.self)
@@ -78,6 +105,10 @@ final class NetworkFlowStats: @unchecked Sendable {
         let sourceAdded: @convention(block) (OpaquePointer?, UnsafeMutableRawPointer?) -> Void = { source, _ in
             guard let source else { return }
             let counts: @convention(block) (CFDictionary?) -> Void = { dict in
+                // A counts callback can arrive AFTER removal; re-inserting would resurrect a flow
+                // that never gets removed again, double-counting its bytes (closed + live) and
+                // permanently inflating the reported rate.
+                guard !self.retiredSources.contains(source) else { return }
                 guard let dict = dict as? [String: Any] else { return }
                 let rx = (dict["rxBytes"] as? NSNumber)?.uint64Value ?? 0
                 let tx = (dict["txBytes"] as? NSNumber)?.uint64Value ?? 0
@@ -87,6 +118,12 @@ final class NetworkFlowStats: @unchecked Sendable {
                 if let last = self.liveCounts.removeValue(forKey: source) {
                     self.closedRx &+= last.rx
                     self.closedTx &+= last.tx
+                }
+                self.retiredSources.insert(source)
+                // Bound the retired set: it exists only to reject late callbacks for flows we
+                // just folded in, so old entries have no further purpose.
+                if self.retiredSources.count > 4096 {
+                    self.retiredSources.removeAll(keepingCapacity: true)
                 }
             }
             setCounts(source, counts as AnyObject)
