@@ -109,7 +109,17 @@ extension Workspace {
         // was the hottest unverified publishing path; on violation the guard self-heals by dropping
         // the generation so the next layout recaptures from live. Weights are ignored by the
         // comparison, so the normalized spans in `laidOut` are preserved.
-        SpineInvariant.verify(self, context: "layoutWorkspace")
+        //
+        // Skipped while the mouse is manipulating a window. Layout runs every frame during a drag,
+        // and the check is a full `capture` plus structural compare — measured at 16 µs of a 74 µs
+        // pass at 12 windows and 69 µs of 735 µs at 60, i.e. roughly half the layout cost this guard
+        // added. Structure does not change mid-drag: a drag moves or resizes, and the structural
+        // commits that CAN change it (`swap`, `moveWindow`, `materializeTilingSpine`) each verify
+        // with their own context. So this loses no coverage the commit sites do not already provide,
+        // and it keeps the guard off the one path where per-frame cost is felt.
+        if currentlyManipulatedWithMouseWindowId == nil {
+            SpineInvariant.verify(self, context: "layoutWorkspace")
+        }
 
         // Mouse-drag hot path skips floating — only tiles need to reflow each frame.
         if !skipFloating {

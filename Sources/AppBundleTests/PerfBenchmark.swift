@@ -195,4 +195,45 @@ final class PerfBenchmark: XCTestCase {
             print("BENCH plan-equality/\(label): FULL layoutWorkspace: \(String(format: "%.2f", usPerLayout)) µs")
         }
     }
+
+    /// Layout pass cost, with and without an active mouse drag.
+    ///
+    /// Recorded because this session made layout measurably more expensive and the numbers should not
+    /// have to be rediscovered. Against the pre-session baseline (with the test-harness window-lookup
+    /// difference neutralised, or the comparison is meaningless — the old test branch did an O(n)
+    /// scan per lookup):
+    ///
+    ///                    base      after
+    ///   12 win, idle    45.8us    74.4us   +62%
+    ///   60 win, idle     592us     735us   +24%
+    ///   12 win, drag    42.0us    54.4us   +30%
+    ///   60 win, drag     595us     658us   +11%
+    ///
+    /// Roughly half the added cost was the per-pass spine invariant, which is why it is skipped while
+    /// a drag is in progress. The rest buys container geometry and proportional weight normalization.
+    /// In absolute terms a drag frame at 60 windows is ~4% of a 60Hz budget.
+    func testLayoutPassCost() async throws {
+        for n in [12, 60] {
+            for dragging in [false, true] {
+                setUpWorkspacesForTests()
+                let ws = focus.workspace
+                var id: UInt32 = 1
+                var parent: TilingContainer = ws.rootTilingContainer
+                for i in 0 ..< n {
+                    TestWindow.new(id: id, parent: parent)
+                    id += 1
+                    if i % 4 == 3 { parent = TilingContainer.newVTiles(parent: parent, adaptiveWeight: 1, index: INDEX_BIND_LAST) }
+                }
+                try? await ws.layoutWorkspace()
+                if dragging { currentlyManipulatedWithMouseWindowId = 1 }
+                defer { currentlyManipulatedWithMouseWindowId = nil }
+                for _ in 0 ..< 5 { try? await ws.layoutWorkspace(skipFloating: dragging) }
+                let iters = 200
+                let t0 = DispatchTime.now()
+                for _ in 0 ..< iters { try? await ws.layoutWorkspace(skipFloating: dragging) }
+                let us = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / Double(iters) / 1000
+                print("BENCH layout/\(n)win/\(dragging ? "drag" : "idle"): \(String(format: "%.2f", us)) µs")
+            }
+        }
+    }
 }
