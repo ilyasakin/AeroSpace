@@ -20,10 +20,17 @@ final class SkyLightTest: XCTestCase {
         }
         var checked = 0
         for entry in list {
+            // Layer 0 only. SkyLight bounds are consumed for NORMAL app windows; validating against
+            // anything else tests a contract we don't rely on. Without the layer filter this
+            // compared against `loginwindow`'s layer-2001 sentinel — a 30000x30000 window at
+            // (-15000, -15000) that passes a size filter easily and disagrees with SLS by design,
+            // so the test failed whenever that window happened to exist (e.g. after a lock or a
+            // fast-user-switch).
             guard let windowId = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  (entry[kCGWindowLayer as String] as? Int) == 0,
                   let bounds = entry[kCGWindowBounds as String] as? [String: CGFloat],
-                  let width = bounds["Width"], width > 100,
-                  let height = bounds["Height"], height > 100
+                  let width = bounds["Width"], width > 100, width < 20000,
+                  let height = bounds["Height"], height > 100, height < 20000
             else { continue }
             guard let slsRect = SkyLight.windowBounds(windowId) else { continue }
             assertEquals(slsRect.topLeftX, bounds["X"]!, additionalMsg: "window \(windowId)")
