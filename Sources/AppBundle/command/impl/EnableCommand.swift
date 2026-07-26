@@ -58,7 +58,7 @@ private func restoreAllWindowsFromHideCornerForDisable() async {
             ?? mainMonitor
         let visible = monitor.visibleRect
         // Prefer last laid-out size, then AX, then floating size.
-        let preferred = window.lastAppliedLayoutPhysicalRect?.size
+        let preferred = window.believedRect?.size
             ?? axRect?.size
             ?? window.lastFloatingSize
         let size = terminationRestoreSize(preferred: preferred, visibleRect: visible)

@@ -41,7 +41,7 @@ final class GroupTabBarManager {
 
     private func collectAccordionGroups(_ node: TreeNode) {
         if let container = node as? TilingContainer, container.layout == .accordion,
-           let rect = container.lastAppliedLayoutPhysicalRect ?? container.children.first?.lastAppliedLayoutPhysicalRect
+           let rect = container.desiredRect ?? container.children.first?.desiredRect
         {
             addTabs(for: container, in: rect)
         }

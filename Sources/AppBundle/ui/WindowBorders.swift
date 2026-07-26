@@ -117,7 +117,7 @@ final class WindowBordersManager {
         computeStackNeighbors()
         for (id, _) in entries {
             guard let window = Window.get(byId: id) else { continue }
-            guard let rect = rects[id] ?? window.lastAppliedLayoutPhysicalRect else { continue }
+            guard let rect = rects[id] ?? window.believedRect else { continue }
             // Focus change restacked z-order — reassert each border above its target.
             paint(id: id, window: window, rect: rect, cfg: cfg, reorder: true)
         }
@@ -137,14 +137,14 @@ final class WindowBordersManager {
         // tracked. A real mouse drag overrides (its own path / mouseManipulate resolves live).
         //
         // The deadline and the availability of a target rect are checked SEPARATELY on purpose. A
-        // single combined `if let` dropped the pin whenever `lastAppliedLayoutPhysicalRect` was nil
+        // single combined `if let` dropped the pin whenever the desired rect was nil
         // — i.e. for windows we never wrote a frame for (fresh floats) — so the one case the pin
         // exists to cover, the entrance animation, was tracked frame by frame instead of ignored.
         if let until = settlingUntil[windowId] {
             if ProcessInfo.processInfo.systemUptime < until, currentlyManipulatedWithMouseWindowId != windowId {
                 // No layout target yet: hold the border where it is rather than chasing the
                 // animation (matches sampleFloatingBorder, which also skips while settling).
-                if let target = window.lastAppliedLayoutPhysicalRect {
+                if let target = window.desiredRect {
                     paint(id: windowId, window: window, rect: target, cfg: config.windowBorders, reorder: false)
                 }
                 return
@@ -178,16 +178,16 @@ final class WindowBordersManager {
         FloatingBorderTracker.stop()
     }
 
-    /// After mouse-drag layout: repaint tile borders from layout geometry (lastApplied) —
+    /// After mouse-drag layout: repaint tile borders from layout geometry (belief) —
     /// EXCEPT the drag target, whose border tracks live WS bounds (repainting it from
-    /// lastApplied here fought the live path and snapped the ring back to the grid slot).
+    /// belief here fought the live path and snapped the ring back to the grid slot).
     func syncAfterMouseLayout() {
         let cfg = config.windowBorders
         guard cfg.enabled, TrayMenuModel.shared.isEnabled, !entries.isEmpty else { return }
         for (id, _) in entries {
             if id == currentlyManipulatedWithMouseWindowId { continue }
             guard let window = Window.get(byId: id) else { continue }
-            guard let rect = window.lastAppliedLayoutPhysicalRect
+            guard let rect = window.believedRect
                 ?? WindowServerReads.current.windowBounds(windowId: id, forOverlay: true)
             else { continue }
             // Mouse resize changes geometry, not z-order — geometry-only repaint.
@@ -322,7 +322,7 @@ final class WindowBordersManager {
                 }
             }
             guard deferredFirstPaint || prev != chrome,
-                  let rect = rects[id] ?? window.lastAppliedLayoutPhysicalRect
+                  let rect = rects[id] ?? window.believedRect
             else { return }
             paint(id: id, window: window, rect: rect, cfg: config.windowBorders, reorder: deferredFirstPaint)
             if deferredFirstPaint {
@@ -345,31 +345,31 @@ final class WindowBordersManager {
 
     // MARK: - Frame resolution
 
-    /// Prefer live on-screen bounds so a user drag is not frozen to lastApplied. Only use
-    /// lastApplied when we just wrote the frame and SkyLight may lag.
+    /// Prefer live on-screen bounds so a user drag is not frozen to belief. Only use belief
+    /// when we just wrote the frame and SkyLight may lag.
     private func resolvedBorderRect(for window: Window) -> Rect? {
         let id = window.windowId
-        let applied = window.lastAppliedLayoutPhysicalRect
+        let applied = window.believedRect
         let mayBeStale = skyLightFrameMayBeStale(id)
         if mayBeStale, applied != nil {
-            return resolveBorderRect(lastApplied: applied, mayBeStale: true, liveBounds: nil, stackRect: nil)
+            return resolveBorderRect(believed: applied, mayBeStale: true, liveBounds: nil, stackRect: nil)
         }
         let live = WindowServerReads.current.windowBounds(windowId: id, forOverlay: true)
-        return resolveBorderRect(lastApplied: applied, mayBeStale: false, liveBounds: live, stackRect: nil)
+        return resolveBorderRect(believed: applied, mayBeStale: false, liveBounds: live, stackRect: nil)
     }
 
     /// Frame source for a WindowServer move/resize notify.
     private func resolvedLiveBorderRect(windowId: UInt32) -> Rect? {
         let window = Window.get(byId: windowId)
         let live = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true)
-        let applied = window?.lastAppliedLayoutPhysicalRect
+        let applied = window?.believedRect
         let manipulated = currentlyManipulatedWithMouseWindowId
         return resolveLiveBorderRect(
             isFloating: window?.isFloating == true,
             isMouseManipulationTarget: manipulated == windowId,
             otherWindowManipulateActive: manipulated != nil && manipulated != windowId,
             mayBeStale: skyLightFrameMayBeStale(windowId),
-            lastApplied: applied,
+            believed: applied,
             liveBounds: live,
         )
     }

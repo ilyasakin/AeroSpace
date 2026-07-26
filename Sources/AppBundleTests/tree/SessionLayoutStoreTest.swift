@@ -183,8 +183,8 @@ final class SessionLayoutStoreTest: XCTestCase {
 
         // Layout must use vertical geometry: same width, stacked Y.
         try await ws.layoutWorkspace()
-        let r1 = try XCTUnwrap(w1.lastAppliedLayoutPhysicalRect)
-        let r2 = try XCTUnwrap(w2.lastAppliedLayoutPhysicalRect)
+        let r1 = try XCTUnwrap(w1.desiredRect)
+        let r2 = try XCTUnwrap(w2.desiredRect)
         XCTAssertEqual(r1.width, r2.width, accuracy: 1)
         XCTAssertNotEqual(r1.topLeftY, r2.topLeftY, "vertical tiles must stack on Y")
         // Horizontal would differ in X; vertical should share the same X origin.

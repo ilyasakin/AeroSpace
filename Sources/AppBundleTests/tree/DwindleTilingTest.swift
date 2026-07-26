@@ -19,7 +19,7 @@ final class DwindleTilingTest: XCTestCase {
 
         let a = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
         _ = a.focusWindow()
-        a.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080) // wide -> h split
+        a.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080) // wide -> h split
 
         let b = TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer)
         try await insertTiled(b, on: workspace)
@@ -33,7 +33,7 @@ final class DwindleTilingTest: XCTestCase {
 
         // B's tile is taller than wide -> next split is vertical, inside B's tile
         _ = b.focusWindow()
-        b.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 960, topLeftY: 0, width: 960, height: 1080)
+        b.desiredRect = Rect(topLeftX: 960, topLeftY: 0, width: 960, height: 1080)
         let c = TestWindow.new(id: 3, parent: workspace.floatingWindowsContainer)
         try await insertTiled(c, on: workspace)
 
@@ -51,7 +51,7 @@ final class DwindleTilingTest: XCTestCase {
         let workspace = Workspace.get(byName: name)
         let a = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
         _ = a.focusWindow()
-        a.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
+        a.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
         let b = TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer)
         try await insertTiled(b, on: workspace)
 
@@ -59,7 +59,7 @@ final class DwindleTilingTest: XCTestCase {
         // C must split A's tile, branching the tree instead of spiraling.
         // Note: B's bind() marked B as most-recent, so this also proves focus wins over MRU
         assertEquals(focus.windowOrNil?.windowId, 1)
-        a.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 960, height: 1080) // tall -> v split
+        a.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 960, height: 1080) // tall -> v split
         let c = TestWindow.new(id: 3, parent: workspace.floatingWindowsContainer)
         try await insertTiled(c, on: workspace)
 
@@ -76,7 +76,7 @@ final class DwindleTilingTest: XCTestCase {
         let workspace = Workspace.get(byName: name)
         let a = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
         _ = a.focusWindow()
-        a.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
+        a.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
         let b = TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer)
         try await insertTiled(b, on: workspace)
 
@@ -91,7 +91,7 @@ final class DwindleTilingTest: XCTestCase {
         let workspace = Workspace.get(byName: name)
         let a = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
         _ = a.focusWindow()
-        a.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
+        a.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
         let b = TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer)
         try await insertTiled(b, on: workspace)
 
@@ -132,7 +132,7 @@ final class DwindleTilingTest: XCTestCase {
         let workspace = Workspace.get(byName: name)
         let a = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
         _ = a.focusWindow()
-        a.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
+        a.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
         let b = TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer)
         try await insertTiled(b, on: workspace)
         let gen = try XCTUnwrap(workspace.tilingStructureGeneration)

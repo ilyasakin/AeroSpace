@@ -114,7 +114,7 @@ struct LayoutCommand: Command {
                     window.floatingRestoreSlot = FloatingRestoreSlot.capture(from: window)
                     window.floatingRestorePreSpine = workspace.currentTilingSpine()
                 }
-                // Keep lastApplied as the current tile frame so a following resize/center in the
+                // Keep belief at the current tile frame so a following resize/center in the
                 // same session can merge size+position (see MacWindow.setAxFrame / mergeFrameWrite).
                 // Do *not* force always-on-top: that re-raises on every focus change and blocks
                 // interacting with other tiles (i3 float is a layer, not always-on-top).

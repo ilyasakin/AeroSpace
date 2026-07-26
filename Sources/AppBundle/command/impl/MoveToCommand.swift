@@ -19,7 +19,7 @@ struct MoveToCommand: Command {
         let topLeft = CGPoint(x: CGFloat(args.x.val), y: CGFloat(args.y.val))
         window.setAxFrame(topLeft, nil)
         if let size = try? await window.getAxSize(.nonCancellable) {
-            window.lastAppliedLayoutPhysicalRect = Rect(
+            window.desiredRect = Rect(
                 topLeftX: topLeft.x,
                 topLeftY: topLeft.y,
                 width: size.width,
@@ -27,7 +27,7 @@ struct MoveToCommand: Command {
             )
             window.lastFloatingSize = size
         } else {
-            window.lastAppliedLayoutPhysicalRect = nil
+            window.desiredRect = nil
         }
         return .succ
     }

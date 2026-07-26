@@ -109,9 +109,9 @@ final class MasterLayoutTest: XCTestCase {
         _ = w1.focusWindow()
         try? await workspace.layoutWorkspace()
         assertEquals(workspace.rootTilingContainer.layout, .master)
-        guard let r1 = w1.lastAppliedLayoutPhysicalRect,
-              let r2 = w2.lastAppliedLayoutPhysicalRect,
-              let r3 = w3.lastAppliedLayoutPhysicalRect
+        guard let r1 = w1.desiredRect,
+              let r2 = w2.desiredRect,
+              let r3 = w3.desiredRect
         else {
             return failExpectedActual("physical rects", "nil")
         }

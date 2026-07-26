@@ -12,12 +12,39 @@ open class TreeNode: Equatable, AeroAny {
     // - resize with mouse
     // - makeFloatingWindowsSeenAsTiling in focus command
     var lastAppliedLayoutVirtualRect: Rect? = nil  // as if inner gaps were always zero
-    // Usages:
-    // - resize with mouse
-    // - drag window with mouse
-    // - move-mouse command
-    // - focus-follows-mouse
-    var lastAppliedLayoutPhysicalRect: Rect? = nil // with real inner gaps
+
+    /// Backing slot for `desiredRect` and `believedRect`, which are two DIFFERENT questions that
+    /// have so far shared one answer.
+    ///
+    /// This was `lastAppliedLayoutPhysicalRect`, and it carried three meanings at once: what layout
+    /// intends, where we believe the window actually is, and "we have written a frame recently".
+    /// Readers could not say which they wanted, so each picked a convention — that is how three
+    /// separate frame-resolution policies grew (`resolveFrameRead`, `resolveBorderRect`,
+    /// `resolveLiveBorderRect`, the last taking five booleans), and why external movement had to be
+    /// handled by *nil-ing* the field from two places to defeat an intent-vs-intent comparison.
+    ///
+    /// The two accessors below currently alias this one slot, so behaviour is unchanged; what changes
+    /// is that every call site now has to say which question it is asking. Decoupling them is then a
+    /// change in this one place. See `desiredRect` / `believedRect`.
+    private var _frameSlot: Rect? = nil // with real inner gaps
+
+    /// **Intent.** What layout wants this node to occupy. Written by layout and by commands that
+    /// deliberately override layout (`move-to`, `resize-to`). Read by anything reasoning about the
+    /// grid: the layout diff baseline, drag/swap slots, tab-bar geometry, resize baselines.
+    var desiredRect: Rect? {
+        get { _frameSlot }
+        set { _frameSlot = newValue }
+    }
+
+    /// **Belief.** Our best answer for where this node actually is, used when neither WindowServer
+    /// nor AX will answer — after our own write (while WindowServer still reports the old frame), or
+    /// for a window on an inactive Space, which the on-screen list cannot see at all.
+    ///
+    /// Absence is not evidence: `nil` means "no belief", never "the window is gone".
+    var believedRect: Rect? {
+        get { _frameSlot }
+        set { _frameSlot = newValue }
+    }
     final var unboundStacktrace: String? = nil
     var isBound: Bool { parent != nil } // todo drop, once https://github.com/nikitabobko/AeroSpace/issues/1215 is fixed
 

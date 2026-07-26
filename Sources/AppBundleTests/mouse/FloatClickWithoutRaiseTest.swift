@@ -74,14 +74,14 @@ final class FloatClickWithoutRaiseTest: XCTestCase {
                 rect: Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600),
             )
         }
-        tile.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600)
+        tile.believedRect = Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600)
         let floating = TestWindow.new(
             id: 2,
             parent: workspace.floatingWindowsContainer,
             adaptiveWeight: WEIGHT_AUTO,
             rect: Rect(topLeftX: 200, topLeftY: 150, width: 400, height: 300),
         )
-        floating.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 200, topLeftY: 150, width: 400, height: 300)
+        floating.believedRect = Rect(topLeftX: 200, topLeftY: 150, width: 400, height: 300)
 
         let fake = FakeClickStackPort()
         // Stale stack lists tile above float — click path must still hit the float layer.
@@ -114,7 +114,7 @@ final class FloatClickWithoutRaiseTest: XCTestCase {
         workspace.rootTilingContainer.apply {
             tile = TestWindow.new(id: 1, parent: $0, adaptiveWeight: 1, rect: tileRect)
         }
-        tile.lastAppliedLayoutPhysicalRect = tileRect
+        tile.believedRect = tileRect
 
         // Border id 9001 is NOT a managed window and covers the tile, outset by 5pt.
         let borderId: UInt32 = 9001

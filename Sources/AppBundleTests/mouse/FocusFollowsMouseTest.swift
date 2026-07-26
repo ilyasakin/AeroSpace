@@ -25,7 +25,7 @@ final class FocusFollowsMouseTest: XCTestCase {
                 rect: Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600),
             )
         }
-        tile.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600)
+        tile.believedRect = Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600)
 
         let floating = TestWindow.new(
             id: 2,
@@ -33,7 +33,7 @@ final class FocusFollowsMouseTest: XCTestCase {
             adaptiveWeight: WEIGHT_AUTO,
             rect: Rect(topLeftX: 200, topLeftY: 150, width: 400, height: 300),
         )
-        floating.lastAppliedLayoutPhysicalRect = Rect(topLeftX: 200, topLeftY: 150, width: 400, height: 300)
+        floating.believedRect = Rect(topLeftX: 200, topLeftY: 150, width: 400, height: 300)
 
         // Front-to-back: floating first
         let fake = FakeStackPort()
@@ -63,7 +63,7 @@ final class FocusFollowsMouseTest: XCTestCase {
                 parent: $0,
                 adaptiveWeight: 1,
                 rect: Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600),
-            ).lastAppliedLayoutPhysicalRect = Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600)
+            ).believedRect = Rect(topLeftX: 0, topLeftY: 0, width: 800, height: 600)
         }
         let floating = TestWindow.new(
             id: 2,
@@ -71,7 +71,7 @@ final class FocusFollowsMouseTest: XCTestCase {
             adaptiveWeight: WEIGHT_AUTO,
             rect: nil,
         )
-        floating.lastAppliedLayoutPhysicalRect = nil
+        floating.believedRect = nil
 
         let fake = FakeStackPort()
         fake.boundsById[2] = Rect(topLeftX: 200, topLeftY: 150, width: 400, height: 300)

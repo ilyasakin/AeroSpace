@@ -32,23 +32,23 @@ final class WindowServerReadsTest: XCTestCase {
         let applied = Rect(topLeftX: 10, topLeftY: 20, width: 300, height: 400)
         let r = resolveFrameRead(
             windowId: 1,
-            lastApplied: applied,
+            believed: applied,
             mayBeStale: true,
             serverBounds: { _ in
-                XCTFail("server must not be consulted when stale + lastApplied")
+                XCTFail("server must not be consulted when stale + belief")
                 return nil
             },
         )
-        XCTAssertEqual(r, .lastApplied(applied))
+        XCTAssertEqual(r, .believed(applied))
     }
 
     func testStaleWithoutLastAppliedNeedsAx() {
         let r = resolveFrameRead(
             windowId: 1,
-            lastApplied: nil,
+            believed: nil,
             mayBeStale: true,
             serverBounds: { _ in
-                XCTFail("server must not be consulted when stale without lastApplied")
+                XCTFail("server must not be consulted when stale without belief")
                 return Rect(topLeftX: 0, topLeftY: 0, width: 1, height: 1)
             },
         )
@@ -59,7 +59,7 @@ final class WindowServerReadsTest: XCTestCase {
         let ws = Rect(topLeftX: 5, topLeftY: 6, width: 7, height: 8)
         let r = resolveFrameRead(
             windowId: 42,
-            lastApplied: nil,
+            believed: nil,
             mayBeStale: false,
             serverBounds: { id in
                 XCTAssertEqual(id, 42)
@@ -72,22 +72,22 @@ final class WindowServerReadsTest: XCTestCase {
     func testFreshServerMissNeedsAx() {
         let r = resolveFrameRead(
             windowId: 1,
-            lastApplied: Rect(topLeftX: 0, topLeftY: 0, width: 1, height: 1),
+            believed: Rect(topLeftX: 0, topLeftY: 0, width: 1, height: 1),
             mayBeStale: false,
             serverBounds: { _ in nil },
         )
-        // lastApplied is only used on the stale path; fresh miss goes to AX
+        // belief is only used on the stale path; fresh miss goes to AX
         XCTAssertEqual(r, .needAx)
     }
 
     // MARK: resolveBorderRect (must track live drag)
 
     func testBorderFreshPrefersLiveOverLastApplied() {
-        // Regression: unconditional lastApplied froze borders on the layout tile during drag
+        // Regression: unconditional belief froze borders on the layout tile during drag
         let applied = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400)
         let live = Rect(topLeftX: 50, topLeftY: 60, width: 400, height: 400)
         let r = resolveBorderRect(
-            lastApplied: applied,
+            believed: applied,
             mayBeStale: false,
             liveBounds: live,
             stackRect: applied,
@@ -99,7 +99,7 @@ final class WindowServerReadsTest: XCTestCase {
         let applied = Rect(topLeftX: 10, topLeftY: 20, width: 300, height: 400)
         let live = Rect(topLeftX: 0, topLeftY: 0, width: 300, height: 400) // lagging WS
         let r = resolveBorderRect(
-            lastApplied: applied,
+            believed: applied,
             mayBeStale: true,
             liveBounds: live,
             stackRect: nil,
@@ -112,7 +112,7 @@ final class WindowServerReadsTest: XCTestCase {
         let applied = Rect(topLeftX: 500, topLeftY: 0, width: 400, height: 800)
         let laggingLive = Rect(topLeftX: 480, topLeftY: 0, width: 420, height: 800)
         let r = resolveBorderRect(
-            lastApplied: applied,
+            believed: applied,
             mayBeStale: true,
             liveBounds: laggingLive,
             stackRect: laggingLive,
@@ -124,11 +124,11 @@ final class WindowServerReadsTest: XCTestCase {
         let applied = Rect(topLeftX: 1, topLeftY: 2, width: 3, height: 4)
         let stack = Rect(topLeftX: 5, topLeftY: 6, width: 7, height: 8)
         XCTAssertEqual(
-            resolveBorderRect(lastApplied: applied, mayBeStale: false, liveBounds: nil, stackRect: stack),
+            resolveBorderRect(believed: applied, mayBeStale: false, liveBounds: nil, stackRect: stack),
             stack,
         )
         XCTAssertEqual(
-            resolveBorderRect(lastApplied: applied, mayBeStale: false, liveBounds: nil, stackRect: nil),
+            resolveBorderRect(believed: applied, mayBeStale: false, liveBounds: nil, stackRect: nil),
             applied,
         )
     }
@@ -136,7 +136,7 @@ final class WindowServerReadsTest: XCTestCase {
     // MARK: resolveLiveBorderRect (WS move notify — float vs tile drag)
 
     func testLiveBorderFloatingTracksLiveDuringMouseDrag() {
-        // Regression: alt-shift-space float + drag froze border on lastApplied
+        // Regression: alt-shift-space float + drag froze border on belief
         let applied = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 400)
         let live = Rect(topLeftX: 120, topLeftY: 80, width: 400, height: 400)
         let r = resolveLiveBorderRect(
@@ -144,7 +144,7 @@ final class WindowServerReadsTest: XCTestCase {
             isMouseManipulationTarget: true,
             otherWindowManipulateActive: false,
             mayBeStale: false,
-            lastApplied: applied,
+            believed: applied,
             liveBounds: live,
         )
         XCTAssertEqual(r, live)
@@ -152,7 +152,7 @@ final class WindowServerReadsTest: XCTestCase {
 
     func testLiveBorderTileDragTargetTracksLive() {
         // Regression: dragging a tile by its title bar pinned the border to the layout slot
-        // (layout rewrites lastApplied mid-drag) while the window followed the mouse.
+        // (layout rewrites belief mid-drag) while the window followed the mouse.
         let applied = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
         let live = Rect(topLeftX: 210, topLeftY: 90, width: 500, height: 1000)
         let r = resolveLiveBorderRect(
@@ -160,14 +160,14 @@ final class WindowServerReadsTest: XCTestCase {
             isMouseManipulationTarget: true,
             otherWindowManipulateActive: false,
             mayBeStale: false,
-            lastApplied: applied,
+            believed: applied,
             liveBounds: live,
         )
         XCTAssertEqual(r, live)
     }
 
     func testLiveBorderTilingSiblingPrefersLastAppliedDuringDrag() {
-        // Tile-grid path for SIBLINGS of the drag target: layout lastApplied must win so
+        // Tile-grid path for SIBLINGS of the drag target: layout belief must win so
         // sibling edges don't thrash against the live drag frame
         let applied = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
         let live = Rect(topLeftX: 10, topLeftY: 0, width: 520, height: 1000)
@@ -176,7 +176,7 @@ final class WindowServerReadsTest: XCTestCase {
             isMouseManipulationTarget: false,
             otherWindowManipulateActive: true,
             mayBeStale: false,
-            lastApplied: applied,
+            believed: applied,
             liveBounds: live,
         )
         XCTAssertEqual(r, applied)
@@ -190,7 +190,7 @@ final class WindowServerReadsTest: XCTestCase {
             isMouseManipulationTarget: false,
             otherWindowManipulateActive: false,
             mayBeStale: true,
-            lastApplied: applied,
+            believed: applied,
             liveBounds: lagging,
         )
         XCTAssertEqual(r, applied)
@@ -241,7 +241,7 @@ final class WindowServerReadsTest: XCTestCase {
         // resolveFrameRead wired the same way MacWindow does
         let resolution = resolveFrameRead(
             windowId: 7,
-            lastApplied: nil,
+            believed: nil,
             mayBeStale: false,
             serverBounds: { WindowServerReads.current.windowBounds(windowId: $0, forOverlay: false) },
         )

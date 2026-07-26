@@ -86,7 +86,7 @@ private func focusFollowsApply(_ window: Window, token: RunSessionGuard) async t
 func windowUnderMouseCheap(_ location: CGPoint) -> Window? {
     let workspace = location.monitorApproximation.activeWorkspace
 
-    // 1) Floats first using live/lastApplied frames — independent of stale CGWindowList cache.
+    // 1) Floats first using live/believed frames — independent of stale CGWindowList cache.
     //    Treat any float containing the point as above the tiling layer for hit purposes.
     for child in workspace.floatingWindowsContainer.mruChildren {
         guard let child = child as? Window else { continue }
@@ -109,7 +109,7 @@ func windowUnderMouseCheap(_ location: CGPoint) -> Window? {
         return window
     }
 
-    // 3) Tiling layout rects (lastApplied / virtual).
+    // 3) Tiling layout rects (desired / virtual).
     if let w = location.findWindowRecursively(
         in: workspace.rootTilingContainer,
         virtual: false,
@@ -133,10 +133,10 @@ private func windowIsEligibleForFfm(_ window: Window, on workspace: Workspace) -
     return false
 }
 
-/// Live or last-known frame for a floating window (layout clears lastApplied on some paths).
+/// Live or believed frame for a floating window (layout clears belief on some paths).
 @MainActor
 func floatingWindowFrame(_ window: Window) -> Rect? {
-    if let applied = window.lastAppliedLayoutPhysicalRect ?? window.lastAppliedLayoutVirtualRect {
+    if let applied = window.believedRect ?? window.lastAppliedLayoutVirtualRect {
         return applied
     }
     return WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)

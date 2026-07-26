@@ -142,7 +142,7 @@ extension Workspace {
            let target,
            target.windowId != id
         {
-            let rect = target.lastAppliedLayoutPhysicalRect
+            let rect = target.desiredRect
             let splitHorizontal = rect.map { $0.width > $0.height }
                 ?? ((target.parent as? TilingContainer)?.orientation == .v)
             let ratio = CGFloat(config.dwindleSplitPercent) / 100

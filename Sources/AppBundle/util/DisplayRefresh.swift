@@ -90,7 +90,7 @@ enum DisplayRefresh {
             return id
         }
         // Fallback: geometric center of the window frame
-        let rect = window.lastAppliedLayoutPhysicalRect
+        let rect = window.believedRect
             ?? WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)
         guard let rect else { return nil }
         let ak = rect.toAppKitFrame()

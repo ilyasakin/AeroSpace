@@ -55,14 +55,14 @@ private func moveWithMouse(_ window: Window) async throws { // todo cover with t
             return // Unconventional windows can't be moved with mouse
         case .tilingContainer:
             // Edge resize changes size and origin; AX emits Moved + Resized. Do not clear
-            // lastApplied or swap tiles — that is resize-with-mouse's job.
-            // Size check uses drag-start baseline when set (lastApplied tracks live layout mid-resize).
+            // belief or swap tiles — that is resize-with-mouse's job.
+            // Size check uses drag-start baseline when set (belief tracks live layout mid-resize).
             let live = try await liveRectForMouseResize(window)
             let inResizeGesture = currentlyManipulatedWithMouseWindowId == window.windowId
                 && mouseResizePhysicalBaselineIfSet(for: window) != nil
             let sizeBaseline = mouseResizePhysicalBaselineIfSet(for: window)
-                ?? window.lastAppliedLayoutPhysicalRect
-            if inResizeGesture || isMouseResizeLikeDrag(lastApplied: sizeBaseline, live: live) {
+                ?? window.believedRect
+            if inResizeGesture || isMouseResizeLikeDrag(believed: sizeBaseline, live: live) {
                 ensureMouseResizeWindowServerNotifications(for: window)
                 MouseResizeDriver.kick(window)
                 return
@@ -96,7 +96,7 @@ private func moveFloatingWindow(_ window: Window) {
 private func moveTilingWindow(_ window: Window) {
     // Drag ownership is expressed ONLY by this stamp — layout checks it (`mouseTarget`) and skips
     // the AX write for the dragged window, and the border frame resolver reads it to track live
-    // bounds. This used to also nil `lastAppliedLayoutPhysicalRect` to "free the layout baseline",
+    // bounds. This used to also nil the frame slot to "free the layout baseline",
     // which never worked: layout unconditionally rewrites that field on the very next tick (it
     // must, so sibling borders share one coherent frame). Two writers, one of them ineffective.
     currentlyManipulatedWithMouseWindowId = window.windowId
@@ -106,7 +106,7 @@ private func moveTilingWindow(_ window: Window) {
         .findWindowRecursively(in: targetWorkspace.rootTilingContainer, virtual: false, fullscreenCoversAll: false)?
         .takeIf { $0 != window }
     if targetWorkspace != window.nodeWorkspace { // Move window to a different monitor
-        let index: Int = if let swapTarget, let parent = swapTarget.parent as? TilingContainer, let targetRect = swapTarget.lastAppliedLayoutPhysicalRect {
+        let index: Int = if let swapTarget, let parent = swapTarget.parent as? TilingContainer, let targetRect = swapTarget.desiredRect {
             mouseLocation.getProjection(parent.orientation) >= targetRect.center.getProjection(parent.orientation)
                 ? swapTarget.ownIndex.orDie() + 1
                 : swapTarget.ownIndex.orDie()
@@ -187,7 +187,7 @@ extension CGPoint {
 /// drag landing in that window would find no target over a nested split.
 @MainActor
 private func effectiveHitRect(_ node: TreeNode, virtual: Bool) -> Rect? {
-    if let own = virtual ? node.lastAppliedLayoutVirtualRect : node.lastAppliedLayoutPhysicalRect {
+    if let own = virtual ? node.lastAppliedLayoutVirtualRect : node.desiredRect {
         return own
     }
     guard node is TilingContainer else { return nil }

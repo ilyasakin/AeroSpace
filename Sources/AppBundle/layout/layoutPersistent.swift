@@ -72,7 +72,7 @@ extension Workspace {
             width: rect.width,
             height: rect.height - 1,
         )
-        lastAppliedLayoutPhysicalRect = physicalRect
+        desiredRect = physicalRect
         lastAppliedLayoutVirtualRect = rect
 
         // Dirty-flag: trust published gen; capture only when nil
@@ -120,11 +120,11 @@ extension Workspace {
     @MainActor
     private func layoutFloatingChildren(context: LayoutContext) async throws {
         for window in floatingWindows {
-            // Keep lastApplied when set (resize/center on float). Clearing it made
+            // Keep belief when set (resize/center on float). Clearing it made
             // focus-follows-mouse miss the float and hit the tile underneath, then
             // nativeFocus raised the tile over the float. Refresh from live if missing.
-            if window.lastAppliedLayoutPhysicalRect == nil {
-                window.lastAppliedLayoutPhysicalRect =
+            if window.believedRect == nil {
+                window.believedRect =
                     WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)
             }
             try await window.layoutFloatingWindow(context)
@@ -145,13 +145,13 @@ private func assignContainerRects(_ container: TilingContainer) -> (physical: Re
     var virtual: Rect? = nil
     for child in container.children {
         let childRects: (physical: Rect?, virtual: Rect?) = switch child.tilingTreeNodeCasesOrDie() {
-            case .window(let window): (window.lastAppliedLayoutPhysicalRect, window.lastAppliedLayoutVirtualRect)
+            case .window(let window): (window.desiredRect, window.lastAppliedLayoutVirtualRect)
             case .tilingContainer(let nested): assignContainerRects(nested)
         }
         physical = physical.union(childRects.physical)
         virtual = virtual.union(childRects.virtual)
     }
-    container.lastAppliedLayoutPhysicalRect = physical
+    container.desiredRect = physical
     container.lastAppliedLayoutVirtualRect = virtual
     return (physical, virtual)
 }
@@ -308,20 +308,20 @@ private func layoutPersistentNode(
             if window.isFullscreen,
                window == context.workspace.rootTilingContainer.mostRecentWindowRecursive
             {
-                window.lastAppliedLayoutPhysicalRect = nil
+                window.desiredRect = nil
                 window.layoutFullscreen(context)
             } else {
-                let prev = window.lastAppliedLayoutPhysicalRect
+                let prev = window.desiredRect
                 // Learn a hard max size: if we asked the window to grow wider/taller last time and
                 // it refused, record the clamp so tiles distribution stops over-allocating (the
                 // System Settings gap). Off the mouse-resize path (user owns that frame).
                 if !mouseTarget, let prev {
                     learnMaxSizeIfClamped(window, requested: prev)
                 }
-                // Always record layout geometry — borders paint from lastApplied during drag so
+                // Always record layout geometry — borders paint from belief during drag so
                 // all tiles share one coherent frame (live WS on the drag target vs layout on
                 // siblings made the shared edge thrash left/right).
-                window.lastAppliedLayoutPhysicalRect = physicalRect
+                window.desiredRect = physicalRect
                 window.isFullscreen = false
                 // Mouse-resize target: user owns the AX frame; only skip the write.
                 if !mouseTarget, prev != physicalRect {

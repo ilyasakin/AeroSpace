@@ -234,7 +234,7 @@ func markFrameWrittenThisSession(_ windowId: UInt32) {
 }
 
 /// Call only at light-session entry. Complete/heavy refreshes keep the set so cross-session lag
-/// after a command body still forces AX (or lastApplied for borders)
+/// after a command body still forces AX (or belief for borders)
 @MainActor func clearFramesWrittenThisSession() {
     unsafe framesWrittenThisSession.removeAll(keepingCapacity: true)
 }

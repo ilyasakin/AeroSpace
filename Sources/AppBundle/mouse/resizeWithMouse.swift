@@ -37,7 +37,7 @@ enum MouseResizeDriver {
         guard currentlyManipulatedWithMouseWindowId == windowId,
               let window = Window.get(byId: windowId),
               mouseResizePhysicalBaselineIfSet(for: window) != nil
-              || window.lastAppliedLayoutPhysicalRect != nil
+              || window.desiredRect != nil
         else { return }
         kick(window)
     }
@@ -187,17 +187,17 @@ func resetManipulatedWithMouseIfPossible() async throws {
 }
 
 private let adaptiveWeightBeforeResizeWithMouseKey = TreeNodeUserDataKey<CGFloat>(key: "adaptiveWeightBeforeResizeWithMouseKey")
-/// Physical layout rect at drag start — edge diffs are vs live, while lastApplied tracks live layout.
+/// Physical layout rect at drag start — edge diffs are vs live, while belief tracks live layout.
 private let mouseResizePhysicalBaselineKey = TreeNodeUserDataKey<Rect>(key: "mouseResizePhysicalBaselineKey")
 
-func resizeWithMouseCanApplyDiffs(lastApplied: Rect?, live: Rect?) -> Bool {
-    lastApplied != nil && live != nil
+func resizeWithMouseCanApplyDiffs(believed: Rect?, live: Rect?) -> Bool {
+    believed != nil && live != nil
 }
 
-func isMouseResizeLikeDrag(lastApplied: Rect?, live: Rect?, threshold: CGFloat = mouseResizeNoiseThreshold) -> Bool {
-    guard let lastApplied, let live else { return false }
-    return abs(lastApplied.width - live.width) > threshold
-        || abs(lastApplied.height - live.height) > threshold
+func isMouseResizeLikeDrag(believed: Rect?, live: Rect?, threshold: CGFloat = mouseResizeNoiseThreshold) -> Bool {
+    guard let believed, let live else { return false }
+    return abs(believed.width - live.width) > threshold
+        || abs(believed.height - live.height) > threshold
 }
 
 /// Sync live frame (no await) — hot path for 60fps ticks.
@@ -223,7 +223,7 @@ func mouseResizePhysicalBaselineIfSet(for window: Window) -> Rect? {
 @MainActor
 func mouseResizePhysicalBaseline(for window: Window) -> Rect? {
     if let cached = mouseResizePhysicalBaselineIfSet(for: window) { return cached }
-    guard let baseline = window.lastAppliedLayoutPhysicalRect else { return nil }
+    guard let baseline = window.desiredRect else { return nil }
     window.putUserData(key: mouseResizePhysicalBaselineKey, data: baseline)
     return baseline
 }
@@ -234,7 +234,7 @@ func mouseResizePhysicalBaseline(for window: Window) -> Rect? {
 func applyResizeWeights(_ window: Window, live: Rect?) -> Bool {
     guard let rect = live else { return false }
     guard let baseline = mouseResizePhysicalBaseline(for: window) else { return false }
-    guard resizeWithMouseCanApplyDiffs(lastApplied: baseline, live: rect) else { return false }
+    guard resizeWithMouseCanApplyDiffs(believed: baseline, live: rect) else { return false }
 
     let (lParent, lOwnIndex) = window.closestParent(hasChildrenInDirection: .left, withLayout: .tiles) ?? (nil, nil)
     let (dParent, dOwnIndex) = window.closestParent(hasChildrenInDirection: .down, withLayout: .tiles) ?? (nil, nil)

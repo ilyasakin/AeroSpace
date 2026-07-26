@@ -18,7 +18,7 @@ struct CenterWindowCommand: Command {
         guard let monitor = window.nodeMonitor else {
             return .fail(io.err("Window \(window.windowId) doesn't belong to any monitor"))
         }
-        // Prefer lastFloatingSize / lastApplied (command-chain intent) over a lagging AX read.
+        // Prefer lastFloatingSize / belief (command-chain intent) over a lagging AX read.
         guard let rect = try? await window.getAxRect(.nonCancellable) else {
             return .fail(io.err("Failed to get window \(window.windowId) frame"))
         }

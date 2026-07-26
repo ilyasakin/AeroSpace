@@ -102,9 +102,9 @@ final class TileWeightNormalizationTest: XCTestCase {
             workspace.rootTilingContainer.children.compactMap { $0 as? TilingContainer }.first,
             "expected a nested container",
         )
-        let rect = try XCTUnwrap(nested.lastAppliedLayoutPhysicalRect, "container must carry geometry")
-        let r2 = try XCTUnwrap(w2.lastAppliedLayoutPhysicalRect)
-        let r3 = try XCTUnwrap(w3.lastAppliedLayoutPhysicalRect)
+        let rect = try XCTUnwrap(nested.desiredRect, "container must carry geometry")
+        let r2 = try XCTUnwrap(w2.desiredRect)
+        let r3 = try XCTUnwrap(w3.desiredRect)
 
         // Bounding box of its two stacked children.
         XCTAssertEqual(rect.topLeftX, min(r2.topLeftX, r3.topLeftX), accuracy: 1)

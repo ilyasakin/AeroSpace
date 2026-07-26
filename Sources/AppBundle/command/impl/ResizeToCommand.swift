@@ -16,9 +16,9 @@ struct ResizeToCommand: Command {
         if window.isFloating {
             window.setAxFrame(nil, size)
             window.lastFloatingSize = size
-            if var rect = window.lastAppliedLayoutPhysicalRect {
+            if var rect = window.desiredRect {
                 rect = Rect(topLeftX: rect.topLeftX, topLeftY: rect.topLeftY, width: size.width, height: size.height)
-                window.lastAppliedLayoutPhysicalRect = rect
+                window.desiredRect = rect
             }
             return .succ
         }
