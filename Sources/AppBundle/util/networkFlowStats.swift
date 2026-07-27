@@ -27,11 +27,6 @@ final class NetworkFlowStats: @unchecked Sendable {
     private var closedRx: UInt64 = 0
     private var closedTx: UInt64 = 0
     private var liveCounts: [OpaquePointer: (rx: UInt64, tx: UInt64)] = [:]
-    /// Sources whose `removed` callback already folded their bytes into the closed accumulator. A
-    /// `counts` callback can still land afterwards; without this, the entry would be resurrected
-    /// for a flow that will never be removed again and its bytes counted TWICE (once closed, once
-    /// live), permanently inflating the reported rate baseline.
-    private var retiredSources: Set<OpaquePointer> = []
     private var destroyManager: ManagerVoidFun?
 
     private init() {}
@@ -50,7 +45,6 @@ final class NetworkFlowStats: @unchecked Sendable {
             closedRx = 0
             closedTx = 0
             liveCounts.removeAll()
-            retiredSources.removeAll()
         }
     }
 
@@ -104,26 +98,31 @@ final class NetworkFlowStats: @unchecked Sendable {
         // args as noescape, but the manager retains them.
         let sourceAdded: @convention(block) (OpaquePointer?, UnsafeMutableRawPointer?) -> Void = { source, _ in
             guard let source else { return }
+            // Retirement is PER SOURCE, tracked in a box the source's two blocks share by capture.
+            //
+            // It used to be a `Set<OpaquePointer>` on the manager, which silently destroyed the
+            // measurement: source pointers are heap allocations and the allocator REUSES addresses.
+            // A new flow landing on a previously-retired address had every one of its `counts`
+            // callbacks rejected, so its bytes were never counted at all — and because the set only
+            // grew, the share of silently-dropped flows rose over time until the reported rate
+            // collapsed to a few kB/s regardless of real traffic. A per-source flag cannot be
+            // confused by address reuse, and still rejects the late callback it was added for.
+            var retired = false
             let counts: @convention(block) (CFDictionary?) -> Void = { dict in
-                // A counts callback can arrive AFTER removal; re-inserting would resurrect a flow
-                // that never gets removed again, double-counting its bytes (closed + live) and
-                // permanently inflating the reported rate.
-                guard !self.retiredSources.contains(source) else { return }
+                // A counts callback can arrive AFTER removal. Re-inserting would resurrect a flow
+                // that never gets removed again, double-counting its bytes (closed + live).
+                guard !retired else { return }
                 guard let dict = dict as? [String: Any] else { return }
                 let rx = (dict["rxBytes"] as? NSNumber)?.uint64Value ?? 0
                 let tx = (dict["txBytes"] as? NSNumber)?.uint64Value ?? 0
                 self.liveCounts[source] = (rx, tx)
             }
             let removed: @convention(block) () -> Void = {
+                guard !retired else { return } // a second removal must not double-fold
+                retired = true
                 if let last = self.liveCounts.removeValue(forKey: source) {
                     self.closedRx &+= last.rx
                     self.closedTx &+= last.tx
-                }
-                self.retiredSources.insert(source)
-                // Bound the retired set: it exists only to reject late callbacks for flows we
-                // just folded in, so old entries have no further purpose.
-                if self.retiredSources.count > 4096 {
-                    self.retiredSources.removeAll(keepingCapacity: true)
                 }
             }
             setCounts(source, counts as AnyObject)
