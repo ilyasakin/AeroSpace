@@ -88,57 +88,29 @@ final class FocusFollowsMouseTest: XCTestCase {
         XCTAssertEqual(windowUnderMouseCheap(CGPoint(x: 400, y: 300))?.windowId, 2)
     }
 
-    func testRaiseFloatingWindowsAboveTilingIsNoOpWithoutFloats() async {
-        // Smoke: no floats → must not crash
-        await raiseFloatingWindowsAboveTiling()
-    }
-
-    func testRaiseFloatingWindowsAboveTilingTouchesFloatsOnly() async {
-        let workspace = focus.workspace
-        var tile: Window!
-        workspace.rootTilingContainer.apply {
-            tile = TestWindow.new(id: 10, parent: $0, adaptiveWeight: 1)
-        }
-        let floating = TestWindow.new(id: 11, parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO)
-        XCTAssertTrue(floating.isFloating)
-        XCTAssertFalse(tile.isFloating)
-        // TestWindow.nativeRaise is a no-op; just ensure the helper enumerates without error
-        await raiseFloatingWindowsAboveTiling()
-    }
-
-    func testNativeFocusRespectingFloatsDoesNotRaiseTileWhenFloatsExist() {
+    /// Floating windows now get NATIVE macOS z-order: focusing a tile raises it, even when floats
+    /// are present. The opposite used to hold — a private focus-without-raise call kept tiles from
+    /// disturbing an i3-style float layer — and that machinery was removed because macOS offers no
+    /// durable window level without a SIP-off scripting addition, so the layer drifted whenever
+    /// anything else restacked and needed a click-interception tap and an AXRaise settle pipeline
+    /// to paper over it.
+    func testFocusingATileRaisesItEvenWhenFloatsExist() {
         let workspace = focus.workspace
         var tile: TestWindow!
         workspace.rootTilingContainer.apply {
             tile = TestWindow.new(id: 20, parent: $0, adaptiveWeight: 1)
         }
         _ = TestWindow.new(id: 21, parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO)
-
-        let port = RecordingFloatLayerPortForFfm()
-        port.stack = [21, 20]
-        FloatLayer.port = port
-        defer { FloatLayer.port = nil }
+        XCTAssertTrue(tile.workspaceHasFloatingWindows, "precondition: a float is present")
 
         tile.nativeFocusRespectingFloats()
-        XCTAssertTrue(port.focusWithoutRaiseCalls.contains(where: { $0.windowId == 20 }))
-        XCTAssertFalse(port.raiseCalls.contains(20), "tile must not raise when floats exist")
+        XCTAssertEqual(tile.lastNativeFocusRaise, true, "a focused tile raises natively")
 
         let floating = workspace.floatingWindows.first as! TestWindow
         floating.nativeFocusRespectingFloats()
-        XCTAssertEqual(floating.lastNativeFocusRaise, true, "float may raise")
+        XCTAssertEqual(floating.lastNativeFocusRaise, true, "so does a focused float")
     }
 
-    func testNativeFocusRespectingFloatsRaisesTileWithoutFloats() {
-        let workspace = focus.workspace
-        var tile: TestWindow!
-        workspace.rootTilingContainer.apply {
-            tile = TestWindow.new(id: 30, parent: $0, adaptiveWeight: 1)
-        }
-        FloatLayer.port = RecordingFloatLayerPortForFfm()
-        defer { FloatLayer.port = nil }
-        tile.nativeFocusRespectingFloats()
-        XCTAssertEqual(tile.lastNativeFocusRaise, true)
-    }
 
     func testFocusFollowsMousePlanSkipsEndOfSessionNativeFocusPath() {
         // Body owns nativeFocus; pipeline must skip re-nativeFocus (would raise:true and undo).
@@ -166,17 +138,3 @@ private final class FakeStackPort: WindowServerReadPort {
     func onScreenSnapshot() -> OnScreenWindowSnapshot { snapshot }
 }
 
-@MainActor
-private final class RecordingFloatLayerPortForFfm: FloatLayerPort {
-    var focusWithoutRaiseCalls: [(pid: pid_t, windowId: UInt32)] = []
-    var raiseCalls: [UInt32] = []
-    var stack: [UInt32]? = []
-
-    func focusWithoutRaise(pid: pid_t, windowId: UInt32) -> Bool {
-        focusWithoutRaiseCalls.append((pid, windowId))
-        return true
-    }
-
-    func raiseWindow(windowId: UInt32) { raiseCalls.append(windowId) }
-    func frontToBackWindowIds() -> [UInt32]? { stack }
-}

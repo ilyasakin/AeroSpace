@@ -153,7 +153,6 @@ extension Workspace {
         // Seed private-focus tracking only (no re-raise of floats). Re-raising on every focus
         // change blocks tile interaction — same class of bug as always-on-top.
         if let w = focus.windowOrNil {
-            _ = PrivateFocus.noteKeyWindow(pid: w.app.pid, windowId: w.windowId)
         }
         _ = await onFocusChanged(.defaultEnv, CmdIoImpl.emptyStdinIgnoringOut, focus)
     }

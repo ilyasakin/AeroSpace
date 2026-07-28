@@ -25,7 +25,6 @@ open class Window: TreeNode, Hashable {
     /// window detection) are NOT user floats. The i3-style float quirks — click-without-raise
     /// interception and the float-layer settle — apply ONLY to user floats; everything else must
     /// behave exactly like a stock window (natural focus/raise/ordering).
-    var isUserFloat: Bool = false
     /// i3-like floating toggle: when floated from tiling, remember neighbors so unfloat
     /// re-inserts without scrambling sibling order.
     var floatingRestoreSlot: FloatingRestoreSlot? = nil
@@ -76,26 +75,16 @@ open class Window: TreeNode, Hashable {
     var isHiddenInCorner: Bool { die("Not implemented") }
     @MainActor open func nativeFocus() { die("Not implemented") }
     /// Focus for keyboard without changing global z-order (no AXRaise).
-    @MainActor open func nativeFocus(raise: Bool) { if raise { nativeFocus() } }
-    /// Focus in the OS under the i3-like float contract (SIP on, no Dock SA).
+    /// Focus in the OS.
     ///
-    /// Contract:
-    /// - Floating windows stay above the tiling stack for normal focus moves.
-    /// - Focusing a tile never `AXRaise`s when the workspace has floats (no sink).
-    /// - Uses private `_SLPSSetFrontProcessWithOptions` focus-without-raise when available
-    ///   so CG z-order is unchanged (verified with SIP enabled).
-    /// - Focusing a float may raise (normal stack among peers).
-    /// - Durable foreign-window *levels* still require yabai's SA (SIP partial off); we do not.
+    /// Floating windows get NATIVE macOS z-order: focusing a window raises it, like any other app.
+    /// There used to be an i3-style float layer here — floats held above the tiling stack, tiles
+    /// focused without raising via a private SLPS call, a click-interception tap re-posting
+    /// synthetic events, and an awaited AXRaise settle pipeline. macOS offers no durable window
+    /// level without yabai's SIP-off scripting addition, so the layer had to be re-asserted after
+    /// every restack and drifted whenever anything else reordered windows. It was removed.
     @MainActor func nativeFocusRespectingFloats() {
-        let hasFloats = workspaceHasFloatingWindows
-        let raise = FloatLayerPolicy.shouldRaiseOnFocus(isFloating: isFloating, workspaceHasFloats: hasFloats)
-        // Tiles under floats: private focus-without-raise only. Do not AXRaise floats afterward —
-        // that re-covers tiles and steals key focus (breaks click/keyboard on tiling).
-        if FloatLayerPolicy.preferFocusWithoutRaise(isFloating: isFloating, workspaceHasFloats: hasFloats) {
-            FloatLayer.focus(self, raise: false)
-        } else {
-            FloatLayer.focus(self, raise: raise)
-        }
+        nativeFocus()
     }
 
     /// True when this window's workspace currently has at least one floating window.

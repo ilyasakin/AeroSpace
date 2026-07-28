@@ -27,12 +27,7 @@ final class TestWindow: Window, CustomStringConvertible {
 
     @MainActor
     override func nativeFocus() {
-        nativeFocus(raise: true)
-    }
-
-    @MainActor
-    override func nativeFocus(raise: Bool) {
-        lastNativeFocusRaise = raise
+        lastNativeFocusRaise = true // focus always raises now; the float layer is gone
         appForTests = TestApp.shared
         TestApp.shared.focusedWindow = self
     }

@@ -133,30 +133,14 @@ final class MacApp: AbstractApp {
         return try await MacWindow.getOrRegister(windowId: windowId, macApp: self)
     }
 
+    /// Focus the window for keyboard input: activate the app and AXRaise, like a normal click.
+    ///
+    /// There used to be a `raise: false` variant that reached for a private focus-without-raise
+    /// call to leave z-order untouched. It existed solely to hold an i3-style float layer above the
+    /// tiling stack, and went with it — focus now always raises, which is what macOS does anyway.
     @MainActor func nativeFocus(_ windowId: UInt32) {
-        nativeFocus(windowId, raise: true)
-    }
-
-    /// Focus the window for keyboard input.
-    /// - `raise: true` — activate + AXRaise (normal click-like focus).
-    /// - `raise: false` — prefer private focus-without-raise (keeps z-order); AX fallback without raise.
-    @MainActor func nativeFocus(_ windowId: UInt32, raise: Bool) {
         if serverArgs.isReadOnly { return }
         MacApp.focusJob?.cancel()
-        let pid = nsApp.processIdentifier
-        if !raise {
-            // i3/yabai autofocus path: keyboard focus without stacking change.
-            // Pass last native id so same-app 0x0d still runs after raise:true float focus
-            // even if PrivateFocus tracking was never seeded.
-            if PrivateFocus.focusWithoutRaise(
-                pid: pid,
-                windowId: windowId,
-                fallbackPreviousKeyWindowId: lastNativeFocusedWindowId,
-            ) {
-                lastNativeFocusedWindowId = windowId
-                return
-            }
-        }
         // Performance optimization. If possible avoid doing AX requests
         // (important for apps which are slow at responding even such basic AX requests. E.g. Godot)
         // Beware of the macOS bug: https://github.com/nikitabobko/AeroSpace/issues/101
@@ -164,26 +148,18 @@ final class MacApp: AbstractApp {
             (lastNativeFocusedWindowId == windowId || windowsCount == 1)
         {
             nsApp.activate(options: .activateIgnoringOtherApps)
-            if raise {
-                // Single-window / same-space fast path still needs raise when requested
-                _ = withWindowAsync(windowId, .cancellable) { window, job in
-                    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-                }
+            _ = withWindowAsync(windowId, .cancellable) { window, job in
+                AXUIElementPerformAction(window, kAXRaiseAction as CFString)
             }
         } else {
             MacApp.focusJob = withWindowAsync(windowId, .cancellable) { [nsApp] window, job in
                 window.set(Ax.isMainAttr, true)
-                if raise {
-                    AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-                }
+                AXUIElementPerformAction(window, kAXRaiseAction as CFString)
                 nsApp.activate(options: .activateIgnoringOtherApps)
             }
         }
         // Intent is this window; next call can take the activate-only fast path when still current.
         lastNativeFocusedWindowId = windowId
-        // Seed PrivateFocus so a later focusWithoutRaise on a sibling (tile under float) can
-        // run the same-app 0x0d dance with fromId = this window (primary: float raise:true).
-        _ = PrivateFocus.noteKeyWindow(pid: pid, windowId: windowId)
     }
 
     /// Raises the window within the global z-order without activating the app (unlike nativeFocus)

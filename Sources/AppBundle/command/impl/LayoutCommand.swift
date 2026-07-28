@@ -70,7 +70,6 @@ struct LayoutCommand: Command {
                         return .succ // Nothing to do
                     case .floatingWindowsContainer(let container):
                         window.lastFloatingSize = (try? await window.getAxSize(.nonCancellable)) ?? window.lastFloatingSize
-                        window.isUserFloat = false // back to tiling — no longer a user float
                         guard let workspace = container.nodeWorkspace else { return .fail(io.err(bugPrompt())) }
                         // Tier 1: nothing changed while floating → materialize the pre-float
                         // spine verbatim (exact structure + weights; undoes removal's flatten).
@@ -121,7 +120,6 @@ struct LayoutCommand: Command {
                 window.bindAsFloatingWindow(to: workspace)
                 // User explicitly floated this — the i3 float quirks (click-without-raise, settle)
                 // apply only to windows marked here, not to auto-classified dialogs/popups.
-                window.isUserFloat = true
                 if window.floatingRestorePreSpine != nil {
                     // Settle the flatten NOW and snapshot the result: the unfloat comparison
                     // baseline must match what refresh-time normalization will produce.
@@ -132,7 +130,6 @@ struct LayoutCommand: Command {
                     window.setAxFrame(nil, size)
                 }
                 // Place the new float above the tiling stack once (i3: floats start on top).
-                FloatLayer.didBecomeFloating(window)
                 return .succ
         }
     }
