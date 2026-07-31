@@ -142,9 +142,23 @@ extension Workspace {
            let target,
            target.windowId != id
         {
-            let rect = target.desiredRect
-            let splitHorizontal = rect.map { $0.width > $0.height }
-                ?? ((target.parent as? TilingContainer)?.orientation == .v)
+            // Dwindle chooses the split by TILE ASPECT — that is the whole policy, and it is why
+            // normalizeContainers deliberately skips opposite-orientation alternation for dwindle.
+            //
+            // The fallback used to be perpendicular-to-parent when the target had no laid-out rect,
+            // which IS alternation. For a window placed before layout has run for it — discovery, a
+            // workspace switch — that produced a VERTICAL wrapper inside a horizontal root. Dwindle
+            // also force-flattens single-child containers (closing half a binary split leaves a
+            // wrapper), so that wrapper was promoted straight to root and the whole workspace
+            // silently flipped from side-by-side to stacked. Intermittent, because it depended
+            // purely on whether the target had been laid out yet.
+            //
+            // Fall back through geometry we actually have: the enclosing container's rect (layout
+            // assigns container geometry), then the monitor. Never alternation.
+            let aspect = target.desiredRect
+                ?? (target.parent as? TilingContainer)?.desiredRect
+                ?? workspaceMonitor.visibleRect
+            let splitHorizontal = aspect.width > aspect.height
             let ratio = CGFloat(config.dwindleSplitPercent) / 100
             let ok = commitTilingTransform("placeNewWindow.dwindle") { spine in
                 // Target must already be in the spine; empty workspace falls through to insert
