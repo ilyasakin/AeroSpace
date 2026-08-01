@@ -50,22 +50,45 @@ final class DwindleRootOrientationTest: XCTestCase {
         )
     }
 
-    /// With a real rect the aspect decides, as dwindle intends: a tall tile splits horizontally
-    /// (stacked), a wide tile splits vertically (side by side).
-    func testAspectStillDecidesWhenTheRectIsKnown() async throws {
+    /// Aspect still decides — but the aspect is PROJECTED from the model, not read from whatever
+    /// rect a window happens to be carrying. Three windows in a horizontal root on a 1920x1080 test
+    /// monitor give each tile ~640x1080, which is tall, so the next split stacks.
+    func testProjectedAspectDecidesTheSplit() async throws {
         let workspace = focus.workspace
-        let first = TestWindow.new(id: 10, parent: workspace.rootTilingContainer, adaptiveWeight: 1)
-        // Tall tile → dwindle stacks.
-        first.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 400, height: 1200)
+        var third: TestWindow!
+        workspace.rootTilingContainer.apply {
+            TestWindow.new(id: 10, parent: $0, adaptiveWeight: 1)
+            TestWindow.new(id: 11, parent: $0, adaptiveWeight: 1)
+            third = TestWindow.new(id: 12, parent: $0, adaptiveWeight: 1)
+        }
+        // A projected tile is now taller than it is wide, whatever any stale rect might say.
+        let size = try XCTUnwrap(workspace.projectedTileSize(of: third))
+        XCTAssertLessThan(size.width, size.height, "precondition: the projected tile is tall")
+        third.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 9999, height: 1) // deliberately wrong
 
-        XCTAssertEqual(first.focusWindow(), true)
-        let second = TestWindow.new(id: 11, parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO)
-        _ = workspace.commitTilingPlaceNewWindow(id: second.windowId)
-        workspace.normalizeContainers()
+        XCTAssertEqual(third.focusWindow(), true)
+        let fourth = TestWindow.new(id: 13, parent: workspace.floatingWindowsContainer, adaptiveWeight: WEIGHT_AUTO)
+        _ = workspace.commitTilingPlaceNewWindow(id: fourth.windowId)
 
+        let parent = try XCTUnwrap(Window.get(byId: 13)?.parent as? TilingContainer)
+        XCTAssertEqual(parent.orientation, .v, "a tall projected tile splits stacked")
         XCTAssertEqual(
-            workspace.rootTilingContainer.orientation, .v,
-            "a tall tile splits into a stacked pair — aspect, not alternation",
+            workspace.rootTilingContainer.orientation, .h,
+            "and the root is untouched — the stale rect had no say",
         )
+    }
+
+    /// The projection is model-only: it must not consult layout output at all.
+    func testProjectionIgnoresLayoutOutputEntirely() async throws {
+        let workspace = focus.workspace
+        var only: TestWindow!
+        workspace.rootTilingContainer.apply {
+            only = TestWindow.new(id: 20, parent: $0, adaptiveWeight: 1)
+        }
+        let withoutRect = try XCTUnwrap(workspace.projectedTileSize(of: only))
+        only.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 1, height: 9999)
+        let withRect = try XCTUnwrap(workspace.projectedTileSize(of: only))
+        XCTAssertEqual(withoutRect.width, withRect.width, accuracy: 0.001)
+        XCTAssertEqual(withoutRect.height, withRect.height, accuracy: 0.001)
     }
 }

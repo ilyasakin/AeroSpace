@@ -142,23 +142,14 @@ extension Workspace {
            let target,
            target.windowId != id
         {
-            // Dwindle chooses the split by TILE ASPECT — that is the whole policy, and it is why
-            // normalizeContainers deliberately skips opposite-orientation alternation for dwindle.
-            //
-            // The fallback used to be perpendicular-to-parent when the target had no laid-out rect,
-            // which IS alternation. For a window placed before layout has run for it — discovery, a
-            // workspace switch — that produced a VERTICAL wrapper inside a horizontal root. Dwindle
-            // also force-flattens single-child containers (closing half a binary split leaves a
-            // wrapper), so that wrapper was promoted straight to root and the whole workspace
-            // silently flipped from side-by-side to stacked. Intermittent, because it depended
-            // purely on whether the target had been laid out yet.
-            //
-            // Fall back through geometry we actually have: the enclosing container's rect (layout
-            // assigns container geometry), then the monitor. Never alternation.
-            let aspect = target.desiredRect
-                ?? (target.parent as? TilingContainer)?.desiredRect
-                ?? workspaceMonitor.visibleRect
-            let splitHorizontal = aspect.width > aspect.height
+            // Dwindle chooses the split by TILE ASPECT. The aspect is PROJECTED from the model
+            // (monitor rect + tree shape + weights), never read from the previous layout pass —
+            // see `projectedTileSize`. Reading layout output here was a cycle: placement consumed a
+            // value that layout writes afterwards, so for a window not yet laid out it was absent,
+            // and the absent case fell through to perpendicular-to-parent alternation. Inside a
+            // horizontal root that yields a vertical wrapper, which dwindle's single-child
+            // flattening then promotes to root — the whole workspace flipping to stacked.
+            let splitHorizontal = shouldSplitSideBySide(beside: target)
             let ratio = CGFloat(config.dwindleSplitPercent) / 100
             let ok = commitTilingTransform("placeNewWindow.dwindle") { spine in
                 // Target must already be in the spine; empty workspace falls through to insert
