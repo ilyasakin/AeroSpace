@@ -167,7 +167,13 @@ final class StatusBarGpuSampler {
             return GpuHistory(samples: history, lastKnown: last.utilization)
         }
         lastSampleAt = now
-        last = readGpuLoad() ?? last
+        ingest(readGpuLoad())
+        return GpuHistory(samples: history, lastKnown: last.utilization)
+    }
+
+    /// Fold one reading (taken off the main thread by StatusBarSystemSampler) into the history
+    func ingest(_ reading: GpuLoad?) {
+        last = reading ?? last
         if let u = last.utilization {
             history.append(u)
             if history.count > Self.historyCapacity {
@@ -175,7 +181,6 @@ final class StatusBarGpuSampler {
             }
         }
         // When unavailable, don't push fake zeros that look like idle — keep prior history.
-        return GpuHistory(samples: history, lastKnown: last.utilization)
     }
 }
 
@@ -194,16 +199,13 @@ func readGpuLoad() -> GpuLoad? {
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
         }
-        var props: Unmanaged<CFMutableDictionary>?
-        guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-              let dict = props?.takeRetainedValue() as? [String: Any]
-        else { continue }
-
-        let name = dict["model"] as? String
-            ?? dict["CFBundleIdentifier"] as? String
-            ?? dict["IOClass"] as? String
-
-        let stats = dict["PerformanceStatistics"] as? [String: Any] ?? dict
+        // Only the two properties we use. Copying the whole registry dictionary every second
+        // (IORegistryEntryCreateCFProperties) cost milliseconds for a single percentage.
+        func property(_ key: String) -> Any? {
+            IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+        }
+        guard let stats = property("PerformanceStatistics") as? [String: Any] else { continue }
+        let name = property("model") as? String ?? property("IOClass") as? String
         var util: Double?
         for key in ["Device Utilization %", "Renderer Utilization %", "GPU Activity(%)", "Hardware utilization %"] {
             if let n = stats[key] as? NSNumber {

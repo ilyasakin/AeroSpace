@@ -279,9 +279,20 @@ final class StatusBarNetSampler {
     func sample() {
         let now = ProcessInfo.processInfo.systemUptime
         if lastAt > 0, now - lastAt < Self.minSampleInterval { return }
-        // Flow-level counters (ntstat) first: interface counters miss inbound bytes when VPNs /
-        // content filters / Skywalk carry the flow (downlink reads 0). See NetworkFlowStats.
-        guard let totals = NetworkFlowStats.shared.poll() ?? Self.readTotals() else { return }
+        guard let totals = Self.readFlowOrInterfaceTotals() else { return }
+        ingest(totals, at: now)
+    }
+
+    /// Flow-level counters (ntstat) first: interface counters miss inbound bytes when VPNs /
+    /// content filters / Skywalk carry the flow (downlink reads 0). See NetworkFlowStats.
+    /// Blocking (ntstat queue + getifaddrs) — call off the main thread.
+    nonisolated static func readFlowOrInterfaceTotals() -> NetTotals? {
+        (NetworkFlowStats.shared.poll() ?? readTotals()).map { NetTotals(rx: $0.rx, tx: $0.tx) }
+    }
+
+    /// Fold one counter reading (taken at `now`) into the ↓/↑ rates
+    func ingest(_ reading: NetTotals, at now: TimeInterval) {
+        let totals = (rx: reading.rx, tx: reading.tx)
         if let last = lastTotals, lastAt > 0 {
             let dt = now - lastAt
             let dRx = totals.rx &- last.rx
@@ -295,7 +306,7 @@ final class StatusBarNetSampler {
         lastAt = now
     }
 
-    private static func readTotals() -> (rx: UInt64, tx: UInt64)? {
+    nonisolated private static func readTotals() -> (rx: UInt64, tx: UInt64)? {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
         defer { freeifaddrs(ifaddr) }
@@ -406,7 +417,7 @@ enum StatusBarNetwork {
 func statusBarSystemModuleText(_ id: String) -> String? {
     switch id {
         case "clock": return StatusBarClock.text(format: config.statusBar.clockFormat)
-        case "battery": return StatusBarBattery.text(from: StatusBarBattery.liveSnapshot())
+        case "battery": return StatusBarBattery.text(from: StatusBarSystemSampler.shared.latest?.battery ?? StatusBarBattery.liveSnapshot())
         // cpu / gpu render as graphs — optional text fallback for tests / external use
         case "cpu":
             let cores = StatusBarCpuSampler.shared.lastLoads
@@ -418,9 +429,9 @@ func statusBarSystemModuleText(_ id: String) -> String? {
                 return String(format: "GPU %d%%", Int((u * 100).rounded()))
             }
             return "GPU —"
-        case "memory": return StatusBarCpuMem.memoryText()
-        case "volume": return StatusBarVolume.text(from: StatusBarVolume.liveSnapshot())
-        case "network": return StatusBarNetwork.text(from: StatusBarNetwork.liveSnapshot())
+        case "memory": return StatusBarCpuMem.memoryText(from: StatusBarSystemSampler.shared.latest?.memory)
+        case "volume": return StatusBarVolume.text(from: StatusBarSystemSampler.shared.latest?.volume ?? StatusBarVolume.liveSnapshot())
+        case "network": return StatusBarNetwork.text(from: StatusBarSystemSampler.shared.latest?.network ?? StatusBarNetwork.liveSnapshot())
         default: return nil
     }
 }
@@ -429,11 +440,12 @@ func statusBarSystemModuleText(_ id: String) -> String? {
 @MainActor
 func statusBarSystemModuleRender(_ id: String) -> StatusBarModuleRender? {
     switch id {
-        case "battery": StatusBarBattery.render(from: StatusBarBattery.liveSnapshot())
-        case "memory": StatusBarCpuMem.memoryRender()
-        case "volume": StatusBarVolume.render(from: StatusBarVolume.liveSnapshot())
+        // Latest background readings; a live (blocking) read only before the first sample lands
+        case "battery": StatusBarBattery.render(from: StatusBarSystemSampler.shared.latest?.battery ?? StatusBarBattery.liveSnapshot())
+        case "memory": StatusBarCpuMem.memoryRender(from: StatusBarSystemSampler.shared.latest?.memory)
+        case "volume": StatusBarVolume.render(from: StatusBarSystemSampler.shared.latest?.volume ?? StatusBarVolume.liveSnapshot())
         case "network": StatusBarNetwork.render(
-            isUp: StatusBarNetwork.liveSnapshot().isUp,
+            isUp: (StatusBarSystemSampler.shared.latest?.network ?? StatusBarNetwork.liveSnapshot()).isUp,
             rxPerSec: StatusBarNetSampler.shared.rxPerSec,
             txPerSec: StatusBarNetSampler.shared.txPerSec,
         )

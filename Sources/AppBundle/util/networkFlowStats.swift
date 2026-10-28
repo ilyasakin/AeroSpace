@@ -34,6 +34,11 @@ final class NetworkFlowStats: @unchecked Sendable {
     /// Tear the subscription down (bar disabled / network module removed). Subscribing to every
     /// TCP+UDP flow is not free — the kernel walks every flow per query and delivers one callback
     /// per flow — so it must not outlive the feature that needs it.
+    /// `stop()` without the queue hop when nothing was ever started (called on every bar refresh)
+    func stopIfStarted() {
+        if queue.sync(execute: { started }) { stop() }
+    }
+
     func stop() {
         queue.sync {
             if let manager, let destroyManager { destroyManager(manager) }

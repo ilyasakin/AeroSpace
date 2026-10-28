@@ -38,6 +38,13 @@ final class StatusBarManager {
             startExternalModuleIfNeeded(cfg)
         } else {
             syncTimerCadence(cfg)
+            // The network module was removed from a running bar: release the flow subscription
+            if !statusBarUsesNetworkModule(cfg) { NetworkFlowStats.shared.stopIfStarted() }
+            // A hotkey used to re-read volume/battery synchronously; keep them about as fresh
+            // without blocking: readings older than 2s get a background resample (redraw follows)
+            StatusBarSystemSampler.shared.resampleIfStale(modules: statusBarConfiguredModules(cfg), maxAge: 2) { [weak self] in
+                self?.refresh()
+            }
             if cfg.statusCommand != lastStatusCommand {
                 restartExternal(cfg)
             } else if !cfg.statusCommand.isEmpty, externalProcess?.isRunning != true {
@@ -97,23 +104,25 @@ final class StatusBarManager {
         let interval: TimeInterval = needsFast ? 1.0 : 15.0
         clockTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
+                // host_processor_info is a cheap Mach call; everything that can block (IOKit,
+                // CoreAudio, ntstat, getifaddrs) is sampled off the main thread, and only
+                // modules that are actually configured are read. (`network` in particular
+                // subscribes to EVERY TCP/UDP flow on the machine — see NetworkFlowStats.)
                 if self?.timerIsFast == true {
                     _ = StatusBarCpuSampler.shared.sample()
-                    _ = StatusBarGpuSampler.shared.sample()
                 }
-                // Only sample when the `network` module is actually configured. This subscribes to
-                // EVERY TCP/UDP flow on the machine (ntstat), so sampling unconditionally attached
-                // an nettop-class monitor for anyone who merely enabled the bar — continuous CPU
-                // and battery cost with, say, only a clock configured.
-                if statusBarUsesNetworkModule(config.statusBar) {
-                    StatusBarNetSampler.shared.sample()
+                StatusBarSystemSampler.shared.sampleAsync(modules: statusBarConfiguredModules(config.statusBar)) {
+                    // The tick is what re-evaluates fullscreen when a Space notification raced
+                    invalidateSpaceFullscreenCache()
+                    self?.refresh()
                 }
-                self?.refresh()
             }
         }
         if needsFast {
             _ = StatusBarCpuSampler.shared.sample()
-            _ = StatusBarGpuSampler.shared.sample()
+        }
+        StatusBarSystemSampler.shared.sampleAsync(modules: statusBarConfiguredModules(cfg)) { [weak self] in
+            self?.refresh()
         }
     }
 
@@ -235,6 +244,7 @@ final class StatusBarManager {
 private final class StatusBarPanel: NSPanelHud {
     private let content = StatusBarContentView()
     private var monitorName: String = ""
+    private var lastRenderFingerprint: StatusBarRenderFingerprint? = nil
 
     override init() {
         super.init()
@@ -305,6 +315,11 @@ private final class StatusBarPanel: NSPanelHud {
 
         let barRect = Rect(topLeftX: full.topLeftX, topLeftY: barTopY, width: full.width, height: barH)
         let ak = barRect.toAppKitFrame()
+        // Nothing the bar shows changed (most sessions: a focus move within a workspace with no
+        // focused-window module, a layout-only change): skip the full subview rebuild + redraw
+        let fingerprint = statusBarRenderFingerprint(config: config, monitor: monitor, externalBlocks: externalBlocks, frame: ak)
+        if fingerprint == lastRenderFingerprint, isVisible { return }
+        lastRenderFingerprint = fingerprint
         setFrame(ak, display: true)
 
         content.rebuild(
@@ -1222,4 +1237,54 @@ extension Comparable {
     fileprivate func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)
     }
+}
+
+
+/// Everything a bar panel displays. Equal fingerprints → the rebuild would produce the same views.
+struct StatusBarRenderFingerprint: Equatable {
+    var config: StatusBarConfig
+    var frame: NSRect
+    var monitorDisplayId: DisplayId
+    var externalBlocks: [I3barBlock]
+    var workspaces: [String]
+    var mode: String?
+    var focusedApp: String?
+    var focusedWindowId: UInt32?
+    var clock: String?
+    var systemVersion: Int
+    var cpuSamples: Int
+    var cpuLast: [Double]
+}
+
+@MainActor
+func statusBarRenderFingerprint(config: StatusBarConfig, monitor: Monitor, externalBlocks: [I3barBlock], frame: NSRect) -> StatusBarRenderFingerprint {
+    let modules = config.modulesLeft + config.modulesRight
+    let focus = focus
+    var workspaces: [String] = []
+    if modules.contains("workspaces") {
+        for ws in Workspace.userFacing {
+            let visibleHere = ws.isVisible && ws.workspaceMonitor.displayId == monitor.displayId
+            workspaces.append("\(ws.name)|\(ws.isEffectivelyEmpty)|\(ws.name == focus.workspace.name)|\(visibleHere)")
+        }
+    }
+    let cpu = StatusBarCpuSampler.shared
+    return StatusBarRenderFingerprint(
+        config: config,
+        frame: frame,
+        monitorDisplayId: monitor.displayId,
+        externalBlocks: externalBlocks,
+        workspaces: workspaces,
+        mode: modules.contains("mode") ? activeMode : nil,
+        focusedApp: modules.contains("focused") ? focus.windowOrNil?.app.name : nil,
+        focusedWindowId: modules.contains("focused") ? focus.windowOrNil?.windowId : nil,
+        clock: modules.contains("clock") ? StatusBarClock.text(format: config.clockFormat) : nil,
+        systemVersion: StatusBarSystemSampler.shared.version,
+        cpuSamples: modules.contains("cpu") ? cpu.history.count : 0,
+        cpuLast: modules.contains("cpu") ? cpu.lastLoads : [],
+    )
+}
+
+/// Built-in module ids the bar is configured with (what the background sampler must read)
+func statusBarConfiguredModules(_ cfg: StatusBarConfig) -> Set<String> {
+    Set(cfg.modulesLeft + cfg.modulesRight)
 }
