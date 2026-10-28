@@ -8,40 +8,47 @@ import Foundation
         unsafe _isCli = false
         initServerArgs()
         await waitForAccessibilityPermission_nonCancellable()
-        // The default AX messaging timeout is ~6 seconds. An app that is busy and doesn't service its
-        // event loop would stall every AX request (and thus every refresh session) for that long.
-        // Setting the timeout on the system-wide element changes the default for all AX requests of this process
-        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2.0)
+        SystemServices.configureAccessibilityClient()
         if isDebug {
             await toggleReleaseServerIfDebug(.off)
         }
         // Signal/quit hooks (SIGINT, SIGTERM, willTerminate) install in initTerminationHandler.
 
-        await bootstrapConfig_nonCancellable()
-        _ = await reloadConfig_nonCancellable()
-        await offerForeignConfigImportIfNeeded()
-
-        startUnixSocketServer()
-        startI3IpcServer()
-        GlobalObserver.initObserver()
-        Workspace.garbageCollectUnusedWorkspaces() // init workspaces
-        _ = Workspace.all.first?.focusWorkspace()
-        await runHeavyCompleteRefreshSession(
-            .startup,
-            // It's important for the first initialization to be non cancellable
-            // to make sure that isStartup propagates to all places
-            assumeCancellable: false,
-            layoutWorkspaces: false,
-        )
-        // After discovery: restore last session tiling (if window ids still match).
-        let restoredSession = SessionLayoutStore.restoreIfPossible()
-        try await runLightSession(.startup, .forceRun) {
-            if !restoredSession {
-                // Only invent a layout when we have no saved session to apply.
-                smartLayoutAtStartup()
-            }
-            _ = await config.afterStartupCommand.run(.defaultEnv, .emptyStdin)
+        // All of startup is ONE kernel job: commands and notifications arriving meanwhile queue
+        // behind it instead of interleaving with discovery and session restore
+        do {
+            try await Kernel.exclusive("startup") { try await startUp() }
+        } catch {
+            FrameTrace.log("startup failed: \(error)")
         }
+    }
+}
+
+@MainActor private func startUp() async throws {
+    await bootstrapConfig_nonCancellable()
+    _ = await reloadConfig_nonCancellable()
+    await offerForeignConfigImportIfNeeded()
+
+    startUnixSocketServer()
+    startI3IpcServer()
+    GlobalObserver.initObserver()
+    Workspace.garbageCollectUnusedWorkspaces() // init workspaces
+    _ = Workspace.userFacing.first?.focusWorkspace()
+    await runHeavyCompleteRefreshSession(
+        .startup,
+        // It's important for the first initialization to be non cancellable
+        // to make sure that isStartup propagates to all places
+        assumeCancellable: false,
+        layoutWorkspaces: false,
+    )
+    // After discovery: restore last session tiling (if window ids still match).
+    let restoredSession = SessionLayoutStore.restoreIfPossible()
+    try await runLightSession(.startup, .forceRun) {
+        if !restoredSession {
+            // Only invent a layout when we have no saved session to apply.
+            smartLayoutAtStartup()
+        }
+        _ = await config.afterStartupCommand.run(.defaultEnv, .emptyStdin)
     }
 }
 

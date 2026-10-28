@@ -31,10 +31,10 @@ func emitAeroToml(builder: AeroConfigBuilder, diagnostics: [ImportDiagnostic], s
     out.append("config-version = 2")
     out.append("")
 
-    if builder.disableFlattenNormalization {
-        out.append("# i3 doesn't flatten nested containers; disabled so the imported 'split' bindings work")
-        out.append("enable-normalization-flatten-containers = false")
-        out.append("enable-normalization-opposite-orientation-for-nested-containers = false")
+    if builder.i3Normalization {
+        out.append("# i3's tree normalization: only redundant nested splits collapse, and 'split' works")
+        out.append("i3-normalization = true")
+        if builder.i3AccordionMode { out.append("accordion-mode = 'i3'") }
         out.append("")
     }
 
@@ -59,7 +59,21 @@ func emitAeroToml(builder: AeroConfigBuilder, diagnostics: [ImportDiagnostic], s
     if let policy = builder.tilingPolicy {
         out.append("tiling-policy = \(tomlString(policy))")
     }
-    if builder.focusFollowsMouse != nil || builder.defaultLayout != nil || builder.defaultOrientation != nil || builder.tilingPolicy != nil {
+    if let wrapping = builder.focusWrapping {
+        out.append("focus-wrapping = \(tomlString(wrapping))")
+    }
+    if let warping = builder.mouseWarping {
+        out.append("mouse-warping = \(tomlString(warping))")
+    }
+    if builder.workspaceAutoBackAndForth {
+        out.append("workspace-auto-back-and-forth = true")
+    }
+    if builder.smartGaps {
+        out.append("smart-gaps = true")
+    }
+    if builder.focusFollowsMouse != nil || builder.defaultLayout != nil || builder.defaultOrientation != nil || builder.tilingPolicy != nil
+        || builder.focusWrapping != nil || builder.mouseWarping != nil
+    {
         out.append("")
     }
 

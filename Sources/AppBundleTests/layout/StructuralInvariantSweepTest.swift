@@ -2,28 +2,25 @@
 import Common
 import XCTest
 
-/// Systematic coverage of the load-bearing structural contract: after ANY command, the published
-/// tiling spine must still describe the live tree.
-///
-/// That contract is maintained by hand — 41 raw mutation sites across 17 files are each supposed to
-/// invalidate the published generation, and every structural change is supposed to go through the
-/// commit API. Individual violations were found and patched one at a time (layout commands no-oping,
-/// move publishing an order the live tree disagreed with, accordion weight sync dying). Nothing ever
-/// swept the whole command surface, so "which sites actually break the contract" was a guess.
-///
-/// This sweeps every structure-touching command across representative tree shapes and reports the
-/// full matrix at once. It is deliberately a DETECTOR, not an assertion of current behaviour: it
-/// arms `SpineInvariant.onViolationForTests` so violations are collected instead of fatal, then
-/// fails once with every (shape, command) pair that broke the contract.
+/// Every structure-touching command, across representative tree shapes: afterwards the tree must be
+/// well-formed — each window in it exactly once — and the render must place exactly the tiled
+/// windows. (This swept for a cached tiling spine drifting from the live tree until step 5 of the
+/// re-architecture removed the cache; the sweep itself stays useful.)
 @MainActor
 final class StructuralInvariantSweepTest: XCTestCase {
     override func setUp() async throws {
         setUpWorkspacesForTests()
-        SpineInvariant.resetForTests()
     }
 
-    override func tearDown() async throws {
-        SpineInvariant.resetForTests()
+    /// What is wrong with `workspace`'s tree, if anything
+    private func structuralProblems(_ workspace: Workspace) -> [String] {
+        var problems: [String] = []
+        let all = Workspace.all.flatMap(\.allLeafWindowsRecursive).map(\.windowId)
+        if Set(all).count != all.count { problems.append("a window appears twice: \(all)") }
+        let tiled = workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId)
+        let rendered = render(workspace, spine: workspace.currentTilingSpine()).tiles.map(\.windowId)
+        if rendered != tiled { problems.append("render placed \(rendered), tree tiles \(tiled)") }
+        return problems
     }
 
     // MARK: - Tree shapes
@@ -121,7 +118,6 @@ final class StructuralInvariantSweepTest: XCTestCase {
             // window really is a MacWindow. (The force cast is still a latent fragility: it is the
             // only thing standing between a future non-MacWindow subclass and a crash.)
             "always-on-top on", "always-on-top off", "sticky on", "sticky off",
-            "raise-floating",
             // workspace
             "workspace B", "workspace next", "workspace prev", "workspace-back-and-forth",
             "summon-workspace B", "toggle-special-workspace S",
@@ -129,6 +125,16 @@ final class StructuralInvariantSweepTest: XCTestCase {
             "tiling-policy dwindle", "tiling-policy manual",
             "close", "close-all-windows-but-current",
             "mode main",
+            // i3 parity
+            "focus parent", "focus child", "focus next", "focus prev", "focus next-sibling",
+            "focus prev-sibling", "focus floating", "focus tiling", "focus mode-toggle",
+            "focus parent && move right", "focus parent && move up", "focus parent && close",
+            "focus parent && move-node-to-workspace B", "focus parent && layout h_accordion",
+            "mark m && move-node-to-mark m", "mark m && swap --with-mark m",
+            "scratchpad move", "scratchpad move && scratchpad show",
+            "layout h_tiles v_tiles h_accordion", "resize right +50", "resize up -20",
+            "move-node-to-workspace back-and-forth", "gaps inner current plus 5",
+            "rename-workspace renamed", "[all] focus", "criteria tiling -- move left",
         ]
     }
 
@@ -153,30 +159,22 @@ final class StructuralInvariantSweepTest: XCTestCase {
             for command in commands {
                 trace("\(shape.name) / \(command)")
                 setUpWorkspacesForTests()
-                SpineInvariant.resetForTests()
 
                 let workspace = focus.workspace
                 shape.build(workspace)
                 // Focus a leaf so direction-relative commands have a subject.
                 workspace.rootTilingContainer.allLeafWindowsRecursive.first?.focusWindow()
 
-                // Establish a published generation to contradict, exactly as production does.
                 try? await workspace.layoutWorkspace()
-
-                var reported: [String] = []
-                SpineInvariant.onViolationForTests = { reported.append($0) }
 
                 let parsed = parseCommand(command)
                 guard let cmd = parsed.cmdOrNil else {
                     unparseable.append(command)
-                    SpineInvariant.onViolationForTests = nil
                     continue
                 }
 
                 _ = await cmd.run(.defaultEnv, .emptyStdin)
 
-                // The desync usually surfaces on the NEXT layout pass, not inside the command —
-                // that is precisely why these bugs presented as "the command visually no-ops".
                 do {
                     try await focus.workspace.layoutWorkspace()
                     if focus.workspace !== workspace, !workspace.isEffectivelyEmpty {
@@ -186,9 +184,8 @@ final class StructuralInvariantSweepTest: XCTestCase {
                     threw.append("\(shape.name) / \(command): \(error)")
                 }
 
-                SpineInvariant.onViolationForTests = nil
                 ran += 1
-
+                let reported = structuralProblems(workspace)
                 if !reported.isEmpty {
                     let first = reported[0]
                         .split(separator: "\n")
@@ -218,15 +215,13 @@ final class StructuralInvariantSweepTest: XCTestCase {
         XCTAssertEqual(
             violations.count, 0,
             """
-            The published tiling spine stopped describing the live tree after these commands. Each \
-            line is a mutation site that bypassed the invalidation protocol:
+            The tree was left malformed after these commands:
             \(violations.joined(separator: "\n"))
             """,
         )
     }
 
-    /// Command PAIRS, because several of the historical desyncs needed two operations: the first
-    /// left the spine stale in a way the second then published as truth.
+    /// Command PAIRS: some damage only shows once a second operation builds on the first.
     func testCommandPairsPreserveTheStructuralInvariant() async throws {
         let interesting = [
             "layout accordion", "layout tiles", "join-with right", "split vertical",
@@ -239,7 +234,6 @@ final class StructuralInvariantSweepTest: XCTestCase {
         for first in interesting {
             for second in interesting {
                 setUpWorkspacesForTests()
-                SpineInvariant.resetForTests()
 
                 let workspace = focus.workspace
                 TestWindow.new(id: 1, parent: workspace.rootTilingContainer, adaptiveWeight: 1)
@@ -250,17 +244,14 @@ final class StructuralInvariantSweepTest: XCTestCase {
                 workspace.rootTilingContainer.allLeafWindowsRecursive.first?.focusWindow()
                 try? await workspace.layoutWorkspace()
 
-                var reported: [String] = []
-                SpineInvariant.onViolationForTests = { reported.append($0) }
-
                 for command in [first, second] {
                     guard let cmd = parseCommand(command).cmdOrNil else { continue }
                     _ = await cmd.run(.defaultEnv, .emptyStdin)
                     try? await focus.workspace.layoutWorkspace()
                 }
 
-                SpineInvariant.onViolationForTests = nil
                 ran += 1
+                let reported = structuralProblems(workspace)
                 if !reported.isEmpty {
                     violations.append("\(first) THEN \(second)  ->  \(reported[0].split(separator: "\n").prefix(3).joined(separator: " | "))")
                 }

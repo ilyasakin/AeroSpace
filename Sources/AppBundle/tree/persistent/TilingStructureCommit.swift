@@ -1,15 +1,8 @@
 import Common
 import CoreGraphics
 
-/// Path-copy-first structural commits for the tiling spine (#1215 cutover).
-///
-/// Order is load-bearing:
-/// 1. Read current generation (or capture once if missing)
-/// 2. Apply pure path-copy transform → new spine
-/// 3. Materialize live dual-link handles from the new spine
-/// 4. Publish generation
-///
-/// Live tree is never the mutation source of truth for structure on this path.
+/// Structural commits: a pure transform of a snapshot of the tiling tree (well tested on values),
+/// applied back onto the one tree. The snapshot is taken fresh for every commit — nothing is cached.
 @MainActor
 extension Workspace {
     /// Apply a pure path-copy transform to the tiling spine, then materialize live handles.
@@ -19,13 +12,8 @@ extension Workspace {
         _ context: @autoclosure () -> String = "commitTilingTransform",
         _ transform: (PersistentTilingNode) -> PersistentTilingNode?,
     ) -> Bool {
-        let before = tilingStructureGeneration ?? PersistentTilingNode.capture(rootTilingContainer)
-        guard let after = transform(before) else { return false }
-        // materializeTilingSpine publishes what it actually built and asserts the invariant, so a
-        // transform naming dead window ids cannot leave a generation claiming windows the live
-        // tree lacks. Re-verify with this call site's context so a violation names the command.
+        guard let after = transform(currentTilingSpine()) else { return false }
         materializeTilingSpine(after)
-        SpineInvariant.verify(self, context: context())
         return true
     }
 
@@ -51,6 +39,57 @@ extension Workspace {
         }
     }
 
+    /// Call BEFORE a tiled window leaves tiling (float, minimize, native fullscreen, app hide, tab
+    /// park): remembers its slot and the exact spine. No-op for a window that isn't tiled.
+    func captureTileRestorePoint(for window: Window) {
+        guard window.parent is TilingContainer, window.nodeWorkspace === self else { return }
+        window.tileRestoreSlot = FloatingRestoreSlot.capture(from: window)
+        window.tileRestorePreSpine = currentTilingSpine()
+        window.tileRestorePostSpine = nil
+        tileRestoreSequenceCounter &+= 1
+        window.tileRestoreSequence = tileRestoreSequenceCounter
+    }
+
+    /// Call right AFTER the window was unbound from tiling: settle the flatten now and snapshot the
+    /// result, so the restore-time comparison baseline matches what refresh-time normalization
+    /// will produce.
+    func settleTileRestorePoint(for window: Window) {
+        guard window.tileRestorePreSpine != nil else { return }
+        normalizeContainers()
+        window.tileRestorePostSpine = currentTilingSpine()
+    }
+
+    /// Put a window that left tiling back where it was (i3: floating toggle / unminimize never
+    /// scramble sibling order). Tiers: (1) nothing changed meanwhile → the pre-removal spine
+    /// verbatim; (2) original neighbour slot; (3) i3 `floating_disable` — plain sibling after the
+    /// MRU tiling leaf. Returns false only if all tiers failed (caller falls back to placement).
+    func restoreTile(_ window: Window) -> Bool {
+        let preSpine = window.tileRestorePreSpine
+        let postSpine = window.tileRestorePostSpine
+        let slot = window.tileRestoreSlot
+        window.tileRestorePreSpine = nil
+        window.tileRestorePostSpine = nil
+        window.tileRestoreSlot = nil
+        window.tileRestoreSequence = 0
+        // Commits place a window that sits in this workspace's floating layer (same contract as
+        // new-window placement); a window coming back from a macOS container is moved there first.
+        if !(window.parent is FloatingWindowsContainer && window.nodeWorkspace === self) {
+            window.bindAsFloatingWindow(to: self)
+        }
+        // Full equality, weights included (they are the model's, layout no longer rewrites them):
+        // a resize made while the window was away must not be undone by restoring the old spine
+        if let preSpine, let postSpine, currentTilingSpine() == postSpine {
+            materializeTilingSpine(preSpine)
+            if window.parent is TilingContainer { return true }
+        }
+        if let slot, slot.workspaceName == name,
+           commitTilingRestoreFloatingSlot(windowId: window.windowId, slot: slot)
+        {
+            return true
+        }
+        return commitTilingUnfloat(windowId: window.windowId)
+    }
+
     /// Re-insert a window that was floated from tiling, preferring its original neighbor slots
     /// (i3 floating toggle: unfloat does not scramble sibling order). Neighbor leaves inside
     /// container siblings resolve via the recorded ascent (see FloatingRestoreSlot). Returns
@@ -60,14 +99,21 @@ extension Workspace {
         commitTilingTransform("restoreFloatingSlot") { spine in
             // Drop if somehow still present (stale gen).
             let base = spine.path(ofWindowId: windowId).flatMap { spine.removing(at: $0)?.root } ?? spine
-            let child = PersistentTilingNode.window(id: windowId, weight: slot.weight)
+            // The slot's share of the container, on the destination container's own weight scale
+            func child(in containerPath: PersistentPath) -> PersistentTilingNode {
+                let siblings: [PersistentTilingNode] = if case .container(_, _, _, let c, _)? = base.node(at: containerPath) { c } else { [] }
+                let sum = siblings.reduce(CGFloat(0)) { $0 + max($1.weight, 0) }
+                let share = min(max(slot.share, 0.01), 0.9)
+                let weight = sum > 0 ? share * sum / (1 - share) : 1
+                return .window(id: windowId, weight: weight)
+            }
             if let afterId = slot.neighborAfterId,
                let leafPath = base.path(ofWindowId: afterId),
                !leafPath.isRoot
             {
                 let sibling = leafPath.ascending(by: slot.neighborAfterAscent)
                 if let idx = sibling.indices.last {
-                    return base.inserting(child: child, at: idx, intoContainerAt: sibling.dropLast)
+                    return base.inserting(child: child(in: sibling.dropLast), at: idx, intoContainerAt: sibling.dropLast)
                 }
             }
             if let beforeId = slot.neighborBeforeId,
@@ -76,7 +122,7 @@ extension Workspace {
             {
                 let sibling = leafPath.ascending(by: slot.neighborBeforeAscent)
                 if let idx = sibling.indices.last {
-                    return base.inserting(child: child, at: idx + 1, intoContainerAt: sibling.dropLast)
+                    return base.inserting(child: child(in: sibling.dropLast), at: idx + 1, intoContainerAt: sibling.dropLast)
                 }
             }
             return nil
@@ -98,8 +144,8 @@ extension Workspace {
                let idx = path.indices.last
             {
                 let parentPath = path.dropLast
-                // Average-of-siblings weight: persisted weights are pixel spans (see
-                // insertWindowBeside) — i3's "reset percent" maps to an equal share, not 1
+                // Average-of-siblings weight: weights are proportions on each container's own scale,
+                // so i3's "reset percent" maps to an equal share, not 1
                 let weight = base.averageChildWeight(ofContainerAt: parentPath)
                 return base.inserting(child: .window(id: windowId, weight: weight), at: idx + 1, intoContainerAt: parentPath)
             }
@@ -179,18 +225,11 @@ extension Workspace {
         guard let w1 = Window.get(byId: id1), let w2 = Window.get(byId: id2),
               w1.parent is TilingContainer, w2.parent is TilingContainer
         else { return false }
-        let before = tilingStructureGeneration ?? PersistentTilingNode.capture(rootTilingContainer)
-        guard before.swappingWindows(id1: id1, id2: id2) != nil else { return false }
-        Workspace.withSuppressedGenerationInvalidation {
-            let binding2 = w2.unbindFromParent()
-            let binding1 = w1.unbindFromParent()
-            w2.bind(to: binding1.parent, adaptiveWeight: binding1.adaptiveWeight, index: binding1.index)
-            w1.bind(to: binding2.parent, adaptiveWeight: binding2.adaptiveWeight, index: binding2.index)
-        }
-        // Publish what the live tree now IS, not the intended transform (same reason as
-        // commitTilingTransform), then hold this path to the same invariant.
-        tilingStructureGeneration = PersistentTilingNode.capture(rootTilingContainer)
-        SpineInvariant.verify(self, context: "swap")
+        guard currentTilingSpine().swappingWindows(id1: id1, id2: id2) != nil else { return false }
+        let binding2 = w2.unbindFromParent()
+        let binding1 = w1.unbindFromParent()
+        w2.bind(to: binding1.parent, adaptiveWeight: binding1.adaptiveWeight, index: binding1.index)
+        w1.bind(to: binding2.parent, adaptiveWeight: binding2.adaptiveWeight, index: binding2.index)
         return true
     }
 
@@ -200,71 +239,60 @@ extension Workspace {
         guard let window = Window.get(byId: id),
               let parent = window.parent as? TilingContainer
         else { return false }
-        let before = tilingStructureGeneration ?? PersistentTilingNode.capture(rootTilingContainer)
-        guard before.movingWindow(id, toIndexInParent: index) != nil else { return false }
-        Workspace.withSuppressedGenerationInvalidation {
-            let prev = window.unbindFromParent()
-            window.bind(to: parent, adaptiveWeight: prev.adaptiveWeight, index: index)
-        }
-        tilingStructureGeneration = PersistentTilingNode.capture(rootTilingContainer)
-        SpineInvariant.verify(self, context: "moveWindow")
+        guard currentTilingSpine().movingWindow(id, toIndexInParent: index) != nil else { return false }
+        let prev = window.unbindFromParent()
+        window.bind(to: parent, adaptiveWeight: prev.adaptiveWeight, index: index)
         return true
     }
 
-    /// Rebuild the live dual-link tiling root from an immutable spine. Windows are resolved by id
-    /// through the registry, so unbinding the old root does not make them unresolvable.
-    ///
-    /// Always publishes a generation. After session restore, discovery layout may have left a
-    /// **stale** generation; layout trusts that gen when present, so without this publish the next
-    /// layout would re-apply the pre-restore structure (e.g. horizontal tiles after a vertical
-    /// restore).
-    ///
-    /// What gets published is what was ACTUALLY materialized, not the requested `spine` — a spine
-    /// can name window ids with no live handle (closed mid-commit, stale generation, a saved spine
-    /// restored after the windows died) and `restore` skips those leaves. Publishing the request
-    /// would leave the generation claiming windows the live tree does not have. Doing this here
-    /// rather than in the callers means the direct callers (tier-1 unfloat, session restore) get it
-    /// too, and the invariant holds for every path by construction.
+    /// Apply a transformed snapshot back onto the tree. Windows are resolved by id through the
+    /// registry, so unbinding the old root does not make them unresolvable. Leaves naming dead
+    /// windows are skipped.
     func materializeTilingSpine(_ spine: PersistentTilingNode) {
         let oldRoot = rootTilingContainer
         let leaves = oldRoot.allLeafWindowsRecursive
-        // Rebuilding containers destroys their MRU stacks (bind order = last child becomes MRU),
-        // which flips accordion fronts, misroutes close-focus, and breaks the fullscreen gate
-        // (`mostRecentWindowRecursive`). Capture the MRU leaf and re-mark it after restore.
-        let mruId = oldRoot.mostRecentWindowRecursive?.windowId
+        // Rebinding children re-orders MRU stacks (bind order = last child becomes MRU), which
+        // flips accordion fronts, misroutes close-focus and directional focus into a neighbour
+        // container, and breaks the fullscreen gate (`mostRecentWindowRecursive`). Capture the
+        // workspace's focus order and replay it after (floats keep their rank relative to tiling).
+        let focusOrder = windowsInFocusOrder.map(\.windowId)
+        // Every container of the old tree, detached and emptied: the snapshot's containers are
+        // re-created from these by id (identity kept), and only new ones are built
+        var reusable: [UInt64: TilingContainer] = [:]
+        func collect(_ container: TilingContainer) {
+            reusable[container.nodeId] = container
+            for case let nested as TilingContainer in container.children { collect(nested) }
+        }
+        collect(oldRoot)
         oldRoot.unbindFromParent()
         // Drop any other residual tiling containers under the workspace
         for child in children {
-            if child is TilingContainer {
-                child.unbindFromParent()
+            if let residual = child as? TilingContainer {
+                collect(residual)
+                residual.unbindFromParent()
             }
         }
-        if spine.restore(parent: self, index: INDEX_BIND_LAST) {
-            tilingStructureGeneration = PersistentTilingNode.capture(rootTilingContainer)
-        } else {
+        // Emptied completely: a window the snapshot leaves out must not stay tiled in a reused
+        // container (it ends unbound, as it did under the old detached root)
+        for container in reusable.values {
+            for child in Array(container.children) { child.unbindFromParent() }
+        }
+        if !spine.restore(parent: self, index: INDEX_BIND_LAST, reusing: reusable) {
             // Entirely stale spine (every id dead/unbindable) — a WM must degrade, not die.
-            // Re-bind the previous leaves so no window is orphaned, and drop the generation so
-            // the next layout recaptures from live truth.
+            // Re-bind the previous leaves so no window is orphaned
             for window in leaves where window.parent == nil || window.parent === oldRoot {
                 window.bind(to: rootTilingContainer, adaptiveWeight: WEIGHT_AUTO, index: INDEX_BIND_LAST)
             }
-            tilingStructureGeneration = nil
         }
-        if let mruId, let mru = Window.get(byId: mruId), mru.nodeWorkspace === self {
-            mru.markAsMostRecentChild()
+        for id in focusOrder.reversed() {
+            if let w = Window.get(byId: id), w.nodeWorkspace === self { w.markAsMostRecentChild() }
         }
-        SpineInvariant.verify(self, context: "materializeTilingSpine")
     }
 
-    /// Dirty-flag protocol: if a generation is published, trust it. If nil, capture from live
-    /// dual-link tree. Dual-link structure/weight mutations must call
-    /// `invalidateTilingStructureGeneration()` so the next layout recaptures. No equality guessing.
+    /// A snapshot of the tiling tree as it is now (value; taken fresh, never cached)
     func currentTilingSpine() -> PersistentTilingNode {
-        if let gen = tilingStructureGeneration {
-            return gen
-        }
-        let captured = PersistentTilingNode.capture(rootTilingContainer)
-        tilingStructureGeneration = captured
-        return captured
+        PersistentTilingNode.capture(rootTilingContainer)
     }
 }
+
+@MainActor private var tileRestoreSequenceCounter: UInt64 = 0

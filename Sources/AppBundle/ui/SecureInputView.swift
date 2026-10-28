@@ -15,10 +15,10 @@ public final class SecureInputPanel: NSPanelHud {
 
     @MainActor
     public func refresh() {
-        if let activeMode, TrayMenuModel.shared.isEnabled &&
+        if let activeMode, ServerState.isEnabled &&
             config.modes[activeMode]?.bindings.isEmpty == false && IsSecureEventInputEnabled()
         {
-            if isVisible { return }
+            if isVisible || !Headless.permits(.onScreenPanel) { return }
             self.contentView?.subviews.removeAll()
             hostingView = NSHostingView(rootView: SecureInputView())
             hostingView.frame = NSRect(x: 0, y: 0, width: iconSize.width, height: iconSize.height)

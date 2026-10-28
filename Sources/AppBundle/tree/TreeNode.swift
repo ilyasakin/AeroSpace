@@ -2,6 +2,10 @@ import AppKit
 import Common
 
 open class TreeNode: Equatable, AeroAny {
+    /// Stable identity for the node's lifetime. Snapshots of the tree carry it, so applying a
+    /// transformed snapshot keeps the same container objects (their focus order, their rects,
+    /// anything holding on to them) instead of rebuilding every container.
+    final let nodeId: UInt64 = NodeIds.next()
     private var _children: [TreeNode] = []
     var children: [TreeNode] { _children }
     fileprivate final weak var _parent: NonLeafTreeNodeObject? = nil
@@ -13,38 +17,19 @@ open class TreeNode: Equatable, AeroAny {
     // - makeFloatingWindowsSeenAsTiling in focus command
     var lastAppliedLayoutVirtualRect: Rect? = nil  // as if inner gaps were always zero
 
-    /// Backing slot for `desiredRect` and `believedRect`, which are two DIFFERENT questions that
-    /// have so far shared one answer.
-    ///
-    /// This was `lastAppliedLayoutPhysicalRect`, and it carried three meanings at once: what layout
-    /// intends, where we believe the window actually is, and "we have written a frame recently".
-    /// Readers could not say which they wanted, so each picked a convention — that is how three
-    /// separate frame-resolution policies grew (`resolveFrameRead`, `resolveBorderRect`,
-    /// `resolveLiveBorderRect`, the last taking five booleans), and why external movement had to be
-    /// handled by *nil-ing* the field from two places to defeat an intent-vs-intent comparison.
-    ///
-    /// The two accessors below currently alias this one slot, so behaviour is unchanged; what changes
-    /// is that every call site now has to say which question it is asking. Decoupling them is then a
-    /// change in this one place. See `desiredRect` / `believedRect`.
-    private var _frameSlot: Rect? = nil // with real inner gaps
-
     /// **Intent.** What layout wants this node to occupy. Written by layout and by commands that
     /// deliberately override layout (`move-to`, `resize-to`). Read by anything reasoning about the
     /// grid: the layout diff baseline, drag/swap slots, tab-bar geometry, resize baselines.
-    var desiredRect: Rect? {
-        get { _frameSlot }
-        set { _frameSlot = newValue }
+    ///
+    /// Intent only — what is KNOWN about a window's actual frame lives in its `FrameRecord`. The two
+    /// used to alias one field (`lastAppliedLayoutPhysicalRect`), and layout records intent *before*
+    /// it writes: the writer then read the new target back as "where the window already is",
+    /// concluded the size was unchanged, and sent position only.
+    var desiredRect: Rect? = nil { // with real inner gaps
+        didSet { Kernel.noteModelMutation("desiredRect") }
     }
 
-    /// **Belief.** Our best answer for where this node actually is, used when neither WindowServer
-    /// nor AX will answer — after our own write (while WindowServer still reports the old frame), or
-    /// for a window on an inactive Space, which the on-screen list cannot see at all.
-    ///
-    /// Absence is not evidence: `nil` means "no belief", never "the window is gone".
-    var believedRect: Rect? {
-        get { _frameSlot }
-        set { _frameSlot = newValue }
-    }
+
     final var unboundStacktrace: String? = nil
     var isBound: Bool { parent != nil } // todo drop, once https://github.com/nikitabobko/AeroSpace/issues/1215 is fixed
 
@@ -60,6 +45,7 @@ open class TreeNode: Equatable, AeroAny {
 
     /// See: ``getWeight(_:)``
     func setWeight(_ targetOrientation: Orientation, _ newValue: CGFloat) {
+        Kernel.noteModelMutation("setWeight")
         guard let parent else { die("Can't change weight if TreeNode doesn't have parent") }
         switch getChildParentRelation(child: self, parent: parent) {
             case .tiling(let parent):
@@ -69,11 +55,7 @@ open class TreeNode: Equatable, AeroAny {
                 if parent.layout != .tiles && parent.layout != .master {
                     die("Weight can be changed only for nodes whose parent has 'tiles' or 'master' layout")
                 }
-                guard adaptiveWeight != newValue else { return }
                 adaptiveWeight = newValue
-                // Dual-link weight change affects layout geometry — drop published spine
-                // (suppressed while layout syncs spine weights onto live handles)
-                nodeWorkspace?.invalidateTilingStructureGeneration()
             default:
                 die("Can't change weight")
         }
@@ -98,6 +80,7 @@ open class TreeNode: Equatable, AeroAny {
     @MainActor
     @discardableResult
     func bind(to newParent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) -> BindingData? {
+        Kernel.noteModelMutation("bind")
         let result = unbindIfBound()
 
         if newParent === NilTreeNode.instance {
@@ -123,9 +106,12 @@ open class TreeNode: Equatable, AeroAny {
         // 1. "floating windows" in FocusCommand break the MRU because of that :(
         // 2. Misbehaved apps that abuse real window as popups https://github.com/nikitabobko/AeroSpace/issues/106 (the
         //    last appeared window, is not necessarily the one that has the focus)
-        markAsMostRecentChild()
-        // Dual-link structural change: drop path-copy generation so layout cannot use a stale spine
-        invalidateTilingGenerationAfterDualLinkMutation(oldParent: result?.parent, newParent: newParent)
+        // Parking a window in a macOS-owned container (native fullscreen / hidden app / minimized /
+        // popup) is not a focus event: marking it made that container the workspace's most-recent
+        // child, so focus fallback picked parked tabs and fullscreen windows.
+        if !newParent.isMacosParkingContainer {
+            markAsMostRecentChild()
+        }
         return result
     }
 
@@ -133,31 +119,12 @@ open class TreeNode: Equatable, AeroAny {
         guard let _parent else { return nil }
 
         let index = _parent._children.remove(element: self) ?? dieT("Can't find child in its parent")
-        check(_parent._mruChildren.remove(self))
-        let oldParent = _parent
+        // Not every child is on the MRU stack: parking in a macOS container doesn't mark it
+        _parent._mruChildren.remove(self)
         self._parent = nil
         unboundStacktrace = getStringStacktrace()
-        invalidateTilingGenerationAfterDualLinkMutation(oldParent: oldParent, newParent: nil)
 
         return BindingData(parent: _parent, adaptiveWeight: adaptiveWeight, index: index)
-    }
-
-    /// Clear workspace tiling generation when dual-link bind/unbind touches tiling structure.
-    private func invalidateTilingGenerationAfterDualLinkMutation(
-        oldParent: NonLeafTreeNodeObject?,
-        newParent: NonLeafTreeNodeObject?,
-    ) {
-        // Only tiling dual-link edges. Binding floating/shim containers to a Workspace must not
-        // clear the spine (layout does that after publishing the generation).
-        let touchesTiling =
-            oldParent is TilingContainer || newParent is TilingContainer ||
-            self is TilingContainer
-        guard touchesTiling else { return }
-        // Prefer new parent's workspace, then old, then self
-        let ws = (newParent as? TreeNode)?.nodeWorkspace
-            ?? (oldParent as? TreeNode)?.nodeWorkspace
-            ?? nodeWorkspace
-        ws?.invalidateTilingStructureGeneration()
     }
 
     func markAsMostRecentChild() {
@@ -172,7 +139,8 @@ open class TreeNode: Equatable, AeroAny {
 
     @discardableResult
     func unbindFromParent() -> BindingData {
-        unbindIfBound() ?? dieT("\(self) is already unbound. The stacktrace where it was unbound:\n\(unboundStacktrace.prettyDescription)")
+        Kernel.noteModelMutation("unbind")
+        return unbindIfBound() ?? dieT("\(self) is already unbound. The stacktrace where it was unbound:\n\(unboundStacktrace.prettyDescription)")
     }
 
     nonisolated public static func == (lhs: TreeNode, rhs: TreeNode) -> Bool {
@@ -212,4 +180,13 @@ final class NilTreeNode: TreeNode, NonLeafTreeNodeObject {
         super.init()
     }
     @MainActor static let instance = NilTreeNode()
+}
+
+enum NodeIds {
+    private nonisolated(unsafe) static var last: UInt64 = 0
+    /// Nodes are only ever created on the main thread
+    static func next() -> UInt64 {
+        unsafe last &+= 1
+        return unsafe last
+    }
 }

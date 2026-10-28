@@ -10,7 +10,7 @@ struct LayoutContext {
     @MainActor
     init(_ workspace: Workspace) {
         self.workspace = workspace
-        self.resolvedGaps = ResolvedGaps(gaps: config.gaps, monitor: workspace.workspaceMonitor)
+        self.resolvedGaps = workspace.resolvedGaps
     }
 }
 
@@ -42,15 +42,18 @@ extension Window {
         }
         if isFullscreen {
             layoutFullscreen(context)
-            isFullscreen = false
         }
     }
 
+    /// Fills the workspace's monitor. Written only when the target differs from the last write
+    /// (fullscreen used to rewrite every layout pass).
     @MainActor
     func layoutFullscreen(_ context: LayoutContext) {
         let monitorRect = noOuterGapsInFullscreen
             ? context.workspace.workspaceMonitor.visibleRect
-            : context.workspace.workspaceMonitor.visibleRectPaddedByOuterGaps
+            : context.workspace.tilingRect
+        if desiredRect == monitorRect { return }
+        desiredRect = monitorRect
         setAxFrame(monitorRect.topLeftCorner, CGSize(width: monitorRect.width, height: monitorRect.height))
     }
 }

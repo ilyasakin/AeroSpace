@@ -1,13 +1,8 @@
 import AppKit
 import Common
 
-/// First line of defence against lock screen
-///
-/// When you lock the screen, all accessibility API becomes unobservable (all attributes become empty, window id
-/// becomes nil, etc.) which tricks AeroSpace into thinking that all windows were closed.
-/// That's why every time a window dies AeroSpace caches the "entire world" (unless window is already presented in the cache)
-/// so that once the screen is unlocked, AeroSpace could restore windows to where they were
-@MainActor private var closedWindowsCache = FrozenWorld(workspaces: [], monitors: [], windowIds: [])
+// The frozen world (see `WindowMemory.freezeWorldIfNeeded`): the first line of defence against
+// the lock screen, where AX goes blank and every window looks closed.
 
 struct FrozenMonitor: Sendable {
     /// Identity, not geometry. Keyed on the top-left corner this could not tell two monitors apart
@@ -39,35 +34,20 @@ struct FrozenWorkspace: Sendable {
     }
 }
 
-@MainActor func cacheClosedWindowIfNeeded() {
-    let allWs = Workspace.all
-    let allWindowIds = allWs.flatMap { collectAllWindowIdsRecursive($0) }.toSet()
-    if allWindowIds.isSubset(of: closedWindowsCache.windowIds) {
-        return // already cached
-    }
-    closedWindowsCache = FrozenWorld(
-        workspaces: allWs.map { FrozenWorkspace($0) },
-        monitors: monitors.map(FrozenMonitor.init),
-        windowIds: allWindowIds,
-    )
-}
-
-@MainActor func restoreClosedWindowsCacheIfNeeded(newlyDetectedWindow: Window) async throws -> Bool {
-    if !closedWindowsCache.windowIds.contains(newlyDetectedWindow.windowId) {
-        return false
-    }
+/// Put every workspace and monitor back the way `world` froze them
+@MainActor func restoreFrozenWorld(_ world: FrozenWorld) async throws {
     let monitors = monitors
     let monitorById = Dictionary(monitors.map { ($0.displayId, $0) }, uniquingKeysWith: { first, _ in first })
 
-    for frozenWorkspace in closedWindowsCache.workspaces {
+    for frozenWorkspace in world.workspaces {
         let workspace = Workspace.get(byName: frozenWorkspace.name)
         _ = monitorById[frozenWorkspace.monitor.displayId]?
             .setActiveWorkspace(workspace)
         for frozenWindow in frozenWorkspace.floatingWindows {
-            MacWindow.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
+            Window.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
         }
         for frozenWindow in frozenWorkspace.macosUnconventionalWindows { // Will get fixed by normalizations
-            MacWindow.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
+            Window.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
         }
         let prevRoot = workspace.rootTilingContainer // Save prevRoot into a variable to avoid it being garbage collected earlier than needed
         let potentialOrphans = prevRoot.allLeafWindowsRecursive
@@ -78,11 +58,10 @@ struct FrozenWorkspace: Sendable {
         }
     }
 
-    for monitor in closedWindowsCache.monitors {
+    for monitor in world.monitors {
         _ = monitorById[monitor.displayId]?
             .setActiveWorkspace(Workspace.get(byName: monitor.visibleWorkspace))
     }
-    return true
 }
 
 @discardableResult
@@ -90,19 +69,4 @@ struct FrozenWorkspace: Sendable {
 private func restoreTreeRecursive(frozenContainer: FrozenContainer, parent: NonLeafTreeNodeObject, index: Int) -> Bool {
     // Persistent spine materializes via path-copying model (#1215)
     frozenContainer.node.restore(parent: parent, index: index)
-}
-
-// Consider the following case:
-// 1. Close window
-// 2. The previous step lead to caching the whole world
-// 3. Change something in the layout
-// 4. Lock the screen
-// 5. The cache won't be updated because all alive windows are already cached
-// 6. Unlock the screen
-// 7. The wrong cache is used
-//
-// That's why we have to reset the cache every time layout changes. The layout can only be changed by running commands
-// and with mouse manipulations
-@MainActor func resetClosedWindowsCache() {
-    closedWindowsCache = FrozenWorld(workspaces: [], monitors: [], windowIds: [])
 }

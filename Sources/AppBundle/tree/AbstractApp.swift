@@ -8,6 +8,8 @@ protocol AbstractApp: AnyObject, Hashable, AeroAny {
     var name: String? { get }
     var execPath: String? { get }
     var bundlePath: String? { get }
+    /// macOS "Hide" (cmd-H) state of the whole app
+    @MainActor var isHidden: Bool { get }
 }
 
 extension AbstractApp {
@@ -27,5 +29,4 @@ extension AbstractApp {
 }
 
 extension Window {
-    var macAppUnsafe: MacApp { app as! MacApp }
 }

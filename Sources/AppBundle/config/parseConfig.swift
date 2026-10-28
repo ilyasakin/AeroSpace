@@ -216,6 +216,12 @@ private let configParser: [String: any ParserProtocol<Config>] = [
     "default-root-container-layout": Parser(\.defaultRootContainerLayout, parseLayout),
     "default-root-container-orientation": Parser(\.defaultRootContainerOrientation, parseDefaultContainerOrientation),
     "tiling-policy": Parser(\.tilingPolicy, parseTilingPolicy),
+    "i3-normalization": Parser(\.i3Normalization, parseBool),
+    "accordion-mode": Parser(\.accordionMode, parseAccordionMode),
+    "smart-gaps": Parser(\.smartGaps, parseBool),
+    "focus-wrapping": Parser(\.focusWrapping, parseFocusWrapping),
+    "mouse-warping": Parser(\.mouseWarping, parseMouseWarping),
+    "workspace-auto-back-and-forth": Parser(\.workspaceAutoBackAndForth, parseBool),
     "dwindle-split-percent": Parser(\.dwindleSplitPercent, parseDwindleSplitPercent),
 
     "skylight-reads": Parser(\.skyLightReads, parseBool),
@@ -374,7 +380,7 @@ struct ParseConfigResult {
             .toOrderedSet()
     }
 
-    if config.enableNormalizationFlattenContainers {
+    if config.enableNormalizationFlattenContainers && !config.i3Normalization {
         let containsSplitCommand = config.modes.values.lazy.flatMap { $0.bindings.values }
             .flatMap { $0.commands.flatten() }
             .contains { $0 is SplitCommand }
@@ -506,6 +512,27 @@ private func parseTilingPolicy(_ raw: OrderedJson, _ backtrace: ConfigBacktrace)
     parseString(raw, backtrace).flatMap {
         TilingPolicy(rawValue: $0)
             .toResult(.init(backtrace, "Can't parse tiling policy '\($0)'. Possible values: manual|dwindle"))
+    }
+}
+
+private func parseFocusWrapping(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<FocusWrapping> {
+    parseString(raw, backtrace).flatMap {
+        FocusWrapping(rawValue: $0)
+            .toResult(.init(backtrace, "Can't parse focus-wrapping '\($0)'. Possible values: yes|no|force|workspace"))
+    }
+}
+
+private func parseAccordionMode(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<AccordionMode> {
+    parseString(raw, backtrace).flatMap {
+        AccordionMode(rawValue: $0)
+            .toResult(.init(backtrace, "Can't parse accordion-mode '\($0)'. Possible values: peek|i3"))
+    }
+}
+
+private func parseMouseWarping(_ raw: OrderedJson, _ backtrace: ConfigBacktrace) -> ResOrConfigParseDiagnostic<MouseWarping> {
+    parseString(raw, backtrace).flatMap {
+        MouseWarping(rawValue: $0)
+            .toResult(.init(backtrace, "Can't parse mouse-warping '\($0)'. Possible values: none|output|container"))
     }
 }
 

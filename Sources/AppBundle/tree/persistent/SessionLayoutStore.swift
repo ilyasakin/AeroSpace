@@ -22,85 +22,52 @@ enum SessionLayoutStore {
     private static var refuseToOverwrite = false
 
     static func resetFormatGuardForTests() { refuseToOverwrite = false }
+    /// Tests: a fresh process's store (a restore in one test armed the grace for the next)
+    static func resetForTests() {
+        refuseToOverwrite = false
+        pendingSave?.cancel()
+        pendingSave = nil
+        lastSavedStructural = nil
+        startupGraceActive = false
+        graceStartedAt = 0
+        retryPending = false
+        lastSavedWindowCount = 0
+    }
     private static var pendingSave: DispatchWorkItem?
+    private static var pendingExpiry: DispatchWorkItem?
     private static var lastSavedStructural: PersistentWorldSnapshot?
 
-    /// Saved placements not yet claimed by a live window at restore time. Discovery can race
-    /// restore (slow AX at startup): windows registered later consult this instead of defaulting
-    /// to the focused workspace. Entries are (saved id, workspace); the app index groups the SAME
-    /// entries per app so a reboot (all-new ids) can still claim by app — consuming by id also
-    /// removes the entry from the app index (the old dual-map leaked the app copy, teleporting
-    /// brand-new windows to stale workspaces).
-    private struct PendingPlacement {
-        let savedId: UInt32
-        let workspace: String
-    }
-
-    private static var pendingById: [UInt32: PendingPlacement] = [:]
-    /// App → pending entries, oldest first. Only apps whose pending windows all sit on ONE
-    /// workspace (the same ambiguity guard as sessionRestoreIdTranslation — order-pairing across
-    /// workspaces would shuffle multi-workspace terminals).
-    private static var pendingByApp: [String: [PendingPlacement]] = [:]
-    private static var pendingExpiry: DispatchWorkItem?
-
-    /// Consume the saved workspace for a late-discovered window (nil after grace/none saved).
-    static func pendingWorkspace(for windowId: UInt32, appId: String?) -> Workspace? {
-        if let placement = pendingById.removeValue(forKey: windowId) {
-            removeFromAppIndex(placement)
-            return Workspace.get(byName: placement.workspace)
-        }
-        if let appId, var queue = pendingByApp[appId], !queue.isEmpty {
-            let placement = queue.removeFirst()
-            pendingByApp[appId] = queue.isEmpty ? nil : queue
-            pendingById.removeValue(forKey: placement.savedId)
-            return Workspace.get(byName: placement.workspace)
-        }
-        return nil
-    }
-
-    private static func removeFromAppIndex(_ placement: PendingPlacement) {
-        for (app, queue) in pendingByApp {
-            let filtered = queue.filter { $0.savedId != placement.savedId }
-            if filtered.count != queue.count {
-                pendingByApp[app] = filtered.isEmpty ? nil : filtered
-                return
-            }
-        }
-    }
-
+    /// Saved windows not claimed by a live one at restore time go to `WindowMemory`: discovery can
+    /// race restore (slow AX at startup), and after a reboot the ids are all new (matched by app)
     private static func armPendingPlacements(_ snap: PersistentWorldSnapshot, savedApps: [UInt32: String], liveIds: Set<UInt32>) {
-        pendingById.removeAll()
-        pendingByApp.removeAll()
-        var appWorkspaces: [String: Set<String>] = [:]
+        var placements: [(savedId: UInt32, workspace: String, app: String?)] = []
         for ws in snap.workspaces {
             let ids = collectWindowIds(ws.rootTiling) + ws.floatingWindowIds + ws.unconventionalWindowIds
             for id in ids where !liveIds.contains(id) {
-                let placement = PendingPlacement(savedId: id, workspace: ws.name)
-                pendingById[id] = placement
-                if let app = savedApps[id] {
-                    pendingByApp[app, default: []].append(placement)
-                    appWorkspaces[app, default: []].insert(ws.name)
-                }
+                placements.append((id, ws.name, savedApps[id]))
             }
         }
-        // Ambiguity guard: app-keyed claiming only when unambiguous (single workspace per app).
-        for (app, workspaces) in appWorkspaces where workspaces.count > 1 {
-            pendingByApp.removeValue(forKey: app)
-        }
+        WindowMemory.rememberLastSession(placements)
         armStartupGrace()
     }
 
     /// Arm the no-save window + expiry. Called for BOTH restore outcomes — a failed restore
     /// (AeroSpace launched before the apps; zero id overlap) must not let the first discovery
     /// save overwrite the good session file with "everything on the focused workspace".
-    private static func armStartupGrace() {
+    private static func armStartupGrace(restarting: Bool = false) {
         startupGraceActive = true
-        graceStartedAt = ProcessInfo.processInfo.systemUptime
+        if !restarting { graceStartedAt = ProcessInfo.processInfo.systemUptime }
         pendingExpiry?.cancel()
         let work = DispatchWorkItem {
-            MainActor.assumeIsolated {
-                pendingById.removeAll()
-                pendingByApp.removeAll()
+            Kernel.submit("session store grace expired") {
+                // While the screen is locked or a native-fullscreen Space is showing, macOS lists
+                // (almost) no other windows over AX: the saved ones can't have come back yet.
+                // Giving up then dumped every window on the focused workspace once they did.
+                if MacOS.current.isScreenLocked || MacOS.current.isOnFullscreenSpace {
+                    armStartupGrace(restarting: true)
+                    return
+                }
+                WindowMemory.forgetLastSession()
                 retryPending = false
                 startupGraceActive = false
                 saveNow() // first trusted save: the settled post-grace state
@@ -113,7 +80,7 @@ enum SessionLayoutStore {
     private static func collectWindowIds(_ node: PersistentTilingNode) -> [UInt32] {
         switch node {
             case .window(let id, _): [id]
-            case .container(_, _, _, let children): children.flatMap { collectWindowIds($0) }
+            case .container(_, _, _, let children, _): children.flatMap { collectWindowIds($0) }
         }
     }
 
@@ -133,10 +100,16 @@ enum SessionLayoutStore {
     /// once windows have actually appeared (restore used to be strictly one-shot).
     static func retryRestoreIfPending() {
         guard retryPending, startupGraceActive else { return }
-        if restoreIfPossible() {
+        // Every heavy during the grace retries; decode the file once, not once per heavy (saves
+        // are blocked during the grace, so the file can't change underneath)
+        if cachedLoadForRetry == nil { cachedLoadForRetry = load() }
+        if restoreIfPossible(preloaded: cachedLoadForRetry) {
             retryPending = false
+            cachedLoadForRetry = nil
         }
     }
+
+    private static var cachedLoadForRetry: (snapshot: PersistentWorldSnapshot, apps: [UInt32: String])? = nil
 
     /// Debounced save after structural changes (layout sessions).
     static func scheduleSave() {
@@ -144,14 +117,22 @@ enum SessionLayoutStore {
         if startupGraceActive { return }
         pendingSave?.cancel()
         let work = DispatchWorkItem {
-            MainActor.assumeIsolated { saveNow() }
+            // A job: the save snapshots the whole tree, which must not be caught mid-session
+            Kernel.submit("session store save") { saveNow(writeInBackground: true) }
         }
         pendingSave = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        // 2s: every workspace switch changes the structure, and a save used to land 0.4s after the
+        // last one — right when the next hotkey tends to arrive
+        DispatchQueue.main.asyncAfter(deadline: .now() + saveDebounceSeconds, execute: work)
     }
 
-    /// Immediate save (quit / SIGTERM).
-    static func saveNow() {
+    static let saveDebounceSeconds: Double = 2.0
+    /// Serial so writes land in submission order
+    private static let writeQueue = DispatchQueue(label: "bobko.aerospace.session-store", qos: .utility)
+
+    /// Capture now; with `writeInBackground`, JSON-encode and write off the main thread. Quit /
+    /// SIGTERM passes false: the process may exit right after, so the write must be done.
+    static func saveNow(writeInBackground: Bool = false) {
         // Never overwrite a session written by a newer build (see `load`).
         if refuseToOverwrite { return }
         // Quitting mid-grace: the tree may be half-restored — keep the last good file. But a
@@ -160,25 +141,69 @@ enum SessionLayoutStore {
         if startupGraceActive, ProcessInfo.processInfo.systemUptime - graceStartedAt < 15 { return }
         pendingSave?.cancel()
         pendingSave = nil
+        // Quit path: let a queued background write land before comparing against it
+        if !writeInBackground { writeQueue.sync {} }
         let snap = PersistentWorldSnapshot.captureLive()
         if snap.windowIds.isEmpty {
             return
         }
-        if let last = lastSavedStructural, last.structureEquals(snap) {
+        // While the screen is locked or a native-fullscreen Space shows, macOS hides most windows
+        // from AX: a snapshot then is a world with most windows "gone". Saving it destroyed a real
+        // layout (a relaunch while on a fullscreen Space wrote every workspace empty)
+        if snap.windowIds.count * 2 < lastSavedWindowCount,
+           MacOS.current.isScreenLocked || MacOS.current.isOnFullscreenSpace
+        {
             return
         }
-        do {
-            let url = fileUrl
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            var dto = SessionLayoutDTO(from: snap)
-            dto.apps = appIds(for: snap.windowIds) // reboot-survival matching (ids die with the WS session)
-            let data = try JSONEncoder().encode(dto)
-            try data.write(to: url, options: .atomic)
-            lastSavedStructural = snap
-        } catch {
-            // Best-effort — never crash the WM on save failure
+        // Weights count now: they are the model's (layout used to rewrite them every pass, which is
+        // why only structure was compared — and resizes were never saved)
+        if let last = lastSavedStructural, last == snap {
+            return
+        }
+        let url = fileUrl
+        var dto = SessionLayoutDTO(from: snap)
+        dto.apps = appIds(for: snap.windowIds) // reboot-survival matching (ids die with the WS session)
+        lastSavedStructural = snap
+        lastSavedWindowCount = snap.windowIds.count
+        let write = { @Sendable [dto] in
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                rotateBackups(of: url)
+                let data = try JSONEncoder().encode(dto)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                // Best-effort — never crash the WM on save failure; forget the snapshot so the
+                // next save retries instead of short-circuiting on "unchanged"
+                Task.startUnstructured { @MainActor in lastSavedStructural = nil }
+            }
+        }
+        if writeInBackground {
+            writeQueue.async(execute: write)
+        } else {
+            write()
         }
     }
+
+    /// How many windows the session file holds (from the last load or save)
+    private static var lastSavedWindowCount = 0
+
+    /// How many earlier session files are kept beside the current one (`.1` newest)
+    nonisolated static let backupCount = 5
+
+    /// A bad save must be recoverable: keep the previous files
+    private nonisolated static func rotateBackups(of url: URL) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return }
+        func backup(_ n: Int) -> URL { url.appendingPathExtension(String(n)) }
+        try? fm.removeItem(at: backup(backupCount))
+        for n in stride(from: backupCount - 1, through: 1, by: -1) where fm.fileExists(atPath: backup(n).path) {
+            try? fm.moveItem(at: backup(n), to: backup(n + 1))
+        }
+        try? fm.copyItem(at: url, to: backup(1))
+    }
+
+    /// Wait for queued background writes (tests)
+    static func flushWritesForTests() { writeQueue.sync {} }
 
     /// windowId → app bundle id for every live saved window (sync; no AX).
     private static func appIds(for ids: Set<UInt32>) -> [String: String] {
@@ -217,8 +242,9 @@ enum SessionLayoutStore {
     /// Rebuild live tree from the last session snapshot for any windows that still exist.
     /// Returns true if at least one workspace was restored.
     @discardableResult
-    static func restoreIfPossible() -> Bool {
-        guard let (rawSnap, savedApps) = load() else { return false }
+    static func restoreIfPossible(preloaded: (snapshot: PersistentWorldSnapshot, apps: [UInt32: String])? = nil) -> Bool {
+        guard let (rawSnap, savedApps) = preloaded ?? load() else { return false }
+        lastSavedWindowCount = max(lastSavedWindowCount, rawSnap.windowIds.count)
         let liveIds = Workspace.all.flatMap { collectAllWindowIdsRecursive($0) }.toSet()
         // After reboot/login all CGWindowIDs are new — translate stale saved ids to relaunched
         // windows of the same app so the layout still comes back (see sessionRestoreIdTranslation).
@@ -278,8 +304,6 @@ enum SessionLayoutStore {
             resolveSavedMonitor(key: key, topLeft: topLeft, byKey: monByKey, byOrigin: monByOrigin)
         }
 
-        // Drop discovery-layout generations before rebuild — materialize publishes the restored spine.
-        Workspace.clearTilingStructureGenerations()
 
         // Park every live tiling leaf floating so materialize can rebind by id (same as tests).
         // Track exactly which ids were parked: only THEY may be force-tiled as orphans later —
@@ -334,6 +358,15 @@ enum SessionLayoutStore {
 
         if restoredAny {
             lastSavedStructural = snap
+            // The user is where macOS's focus is: the restore just moved that window back to its
+            // saved workspace, and the model's focus must go with it. Left on the startup
+            // workspace, its other window was pushed to macOS — a restart pulled the user off the
+            // terminal they were typing in (before that, nobody moved and keys went to a parked one)
+            if let id = FocusReconciler.record.observed, let window = Window.get(byId: id),
+               window.nodeWorkspace != nil, !window.isOwnedByMacos
+            {
+                _ = window.focusWindow()
+            }
             Workspace.garbageCollectUnusedWorkspaces()
         }
         return restoredAny
@@ -403,7 +436,7 @@ extension PersistentTilingNode {
         switch self {
             case .window(let id, let weight):
                 return .window(id: map[id] ?? id, weight: weight)
-            case .container(let o, let l, let w, let children):
+            case .container(let o, let l, let w, let children, _):
                 return .container(orientation: o, layout: l, weight: w, children: children.map { $0.mappingWindowIds(map) })
         }
     }
@@ -440,7 +473,7 @@ extension PersistentTilingNode {
         switch self {
             case .window(let id, let weight):
                 return keeping.contains(id) ? .window(id: id, weight: weight) : nil
-            case .container(let orientation, let layout, let weight, let children):
+            case .container(let orientation, let layout, let weight, let children, _):
                 let filtered = children.compactMap { $0.filteringWindows(keeping: keeping) }
                 if filtered.isEmpty { return nil }
                 // Keep a container shell so restore always materializes under Workspace → TilingContainer
@@ -590,7 +623,7 @@ extension SessionLayoutDTO.NodeDTO {
         switch node {
             case .window(let id, let weight):
                 self = .window(id: id, weight: Double(weight))
-            case .container(let o, let l, let weight, let children):
+            case .container(let o, let l, let weight, let children, _):
                 self = .container(
                     orientation: o == .h ? "h" : "v",
                     layout: l.rawValue,

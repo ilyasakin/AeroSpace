@@ -2,13 +2,11 @@
 import Common
 import XCTest
 
-/// Path-copy-first commits + dirty-flag generation freshness (#1215 cutover).
+/// Structural commits: pure transforms of a fresh snapshot, applied back onto the one tree.
 @MainActor
 final class TilingStructureCommitTest: XCTestCase {
     override func setUp() async throws {
         setUpWorkspacesForTests()
-        TreeHistory.clear()
-        Workspace.clearTilingStructureGenerations()
     }
 
     func testCommitInsertUpdatesSpineThenLive() async throws {
@@ -19,7 +17,7 @@ final class TilingStructureCommitTest: XCTestCase {
         XCTAssertTrue(ws.commitTilingInsertWindow(id: 101, weight: 1))
         XCTAssertTrue(ws.commitTilingInsertWindow(id: 102, weight: 2))
 
-        let gen = try XCTUnwrap(ws.tilingStructureGeneration)
+        let gen = ws.currentTilingSpine()
         XCTAssertEqual(Set(gen.windowIds), [101, 102])
         let liveIds = Set(ws.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId))
         XCTAssertEqual(liveIds, [101, 102])
@@ -43,7 +41,7 @@ final class TilingStructureCommitTest: XCTestCase {
         XCTAssertTrue(ws.commitTilingInsertWindow(id: 202))
 
         XCTAssertTrue(ws.commitTilingRemoveWindow(id: 201))
-        let gen = try! XCTUnwrap(ws.tilingStructureGeneration)
+        let gen = ws.currentTilingSpine()
         XCTAssertEqual(gen.windowIds, [202])
         XCTAssertEqual(
             ws.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId),
@@ -55,7 +53,6 @@ final class TilingStructureCommitTest: XCTestCase {
         let ws = focus.workspace
         TestWindow.new(id: 301, parent: ws.floatingWindowsContainer)
         let before = PersistentTilingNode.capture(ws.rootTilingContainer)
-        ws.tilingStructureGeneration = before
 
         var transformSaw = before
         XCTAssertTrue(ws.commitTilingTransform { spine in
@@ -67,8 +64,8 @@ final class TilingStructureCommitTest: XCTestCase {
             )
         })
         XCTAssertEqual(transformSaw, before)
-        XCTAssertNotEqual(ws.tilingStructureGeneration, before)
-        XCTAssertEqual(ws.tilingStructureGeneration?.windowIds, [301])
+        XCTAssertNotEqual(ws.currentTilingSpine(), before)
+        XCTAssertEqual(ws.currentTilingSpine().windowIds, [301])
     }
 
     func testLayoutDoesNotRequireLiveChildIndexPairing() async throws {
@@ -76,14 +73,14 @@ final class TilingStructureCommitTest: XCTestCase {
         let w = TestWindow.new(id: 401, parent: ws.floatingWindowsContainer)
         XCTAssertTrue(ws.commitTilingInsertWindow(id: 401, weight: 3))
         try await ws.layoutWorkspace()
-        let gen = try XCTUnwrap(ws.tilingStructureGeneration)
+        let gen = ws.currentTilingSpine()
         XCTAssertTrue(gen.containsWindowId(401))
         let rect = try await w.getAxRect(.nonCancellable)
         XCTAssertNotNil(rect)
         XCTAssertGreaterThan(rect!.width * rect!.height, 0)
     }
 
-    /// Matrix A/B/C — all three dual-link mutation classes must hold together under dirty-flag gen.
+    /// Reorder, nested re-layout and weight change all show up in the next layout
     func testGenerationFreshnessMatrix_reorder_nestedStable_setWeight() async throws {
         let ws = focus.workspace
 
@@ -93,22 +90,19 @@ final class TilingStructureCommitTest: XCTestCase {
         XCTAssertTrue(ws.commitTilingInsertWindow(id: 501, weight: 1))
         XCTAssertTrue(ws.commitTilingInsertWindow(id: 502, weight: 1))
         try await ws.layoutWorkspace()
-        XCTAssertNotNil(ws.tilingStructureGeneration)
 
         let root = ws.rootTilingContainer
         a.unbindFromParent()
         b.unbindFromParent()
         b.bind(to: root, adaptiveWeight: 1, index: 0)
         a.bind(to: root, adaptiveWeight: 1, index: 1)
-        // Bind invalidates gen
-        XCTAssertNil(ws.tilingStructureGeneration)
         XCTAssertEqual(
             ws.rootTilingContainer.children.compactMap { ($0 as? Window)?.windowId },
             [502, 501],
         )
 
         try await ws.layoutWorkspace()
-        XCTAssertEqual(try XCTUnwrap(ws.tilingStructureGeneration).windowIds, [502, 501])
+        XCTAssertEqual(ws.currentTilingSpine().windowIds, [502, 501])
         let rb = try await b.getAxRect(.nonCancellable)
         let ra = try await a.getAxRect(.nonCancellable)
         XCTAssertNotNil(rb)
@@ -118,7 +112,6 @@ final class TilingStructureCommitTest: XCTestCase {
         }
 
         // ── B: nested tree, layout twice, no mutation — weights stable ─────
-        Workspace.clearTilingStructureGenerations()
         for child in Array(ws.rootTilingContainer.children) {
             child.unbindFromParent()
             if let w = child as? Window {
@@ -155,20 +148,18 @@ final class TilingStructureCommitTest: XCTestCase {
         )
         XCTAssertTrue(ws.commitTilingTransform { _ in nested })
         try await ws.layoutWorkspace()
-        let genB1 = try XCTUnwrap(ws.tilingStructureGeneration)
+        let genB1 = ws.currentTilingSpine()
         try await ws.layoutWorkspace()
-        let genB2 = try XCTUnwrap(ws.tilingStructureGeneration)
-        // Dirty-flag: gen stays published across clean re-layout
-        XCTAssertEqual(genB1, genB2, "B: second layout must reuse published gen")
-        guard case .container(_, _, _, let ch1) = genB1,
-              case .container(_, _, let nestedW1, _) = ch1[0],
-              case .container(_, _, _, let ch2) = genB2,
-              case .container(_, _, let nestedW2, _) = ch2[0]
+        let genB2 = ws.currentTilingSpine()
+        XCTAssertEqual(genB1, genB2, "B: a clean re-layout changes nothing")
+        guard case .container(_, _, _, let ch1, _) = genB1,
+              case .container(_, _, let nestedW1, _, _) = ch1[0],
+              case .container(_, _, _, let ch2, _) = genB2,
+              case .container(_, _, let nestedW2, _, _) = ch2[0]
         else { return XCTFail("B: expected nested container") }
         XCTAssertEqual(nestedW1, nestedW2)
 
         // ── C: setWeight (resize path) invalidates; next layout follows new weights ─
-        Workspace.clearTilingStructureGenerations()
         for child in Array(ws.rootTilingContainer.children) {
             child.unbindFromParent()
         }
@@ -177,18 +168,16 @@ final class TilingStructureCommitTest: XCTestCase {
         XCTAssertTrue(ws.commitTilingInsertWindow(id: 701, weight: 1))
         XCTAssertTrue(ws.commitTilingInsertWindow(id: 702, weight: 1))
         try await ws.layoutWorkspace()
-        let beforeW = try XCTUnwrap(ws.tilingStructureGeneration)
+        let beforeW = ws.currentTilingSpine()
         let rLeft0 = try await left.getAxRect(.nonCancellable)!
         let rRight0 = try await right.getAxRect(.nonCancellable)!
 
         // Real dual-link weight change (ResizeCommand / mouse path)
         let parent = try XCTUnwrap(left.parent as? TilingContainer)
         left.setWeight(parent.orientation, left.getWeight(parent.orientation) * 3)
-        // setWeight must invalidate
-        XCTAssertNil(ws.tilingStructureGeneration, "C: setWeight must dirty generation")
 
         try await ws.layoutWorkspace()
-        let afterW = try XCTUnwrap(ws.tilingStructureGeneration)
+        let afterW = ws.currentTilingSpine()
         XCTAssertNotEqual(beforeW, afterW)
         let rLeft1 = try await left.getAxRect(.nonCancellable)!
         let rRight1 = try await right.getAxRect(.nonCancellable)!

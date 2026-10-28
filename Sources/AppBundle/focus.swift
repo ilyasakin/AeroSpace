@@ -37,7 +37,12 @@ private struct FrozenFocus: AeroAny, Equatable, Sendable {
     let monitorId_oneBased: Int
 
     @MainActor var live: LiveFocus { // Important: don't access focus.monitorId here. monitorId is not part of the focus. Always prefer workspace
+        // A hidden app's window (cmd-H) is not a focus: it can't take keys, commands acting on it
+        // act on nothing visible, and asking macOS to focus it unhides the app. The workspace's own
+        // focus takes over. (Background native tabs share the parking container but are shown,
+        // through their group's tile — those stay focusable.)
         let window: Window? = windowId.flatMap { Window.get(byId: $0) }
+            .flatMap { $0.parent is MacosHiddenAppsWindowsContainer && $0.app.isHidden ? nil : $0 }
         let workspace = Workspace.get(byName: workspaceName)
 
         let workspaceFocus = workspace.toLiveFocus()
@@ -60,8 +65,49 @@ private struct FrozenFocus: AeroAny, Equatable, Sendable {
 /// AEROSPACE_WORKSPACE env before accessing the global focus.
 @MainActor var focus: LiveFocus { _focus.live }
 
+/// i3 container focus: how many levels above the focused window the focus sits (`focus parent`).
+/// 0 = the window itself. Any change of the focused window resets it (i3 focuses the leaf).
+@MainActor private(set) var focusLevel: Int = 0
+
+@MainActor func setFocusLevel(_ level: Int) {
+    focusLevel = max(0, level)
+}
+
+extension LiveFocus {
+    /// The node commands act on: the focused window, or with `focus parent` the tiling container
+    /// that many levels above it (never above the workspace's root container, never for floats)
+    @MainActor var focusedNode: TreeNode? {
+        guard let window = windowOrNil else { return nil }
+        var node: TreeNode = window
+        var level = 0
+        while level < focusLevel, let parent = node.parent as? TilingContainer {
+            node = parent
+            level += 1
+        }
+        return node
+    }
+
+    /// The deepest level `focus parent` can reach from the focused window
+    @MainActor var maxFocusLevel: Int {
+        guard let window = windowOrNil else { return 0 }
+        var level = 0
+        var node: TreeNode = window
+        while let parent = node.parent as? TilingContainer {
+            node = parent
+            level += 1
+        }
+        return level
+    }
+}
+
+/// Whether `windowId` is the focused window, by id (resolves even once the window has left the registry)
+@MainActor func isFocusedWindowId(_ windowId: UInt32) -> Bool { _focus.windowId == windowId }
+
 @MainActor func setFocus(to newFocus: LiveFocus) -> Bool {
     if _focus == newFocus.frozen { return true }
+    Kernel.noteModelMutation("setFocus")
+    FrameTrace.log("model-focus \(_focus.windowId.map(String.init) ?? "nil")@\(_focus.workspaceName) -> \(newFocus.windowOrNil?.windowId.description ?? "nil")@\(newFocus.workspace.name) event=\(refreshSessionEvent.map { "\($0)" } ?? "none")")
+    if newFocus.windowOrNil?.windowId != _focus.windowId { focusLevel = 0 }
     let oldFocus = focus
     // Normalize mruWindow when focus away from a workspace
     if oldFocus.workspace != newFocus.workspace {
@@ -70,6 +116,17 @@ private struct FrozenFocus: AeroAny, Equatable, Sendable {
 
     _focus = newFocus.frozen
     let status = newFocus.workspace.workspaceMonitor.setActiveWorkspace(newFocus.workspace)
+
+    if let window = newFocus.windowOrNil {
+        window.hasEverBeenFocused = true
+        // i3 con_activate_unblock: explicitly focusing another tiled window of the workspace
+        // ends its fullscreen (floats — dialogs, pickers — are shown above it instead)
+        if window.parent is TilingContainer, let ws = window.nodeWorkspace {
+            for other in ws.rootTilingContainer.allLeafWindowsRecursive where other !== window && other.isFullscreen {
+                other.exitFullscreen()
+            }
+        }
+    }
 
     newFocus.windowOrNil?.markAsMostRecentChild()
     return status
@@ -91,9 +148,10 @@ extension Workspace {
     @MainActor func focusWorkspace() -> Bool { setFocus(to: toLiveFocus()) }
 
     func toLiveFocus() -> LiveFocus {
-        // todo unfortunately mostRecentWindowRecursive may recursively reach empty rootTilingContainer
-        //      while floating or macos unconventional windows might be presented
-        if let wd = mostRecentWindowRecursive ?? anyLeafWindowRecursive {
+        // Never a window macOS owns (native fullscreen, a hidden app's): focusing it would take
+        // the user off this workspace — onto the fullscreen Space, or unhiding the app. With only
+        // such windows the workspace is shown empty, as i3 shows a workspace with nothing tiled.
+        if let wd = mostRecentWindowRecursive {
             LiveFocus(windowOrNil: wd, workspace: self)
         } else {
             LiveFocus(windowOrNil: nil, workspace: self) // emptyWorkspace
@@ -114,6 +172,8 @@ extension Workspace {
 
 // Used by focus-back-and-forth
 @MainActor private var _prevFocus: FrozenFocus? = nil
+/// The window of the previous focus, even when it no longer exists
+@MainActor var prevFocusedWindowId: UInt32? { _prevFocus?.windowId }
 @MainActor var prevFocus: LiveFocus? { _prevFocus?.live.takeIf { $0 != focus } }
 
 @MainActor private var onFocusChangedRecursionGuard = false
@@ -150,10 +210,7 @@ extension Workspace {
     }
     if hasFocusChanged {
         raiseAlwaysOnTopWindows()
-        // Seed private-focus tracking only (no re-raise of floats). Re-raising on every focus
-        // change blocks tile interaction — same class of bug as always-on-top.
-        if let w = focus.windowOrNil {
-        }
+        applyMouseWarping(focus, focusedMonitorChanged: hasFocusedMonitorChanged)
         _ = await onFocusChanged(.defaultEnv, CmdIoImpl.emptyStdinIgnoringOut, focus)
     }
     if hasFocusedMonitorChanged {
@@ -189,7 +246,7 @@ extension Workspace {
         prevWorkspace: oldWorkspace,
     ))
     i3IpcBroadcastWorkspaceEvent(change: "focus", currentName: newWorkspace, oldName: oldWorkspace)
-    if let exec = config.execOnWorkspaceChange.first {
+    if let exec = config.execOnWorkspaceChange.first, Headless.permits(.spawnProcess) {
         let process = Process()
         process.executableURL = URL(filePath: exec)
         process.arguments = Array(config.execOnWorkspaceChange.dropFirst())
@@ -208,4 +265,16 @@ extension Workspace {
         process.environment = environment
         _ = Result { try process.run() }
     }
+}
+
+/// `rename-workspace`: carry every name-keyed focus record over, so a rename is not seen as a
+/// workspace switch (no focus / workspace-changed events, and back-and-forth still works)
+@MainActor func noteWorkspaceRenamed(from old: String, to new: String) {
+    func renamed(_ f: FrozenFocus) -> FrozenFocus {
+        f.workspaceName == old ? FrozenFocus(windowId: f.windowId, workspaceName: new, monitorId_oneBased: f.monitorId_oneBased) : f
+    }
+    _focus = renamed(_focus)
+    _lastKnownFocus = renamed(_lastKnownFocus)
+    _prevFocus = _prevFocus.map(renamed)
+    if _prevFocusedWorkspaceName == old { _prevFocusedWorkspaceName = new }
 }

@@ -10,6 +10,9 @@ struct LayoutCommand: Command {
 
         let node: ConventionalWindowParentCases
         switch args.root ? nil : target.windowOrNil {
+            // `focus parent`: i3 changes the layout of the focused container itself
+            case let window? where window == focus.windowOrNil && focus.focusedNode is TilingContainer:
+                node = .tilingContainer(focus.focusedNode as! TilingContainer)
             case let window?:
                 switch window.windowParentCases {
                     case .floatingWindowsContainer(let it):
@@ -29,8 +32,7 @@ struct LayoutCommand: Command {
                 node = .tilingContainer(target.workspace.rootTilingContainer)
         }
 
-        let targetDescription = args.toggleBetween.val.first(where: { !node.matchesDescription($0) })
-            ?? args.toggleBetween.val.first.orDie()
+        let targetDescription = nextLayoutInToggleList(args.toggleBetween.val) { node.matchesDescription($0) }
         if node.matchesDescription(targetDescription) {
             switch args.failIfNoop {
                 case true: return .fail
@@ -71,31 +73,9 @@ struct LayoutCommand: Command {
                     case .floatingWindowsContainer(let container):
                         window.lastFloatingSize = (try? await window.getAxSize(.nonCancellable)) ?? window.lastFloatingSize
                         guard let workspace = container.nodeWorkspace else { return .fail(io.err(bugPrompt())) }
-                        // Tier 1: nothing changed while floating → materialize the pre-float
-                        // spine verbatim (exact structure + weights; undoes removal's flatten).
-                        // STRUCTURAL equality only: layout re-normalizes weights (they become
-                        // pixel spans) on every pass, so full == never matches and the tier was
-                        // dead code. Same ids + shape is the actual "nothing changed" signal.
-                        let preSpine = window.floatingRestorePreSpine
-                        let postSpine = window.floatingRestorePostSpine
-                        window.floatingRestorePreSpine = nil
-                        window.floatingRestorePostSpine = nil
-                        if let preSpine, let postSpine, workspace.currentTilingSpine().structureEquals(postSpine) {
-                            window.floatingRestoreSlot = nil
-                            workspace.materializeTilingSpine(preSpine)
-                            return .succ
-                        }
-                        // Tier 2: workspace changed — re-insert at the original neighbor slot
-                        // (sibling order unchanged — not MRU-append).
-                        if let slot = window.floatingRestoreSlot {
-                            window.floatingRestoreSlot = nil
-                            if workspace.commitTilingRestoreFloatingSlot(windowId: window.windowId, slot: slot) {
-                                return .succ
-                            }
-                        }
-                        // Neighbors gone / never tiled: i3 floating_disable semantics — plain
-                        // sibling insert after the MRU tiling leaf (no dwindle/absorb placement).
-                        if workspace.commitTilingUnfloat(windowId: window.windowId) {
+                        window.isScratchpadWindow = false // i3: tiling a scratchpad window takes it out
+                        // Exact spine → original neighbour slot → i3 floating_disable (see restoreTile)
+                        if workspace.restoreTile(window) {
                             return .succ
                         }
                         do {
@@ -110,8 +90,9 @@ struct LayoutCommand: Command {
                 let workspace = target.workspace
                 // Capture tiling slot + exact spine *before* unbind so unfloat can restore.
                 if !window.isFloating {
-                    window.floatingRestoreSlot = FloatingRestoreSlot.capture(from: window)
-                    window.floatingRestorePreSpine = workspace.currentTilingSpine()
+                    // A fullscreen tile leaves fullscreen first (its floating frame is unknown)
+                    window.exitFullscreen()
+                    workspace.captureTileRestorePoint(for: window)
                 }
                 // Keep belief at the current tile frame so a following resize/center in the
                 // same session can merge size+position (see MacWindow.setAxFrame / mergeFrameWrite).
@@ -120,14 +101,9 @@ struct LayoutCommand: Command {
                 window.bindAsFloatingWindow(to: workspace)
                 // User explicitly floated this — the i3 float quirks (click-without-raise, settle)
                 // apply only to windows marked here, not to auto-classified dialogs/popups.
-                if window.floatingRestorePreSpine != nil {
-                    // Settle the flatten NOW and snapshot the result: the unfloat comparison
-                    // baseline must match what refresh-time normalization will produce.
-                    workspace.normalizeContainers()
-                    window.floatingRestorePostSpine = workspace.currentTilingSpine()
-                }
+                workspace.settleTileRestorePoint(for: window)
                 if let size = window.lastFloatingSize {
-                    window.setAxFrame(nil, size)
+                    window.requestFrame(topLeft: nil, size: size)
                 }
                 // Place the new float above the tiling stack once (i3: floats start on top).
                 return .succ
@@ -171,4 +147,16 @@ extension ConventionalWindowParentCases {
             case .floating:    floatingWindowsContainerOrNil != nil
         }
     }
+}
+
+/// i3 `layout toggle <list>` (commands.c): the entry AFTER the one matching the current layout,
+/// wrapping; the first entry when none matches. (Was: the first entry that doesn't match, which
+/// only cycles lists of two — `layout h_tiles v_tiles h_accordion` never reached the third.)
+/// A single-entry list is "set", not toggle.
+func nextLayoutInToggleList(
+    _ list: [LayoutCmdArgs.LayoutDescription],
+    matchesCurrent: (LayoutCmdArgs.LayoutDescription) -> Bool,
+) -> LayoutCmdArgs.LayoutDescription {
+    guard list.count > 1, let current = list.firstIndex(where: matchesCurrent) else { return list.first.orDie() }
+    return list[(current + 1) % list.count]
 }

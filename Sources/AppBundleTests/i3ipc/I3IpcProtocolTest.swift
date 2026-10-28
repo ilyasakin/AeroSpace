@@ -87,17 +87,26 @@ final class I3IpcProtocolTest: XCTestCase {
 final class I3IpcCommandMapTest: XCTestCase {
     func testMapCommonVerbs() {
         assertEquals(i3MapCommandToAerospace("workspace 3"), "workspace 3")
-        assertEquals(i3MapCommandToAerospace("workspace number 2"), "workspace 2")
+        assertEquals(i3MapCommandToAerospace("workspace number 2"), "workspace --number 2")
+        assertEquals(i3MapCommandToAerospace("workspace next"), "workspace --all-monitors --wrap-around next")
         assertEquals(i3MapCommandToAerospace("focus left"), "focus left")
+        assertEquals(i3MapCommandToAerospace("focus parent"), "focus parent")
+        assertEquals(i3MapCommandToAerospace("focus mode_toggle"), "focus mode-toggle")
         assertEquals(i3MapCommandToAerospace("move right"), "move right")
+        assertEquals(i3MapCommandToAerospace("move container to workspace 5"), "move-node-to-workspace 5")
+        assertEquals(i3MapCommandToAerospace("move scratchpad"), "scratchpad move")
+        assertEquals(i3MapCommandToAerospace("scratchpad show"), "scratchpad show")
         assertEquals(i3MapCommandToAerospace("kill"), "close")
         assertEquals(i3MapCommandToAerospace("fullscreen"), "fullscreen")
-        assertEquals(i3MapCommandToAerospace("layout splith"), "layout tiles horizontal")
-        assertEquals(i3MapCommandToAerospace("layout splitv"), "layout tiles vertical")
-        assertEquals(i3MapCommandToAerospace("layout tabbed"), "layout accordion")
+        assertEquals(i3MapCommandToAerospace("fullscreen disable"), "fullscreen off") // was: a toggle
+        assertEquals(i3MapCommandToAerospace("layout splith"), "layout h_tiles")
+        assertEquals(i3MapCommandToAerospace("layout splitv"), "layout v_tiles")
+        assertEquals(i3MapCommandToAerospace("layout tabbed"), "layout h_accordion")
+        assertEquals(i3MapCommandToAerospace("layout stacking"), "layout v_accordion")
         assertEquals(i3MapCommandToAerospace("reload"), "reload-config")
-        assertEquals(i3MapCommandToAerospace("move workspace 5"), "move-node-to-workspace 5")
-        assertNil(i3MapCommandToAerospace("[class=\"Firefox\"] focus")) // Phase 2
+        assertEquals(i3MapCommandToAerospace("mark --add music"), "mark --add music")
+        assertEquals(i3MapCommandToAerospace("resize grow left 20 px"), "resize left +20")
+        assertEquals(i3MapCommandToAerospace(#"[class="Firefox"] focus"#), #"[class="Firefox"] focus"#)
     }
 
     func testSplitChain() {

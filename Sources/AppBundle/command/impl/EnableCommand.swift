@@ -6,11 +6,11 @@ struct EnableCommand: Command {
     /*conforms*/ let shouldResetClosedWindowsCache = false
 
     func run(_ env: CmdEnv, _ io: CmdIo) async -> BinaryExitCode {
-        let prevState = TrayMenuModel.shared.isEnabled
+        let prevState = ServerState.isEnabled
         let newState: Bool = switch args.targetState.val {
             case .on: true
             case .off: false
-            case .toggle: !TrayMenuModel.shared.isEnabled
+            case .toggle: !ServerState.isEnabled
         }
         if newState == prevState {
             switch args.failIfNoop {
@@ -23,7 +23,7 @@ struct EnableCommand: Command {
             }
         }
 
-        TrayMenuModel.shared.isEnabled = newState
+        ServerState.isEnabled = newState
         if newState {
             for workspace in Workspace.allUnsorted {
                 for window in workspace.allLeafWindowsRecursive where window.isFloating {
@@ -32,10 +32,11 @@ struct EnableCommand: Command {
             }
             await activateMode_nonCancellable(mainModeId)
         } else {
+            // Hotkeys go first: nothing may run a session against a server that is shutting off
+            await activateMode_nonCancellable(nil)
             // Disabling stops layout; unpark any hide-in-corner windows so they are not left
             // as a 1px strip at the display edge while AeroSpace is "paused".
             await restoreAllWindowsFromHideCornerForDisable()
-            await activateMode_nonCancellable(nil)
         }
         return .succ
     }
@@ -50,7 +51,7 @@ struct EnableCommand: Command {
 /// The async read + fire-and-forget write below cannot stall the main thread.
 @MainActor
 private func restoreAllWindowsFromHideCornerForDisable() async {
-    for window in MacWindow.allWindowsMap.values {
+    for window in Window.all {
         window.unhideFromCorner()
         let axRect = try? await window.getAxRect(.nonCancellable)
         let monitor = window.nodeMonitor
@@ -58,7 +59,7 @@ private func restoreAllWindowsFromHideCornerForDisable() async {
             ?? mainMonitor
         let visible = monitor.visibleRect
         // Prefer last laid-out size, then AX, then floating size.
-        let preferred = window.believedRect?.size
+        let preferred = window.knownFrame?.size
             ?? axRect?.size
             ?? window.lastFloatingSize
         let size = terminationRestoreSize(preferred: preferred, visibleRect: visible)

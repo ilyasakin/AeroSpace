@@ -38,19 +38,8 @@ struct MoveMouseCommand: Command {
     }
 }
 
-private func moveMouse(_ io: CmdIo, _ point: CGPoint) -> BinaryExitCode {
-    let event = CGEvent(
-        mouseEventSource: nil,
-        mouseType: CGEventType.mouseMoved,
-        mouseCursorPosition: point,
-        mouseButton: CGMouseButton.left,
-    )
-    switch event {
-        case nil: return .fail(io.err("Failed to move mouse"))
-        case let event?:
-            event.post(tap: CGEventTapLocation.cghidEventTap)
-            return .succ
-    }
+@MainActor private func moveMouse(_ io: CmdIo, _ point: CGPoint) -> BinaryExitCode {
+    PointerEvents.warp(to: point) ? .succ : .fail(io.err("Failed to move mouse"))
 }
 
 @MainActor
@@ -58,7 +47,7 @@ private func windowSubjectRectOrReportError(_ target: LiveFocus, _ io: CmdIo) as
     // todo bug it's bad that we operate on the "ax physical" state directly. command seq won't work correctly
     //      focus <direction> command has the similar problem
     if let window: Window = target.windowOrNil {
-        if let rect = window.believedRect {
+        if let rect = window.knownFrame {
             return rect
         } else if let rect = try? await window.getAxRect(.nonCancellable) {
             return rect

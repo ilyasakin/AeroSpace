@@ -15,6 +15,7 @@ private struct I3IpcSubscriber {
 // MARK: - Server
 
 func startI3IpcServer() {
+    guard Headless.permits(.socketListener) else { return }
     try? FileManager.default.removeItem(atPath: i3IpcSocketPath)
     let params = NWParameters.tcp
     params.requiredLocalEndpoint = .unix(path: i3IpcSocketPath)
@@ -96,8 +97,15 @@ private struct I3IpcDispatchResult: Sendable {
     var replacedSubIds: [UniqueToken] = []
 }
 
+/// One kernel job per request: queries (workspaces, outputs) read the model between sessions, never
+/// half-way through one; RUN_COMMAND's light session re-enters the same job.
 @MainActor
 private func i3IpcDispatchOnMain(_ frame: I3IpcFrame, connection: NWConnection) async -> I3IpcDispatchResult {
+    await Kernel.exclusive("i3 ipc request") { await i3IpcDispatchInKernel(frame, connection: connection) }
+}
+
+@MainActor
+private func i3IpcDispatchInKernel(_ frame: I3IpcFrame, connection: NWConnection) async -> I3IpcDispatchResult {
     let type = I3IpcMessageType(rawValue: frame.type)
     switch type {
         case .getVersion:
@@ -226,15 +234,10 @@ private func i3IpcEmit(event: I3IpcEventType, payload: [String: Any]) {
     let snapshot = i3IpcSubscribers
     for (id, sub) in snapshot {
         guard sub.events.contains(event) else { continue }
-        Task.startUnstructured {
-            let err = await withCheckedContinuation { (cont: CheckedContinuation<NWError?, Never>) in
-                sub.connection.send(content: encoded, completion: .contentProcessed { cont.resume(returning: $0) })
-            }
-            if err != nil {
-                await MainActor.run {
-                    i3IpcSubscribers.removeValue(forKey: id)
-                }
-            }
+        // Issued in emission order on the main actor (per-connection order is preserved);
+        // bounded — a client that stops reading is dropped (see EventBacklog)
+        EventBacklog.send(encoded, to: sub.connection) {
+            i3IpcSubscribers.removeValue(forKey: id)
         }
     }
 }

@@ -16,6 +16,20 @@ extension CmdArgs {
                 command = CenterWindowCommand(args: self as! CenterWindowCmdArgs)
             case .close:
                 command = CloseCommand(args: self as! CloseCmdArgs)
+            case .renameWorkspace:
+                command = RenameWorkspaceCommand(args: self as! RenameWorkspaceCmdArgs)
+            case .scratchpad:
+                command = ScratchpadCommand(args: self as! ScratchpadCmdArgs)
+            case .gaps:
+                command = GapsCommand(args: self as! GapsCmdArgs)
+            case .criteria:
+                command = CriteriaCommand(args: self as! CriteriaCmdArgs)
+            case .mark:
+                command = MarkCommand(args: self as! MarkCmdArgs)
+            case .unmark:
+                command = UnmarkCommand(args: self as! UnmarkCmdArgs)
+            case .moveNodeToMark:
+                command = MoveNodeToMarkCommand(args: self as! MoveNodeToMarkCmdArgs)
             case .closeAllWindowsButCurrent:
                 command = CloseAllWindowsButCurrentCommand(args: self as! CloseAllWindowsButCurrentCmdArgs)
             case .config:

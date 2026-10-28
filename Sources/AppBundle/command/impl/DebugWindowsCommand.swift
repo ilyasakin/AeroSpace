@@ -33,6 +33,7 @@ struct DebugWindowsCommand: Command {
             // Slow-clock accounting: how many frame requests we generated and how many were thrown
             // away before reaching the app. See AxWriteStats.
             io.out(AxWriteStats.report + "\n")
+            io.out(SessionStats.report + "\n")
             io.out(disclaimer)
             return .succ
         }

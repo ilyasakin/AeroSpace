@@ -7,8 +7,6 @@ import XCTest
 final class PersistentTilingNodeTest: XCTestCase {
     override func setUp() async throws {
         setUpWorkspacesForTests()
-        TreeHistory.clear()
-        Workspace.clearTilingStructureGenerations()
     }
 
     private func sampleTree() -> PersistentTilingNode {
@@ -53,8 +51,8 @@ final class PersistentTilingNodeTest: XCTestCase {
         // Original tree unchanged (immutability)
         XCTAssertEqual(tree.windowIds, [1, 2, 3])
         // Sibling window 1 still the same value (path-copy only rebuilds ancestors)
-        guard case .container(_, _, _, let oldChildren) = tree,
-              case .container(_, _, _, let newChildren) = updated!
+        guard case .container(_, _, _, let oldChildren, _) = tree,
+              case .container(_, _, _, let newChildren, _) = updated!
         else {
             return XCTFail("expected containers")
         }
@@ -99,21 +97,6 @@ final class PersistentTilingNodeTest: XCTestCase {
         XCTAssertEqual(Set(newRoot.allLeafWindowsRecursive.map(\.windowId)), [10, 11])
     }
 
-    func testTreeHistoryRecordsDistinctSnapshots() {
-        let ws = Workspace.get(byName: "h")
-        TestWindow.new(id: 20, parent: ws.rootTilingContainer)
-        TreeHistory.recordLive()
-        XCTAssertEqual(TreeHistory.count, 1)
-
-        TreeHistory.recordLive() // identical — skipped
-        XCTAssertEqual(TreeHistory.count, 1)
-
-        TestWindow.new(id: 21, parent: ws.rootTilingContainer)
-        TreeHistory.recordLive()
-        XCTAssertEqual(TreeHistory.count, 2)
-        XCTAssertEqual(TreeHistory.latest?.windowIds.contains(21), true)
-    }
-
     func testLayoutUsesPersistentSpineAndSetsFrames() async throws {
         // Use the focused workspace from setUp so we don't leave an extra visible workspace
         let ws = focus.workspace
@@ -123,9 +106,7 @@ final class PersistentTilingNodeTest: XCTestCase {
 
         try await ws.layoutWorkspace()
 
-        // Spine generation stored for history/cutover
-        XCTAssertNotNil(ws.tilingStructureGeneration)
-        XCTAssertEqual(Set(ws.tilingStructureGeneration!.windowIds), [40, 41])
+        XCTAssertEqual(Set(ws.currentTilingSpine().windowIds), [40, 41])
 
         // Frames applied to live windows (persistent walk resolves by id)
         let r1 = try await w1.getAxRect(.nonCancellable)
@@ -147,7 +128,7 @@ final class PersistentTilingNodeTest: XCTestCase {
         XCTAssertTrue(frozen.node.isContainer)
         XCTAssertEqual(frozen.node.windowIds, [30])
         // Nested window weight is preserved on the persistent spine
-        if case .container(_, _, _, let children) = frozen.node,
+        if case .container(_, _, _, let children, _) = frozen.node,
            case .window(let id, let w) = children.first
         {
             XCTAssertEqual(id, 30)

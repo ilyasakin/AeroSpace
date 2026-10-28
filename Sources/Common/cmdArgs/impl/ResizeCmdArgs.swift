@@ -8,7 +8,7 @@ public struct ResizeCmdArgs: CmdArgs {
             "--window-id": windowIdSubArgParser(),
         ],
         posArgs: [
-            newMandatoryPosArgParser(\.dimension, parseDimension, placeholder: "(smart|smart-opposite|width|height)"),
+            newMandatoryPosArgParser(\.dimension, parseDimension, placeholder: "(smart|smart-opposite|width|height|left|down|up|right)"),
             newMandatoryPosArgParser(\.units, parseUnits, placeholder: "[+|-]<number>[%]"),
         ],
     )
@@ -29,6 +29,11 @@ public struct ResizeCmdArgs: CmdArgs {
     public enum Dimension: String, CaseIterable, Equatable, Sendable {
         case width, height, smart
         case smartOpposite = "smart-opposite"
+        /// i3 `resize grow|shrink <direction>`: move the edge on that side — the space comes from
+        /// (or goes to) the single neighbour there, not every sibling
+        case left, down, up, right
+
+        public var edge: CardinalDirection? { CardinalDirection(rawValue: rawValue) }
     }
 
     public enum Units: Equatable, Sendable {

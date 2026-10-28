@@ -11,11 +11,11 @@ final class I3IpcServerGateTest: XCTestCase {
     override func setUp() async throws { setUpWorkspacesForTests() }
 
     override func tearDown() async throws {
-        TrayMenuModel.shared.isEnabled = true
+        ServerState.isEnabled = true
     }
 
     func testRunCommandIsRefusedWhileServerDisabled() async throws {
-        TrayMenuModel.shared.isEnabled = false
+        ServerState.isEnabled = false
 
         let data = await i3RunCommandPayload("focus left")
         let results = try XCTUnwrap(
@@ -34,7 +34,7 @@ final class I3IpcServerGateTest: XCTestCase {
     /// The refusal must be specific to being disabled — an unsupported verb is still reported as
     /// unsupported, so the gate cannot be mistaken for blanket rejection.
     func testUnsupportedCommandStillReportsUnsupportedWhileEnabled() async throws {
-        TrayMenuModel.shared.isEnabled = true
+        ServerState.isEnabled = true
 
         let data = await i3RunCommandPayload("border pixel 3")
         let results = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])

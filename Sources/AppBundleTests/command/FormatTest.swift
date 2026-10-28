@@ -160,18 +160,18 @@ final class FormatTest: XCTestCase {
         let window = TestWindow.new(id: 1, parent: root)
         let obj = AeroObj.window(.forTest(window: window, title: nil))
 
-        root.layout = .tiles
+        root.setLayout(.tiles)
         root.changeOrientation(.h)
         assertPrimitive(FormatVar.window(.windowLayout).expandFormatVar(obj: obj), .string("h_tiles"))
         assertPrimitive(FormatVar.window(.windowParentContainerLayout).expandFormatVar(obj: obj), .string("h_tiles"))
 
-        root.layout = .accordion
+        root.setLayout(.accordion)
         assertPrimitive(FormatVar.window(.windowLayout).expandFormatVar(obj: obj), .string("h_accordion"))
 
         root.changeOrientation(.v)
         assertPrimitive(FormatVar.window(.windowLayout).expandFormatVar(obj: obj), .string("v_accordion"))
 
-        root.layout = .tiles
+        root.setLayout(.tiles)
         assertPrimitive(FormatVar.window(.windowLayout).expandFormatVar(obj: obj), .string("v_tiles"))
     }
 

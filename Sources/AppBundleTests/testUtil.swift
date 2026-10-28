@@ -15,6 +15,17 @@ let projectRoot: URL = {
 
 @MainActor
 func setUpWorkspacesForTests() {
+    // Every test runs against a fresh simulated desktop behind the macOS port
+    MacOS.install(SimulatedMacOS.shared)
+    SimulatedMacOS.shared.reset()
+    FocusReconciler.resetForTests()
+    WindowMemory.resetForTests()
+    resetMacosNativeWindowStateCacheForTests()
+    staleTitleWindowIds = []
+    SessionLayoutStore.resetForTests()
+    // A hotplug test may have left extra simulated monitors (and their workspace mapping) behind
+    unsafe testMonitorsOverride = nil
+    gcMonitors()
     config = defaultConfig
     configUrl = defaultConfigUrl
     config.enableNormalizationFlattenContainers = false // Make layout tests more predictable
@@ -27,9 +38,15 @@ func setUpWorkspacesForTests() {
     config.persistentWorkspaces = []
 
     for workspace in Workspace.all {
+        workspace.tilingPolicyOverride = nil // per-workspace state outlives a test otherwise
         for child in workspace.children {
             child.unbindFromParent()
         }
+    }
+    // Global (workspace-less) containers outlive workspaces; a previous test's windows there would
+    // leak into this one
+    for child in macosPopupWindowsContainer.children + macosMinimizedWindowsContainer.children {
+        child.unbindFromParent()
     }
     check(Workspace.get(byName: "setUpWorkspacesForTests").focusWorkspace())
     Workspace.garbageCollectUnusedWorkspaces()
@@ -41,7 +58,7 @@ func setUpWorkspacesForTests() {
     TestApp.shared.windows = []
     // Registry has process lifetime (like production's allWindowsMap), so a previous test's ids
     // must not stay resolvable for the next one.
-    Window.testWindowRegistry.removeAll()
+    Window.registry.removeAll()
 }
 
 extension ParsedCmd {

@@ -52,9 +52,14 @@ func scheduleCancellableCompleteRefreshSession(
     discoveryHeavyPending = true
     heavyScheduleGeneration &+= 1
     let generation = heavyScheduleGeneration
+    let debounce = event.heavyDebounceNanoseconds
     activeRefreshTask = Task.startUnstructured { @MainActor in
         do {
             try checkCancellation()
+            // Trailing debounce: notification bursts (one app posting created/moved/focused for a
+            // handful of windows within a few ms) each used to START a full discovery that the next
+            // one cancelled — with the AX work of the cancelled ones still running on app threads
+            if debounce > 0 { try await Task.sleep(nanoseconds: debounce) }
             let completed = await runHeavyCompleteRefreshSession(
                 event,
                 assumeCancellable: true,
@@ -77,6 +82,18 @@ func scheduleCancellableCompleteRefreshSession(
     }
 }
 
+extension RefreshSessionEvent {
+    /// Coalescing delay before a scheduled heavy starts. Only for notification-driven events;
+    /// startup/config/mouse-up/command follow-ups start immediately.
+    var heavyDebounceNanoseconds: UInt64 {
+        switch self {
+            case .ax, .globalObserver: 16_000_000
+            case .configAutoReload, .globalObserverLeftMouseUp, .menuBarButton, .hotkeyBinding, .startup,
+                 .socketServer, .i3IpcRunCommand, .resetManipulatedWithMouse, .focusFollowsMouse: 0
+        }
+    }
+}
+
 @MainActor
 @discardableResult
 func runHeavyCompleteRefreshSession(
@@ -85,14 +102,16 @@ func runHeavyCompleteRefreshSession(
     layoutWorkspaces shouldLayoutWorkspaces: Bool = true,
     optimisticallyPreLayoutWorkspaces: Bool = false,
 ) async -> Bool {
-    await SessionPipeline.runHeavy(
-        event,
-        assumeCancellable: assumeCancellable,
-        plan: SessionPipeline.planHeavy(
-            layout: shouldLayoutWorkspaces,
-            optimisticLayout: optimisticallyPreLayoutWorkspaces,
-        ),
-    )
+    await Kernel.exclusive("heavy session") {
+        await SessionPipeline.runHeavy(
+            event,
+            assumeCancellable: assumeCancellable,
+            plan: SessionPipeline.planHeavy(
+                layout: shouldLayoutWorkspaces,
+                optimisticLayout: optimisticallyPreLayoutWorkspaces,
+            ),
+        )
+    }
 }
 
 @MainActor
@@ -104,29 +123,25 @@ func runLightSession<T>(
     // Drag sessions are marked by currentlyManipulatedWithMouseWindowId (set before light entry
     // on move/resize). Plan skips borders/status rebuild and follow-up heavy for those.
     let mouseManipulate = event.isAx && currentlyManipulatedWithMouseWindowId != nil
-    return try await SessionPipeline.runLight(
-        event,
-        plan: SessionPipeline.planLight(event: event, mouseManipulate: mouseManipulate),
-        body: body,
-    )
+    let plan = SessionPipeline.planLight(event: event, mouseManipulate: mouseManipulate)
+    // Pre-empt a running heavy BEFORE queueing behind it: it stops at its next cancellation point
+    // instead of finishing discovery while a hotkey waits (runLight re-queues discovery after).
+    if !plan.skipHeavyCancel, !Kernel.isInsideJob {
+        noteHeavyCancelledByLightSession()
+    }
+    return try await Kernel.exclusive("light session") {
+        try await SessionPipeline.runLight(event, plan: plan, body: body)
+    }
 }
 
 struct RunSessionGuard: Sendable {
     @MainActor
-    static var isServerEnabled: RunSessionGuard? { TrayMenuModel.shared.isEnabled ? forceRun : nil }
+    static var isServerEnabled: RunSessionGuard? { ServerState.isEnabled ? forceRun : nil }
     @MainActor
     static func isServerEnabled(orIsEnableCommand command: (any Command)?) -> RunSessionGuard? {
         command is EnableCommand ? .forceRun : .isServerEnabled
     }
     @MainActor
-    static func checkServerIsEnabledOrDie(
-        file: StaticString = #fileID,
-        line: Int = #line,
-        column: Int = #column,
-        function: String = #function,
-    ) -> RunSessionGuard {
-        .isServerEnabled ?? dieT("server is disabled", file: file, line: line, column: column, function: function)
-    }
     static let forceRun = RunSessionGuard()
     private init() {}
 }
@@ -138,50 +153,93 @@ func refreshModel_nonCancellable() async {
     } else {
         Workspace.garbageCollectUnusedWorkspaces()
         await checkOnFocusChangedCallbacks_nonCancellable()
-        normalizeContainers()
+        normalizeAllContainers()
     }
 }
 
 /// Heavy phase: garbage-collect terminated apps/windows and register newly seen ones
 @MainActor
 func discoverAliveWindows() async throws {
-    let mapping = try await MacApp.refreshAllAndGetAliveWindowIds(frontmostAppBundleId: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
-    let aliveWindowIds = mapping.values.flatMap(id).toSet()
-
-    for window in MacWindow.allWindows {
-        if !aliveWindowIds.contains(window.windowId) {
-            window.garbageCollect(skipClosedWindowsCache: false)
-        }
-    }
-    for (app, windowIds) in mapping {
-        for windowId in windowIds {
-            try await MacWindow.getOrRegister(windowId: windowId, macApp: app)
-        }
-    }
-
+    try await MacOS.current.discoverWindows()
     // Garbage collect workspaces after apps, because workspaces contain apps.
     Workspace.garbageCollectUnusedWorkspaces()
 }
 
-func refreshObs(_: AXObserver, _: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
-    let notif = notif as String
+func onAxWindowListChanged(notif: String) {
     Task.startUnstructured { @MainActor in
-        if !TrayMenuModel.shared.isEnabled { return }
+        if !ServerState.isEnabled { return }
         scheduleCancellableCompleteRefreshSession(.ax(notif))
+    }
+}
+
+/// kAXFocusedWindowChanged: a focus change is not a structural change. Sync focus in a light
+/// session (focus read, hygiene, layout diff, borders) instead of a full AX discovery of every app;
+/// discovery runs only when the newly focused window isn't registered yet (apps that never post
+/// kAXWindowCreated are still picked up this way).
+func onAxFocusedWindowChanged(windowId: UInt32?, notif: String) {
+    Task.startUnstructured { @MainActor in
+        guard let token: RunSessionGuard = .isServerEnabled else { return }
+        if let windowId, Window.get(byId: windowId) != nil {
+            try? await runLightSession(.ax(notif), token) {}
+        } else {
+            scheduleCancellableCompleteRefreshSession(.ax(notif))
+        }
+    }
+}
+
+/// kAXTitleChanged: only acted on while a title-based rule could still match this window
+func onAxTitleChanged(windowId: UInt32?, notif: String) {
+    Task.startUnstructured { @MainActor in
+        guard let token: RunSessionGuard = .isServerEnabled,
+              let windowId, let window = Window.get(byId: windowId)
+        else { return }
+        // Tab / stack titles: only windows that are members of an accordion show their title
+        if (window.parent as? TilingContainer)?.layout == .accordion {
+            let title = try? await window.getTitle(.cancellable) // AX read: outside the kernel
+            await Kernel.exclusive("ax title changed") {
+                window.cachedTitle = title
+                window.cachedTitleIsStale = false
+                GroupTabBarManager.shared.refresh()
+            }
+        } else {
+            // Not on a tab now: no read (a terminal retitles constantly), but the cached title no
+            // longer holds — a tab shown later read the registration-time title or the app name
+            await Kernel.exclusive("ax title changed") { window.cachedTitleIsStale = true }
+        }
+        guard window.hasPendingTitleRules else { return }
+        try? await runLightSession(.ax(notif), token) {
+            await onWindowTitleChanged(.defaultEnv, CmdIoImpl.emptyStdinIgnoringOut, window)
+        }
+    }
+}
+
+/// Windows now on a tab whose title changed while they weren't: read before the tab bar draws
+/// (drawing never reads AX)
+/// (drawing never reads AX). Every session runs this: it only looks at the stale ones.
+@MainActor var staleTitleWindowIds: Set<UInt32> = []
+
+@MainActor
+func refreshStaleTabTitles() async throws {
+    if staleTitleWindowIds.isEmpty { return }
+    for id in staleTitleWindowIds {
+        guard let window = Window.get(byId: id) else { staleTitleWindowIds.remove(id); continue }
+        guard (window.parent as? TilingContainer)?.layout == .accordion, window.nodeWorkspace?.isVisible == true else { continue }
+        window.cachedTitle = try await window.getTitle(.cancellable)
+        window.cachedTitleIsStale = false
     }
 }
 
 /// miniaturized/deminiaturized notifications. Like refreshObs, but first drops the caches of the affected
 /// window so the next refresh re-reads its native state over AX
-func windowStateChangedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
-    let windowId = ax.containingWindowId()
-    let notif = notif as String
+func onAxNativeStateChanged(windowId: UInt32?, notif: String) {
     Task.startUnstructured { @MainActor in
-        if !TrayMenuModel.shared.isEnabled { return }
-        if let windowId, let window = Window.get(byId: windowId) as? MacWindow {
-            window.invalidateAxFrameCaches()
+        if !ServerState.isEnabled { return }
+        await Kernel.exclusive("ax native state changed") {
+            if let windowId, let window = Window.get(byId: windowId) {
+                window.noteNativeStateChanged()
+            }
+            scheduleCancellableCompleteRefreshSession(.ax(notif))
         }
-        scheduleCancellableCompleteRefreshSession(.ax(notif))
     }
 }
 
@@ -191,13 +249,16 @@ enum OptimalHideCorner {
 
 @MainActor
 func layoutWorkspaces(includeInvisible: Bool = true) async throws {
-    if !TrayMenuModel.shared.isEnabled {
+    if !ServerState.isEnabled {
         for workspace in Workspace.allUnsorted {
-            workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() } // todo as!
+            workspace.allLeafWindowsRecursive.forEach { $0.unhideFromCorner() }
             try await workspace.layoutWorkspace() // Unhide tiling windows from corner
         }
         return
     }
+    // Asleep / lid closed without an external display: there is nowhere to lay out, and the
+    // fallback monitor geometry would park windows at a corner that is on-screen after wake
+    if !isUnitTest && NSScreen.screens.isEmpty { return }
     followActiveWorkspaceForStickyWindows()
 
     // Mouse-drag: only re-tile the workspace that owns the manipulated window (sibling weights).
@@ -206,7 +267,7 @@ func layoutWorkspaces(includeInvisible: Bool = true) async throws {
        let id = currentlyManipulatedWithMouseWindowId,
        let ws = Window.get(byId: id)?.nodeWorkspace
     {
-        ws.allLeafWindowsRecursive.forEach { ($0 as? MacWindow)?.unhideFromCorner() }
+        ws.allLeafWindowsRecursive.forEach { $0.unhideFromCorner() }
         try await ws.layoutWorkspace()
         return
     }
@@ -216,7 +277,7 @@ func layoutWorkspaces(includeInvisible: Bool = true) async throws {
     // to reduce flicker, first unhide visible workspaces, then hide invisible ones
     for monitor in monitors {
         let workspace = monitor.activeWorkspace
-        workspace.allLeafWindowsRecursive.forEach { ($0 as! MacWindow).unhideFromCorner() } // todo as!
+        workspace.allLeafWindowsRecursive.forEach { $0.unhideFromCorner() }
         try await workspace.layoutWorkspace()
     }
     guard includeInvisible else { return }
@@ -248,13 +309,13 @@ func layoutWorkspaces(includeInvisible: Bool = true) async throws {
     for workspace in Workspace.allUnsorted where !workspace.isVisible {
         let corner = monitorToOptimalHideCorner[workspace.workspaceMonitor.displayId] ?? .bottomRightCorner
         for window in workspace.allLeafWindowsRecursive {
-            try await (window as! MacWindow).hideInCorner(corner) // todo as!
+            try await window.hideInCorner(corner)
         }
     }
 }
 
 @MainActor
-private func normalizeContainers() {
+func normalizeAllContainers() {
     // Can't do it only for visible workspace because most of the commands support --window-id and --workspace flags
     for workspace in Workspace.allUnsorted {
         workspace.normalizeContainers()

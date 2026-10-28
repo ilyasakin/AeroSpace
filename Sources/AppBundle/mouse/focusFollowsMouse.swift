@@ -1,83 +1,131 @@
 import AppKit
 import ApplicationServices
 
-@MainActor private var focusFollowsMouseMonitor: Any? = nil
-@MainActor private var focusFollowsTask: Task<(), any Error>? = nil
-/// Last window id we successfully focused via FFM — cheap skip without full tree focus lookup.
-@MainActor private var focusFollowsLastFocusedId: UInt32? = nil
-@MainActor private var focusFollowsLastPoint: CGPoint = .init(x: -1, y: -1)
+/// Focus follows mouse (i3 `focus_follows_mouse`). The decision is `HoverFocusPolicy` (pure);
+/// this is the plumbing: event source, focus application, and re-anchoring.
+///
+/// Event source: a LISTEN-ONLY event tap at the annotated session tap. WindowServer has already
+/// hit-tested the event there, so the window under the pointer comes for free in the event fields —
+/// no AX query, no CGWindowList scan, no hit test of our own per mouse move (the previous monitor
+/// did an AX element-at-position round trip into the target app before every focus change and
+/// re-scanned the window list on every move when floats existed). If the tap can't be created,
+/// an NSEvent global monitor + `NSWindow.windowNumber(at:)` (public WindowServer hit test) is used.
+@MainActor
+enum HoverFocus {
+    private static var pendingApply: Task<(), any Error>? = nil
+    static var state = HoverState()
+    /// Pointer location source (tests inject one; the real cursor must never leak into them)
+    static var pointerLocation: () -> CGPoint = { mouseLocation }
 
-@MainActor func syncFocusFollowsMouse(_ config: Config) {
-    if config.focusFollowsMouse.enabled == (focusFollowsMouseMonitor != nil) {
-        return
+    /// `eventSourceUserData` tag on the mouse events AeroSpace itself posts (`move-mouse`)
+    nonisolated static let syntheticEventTag: Int64 = 0x4145_524F // "AERO"
+
+    static var isRunning: Bool { PointerEvents.isObserving }
+
+    static func sync(_ config: Config) {
+        if config.focusFollowsMouse.enabled == isRunning { return }
+        if config.focusFollowsMouse.enabled { start() } else { stop() }
     }
 
-    if !config.focusFollowsMouse.enabled {
-        NSEvent.removeMonitor(focusFollowsMouseMonitor.orDie())
-        focusFollowsMouseMonitor = nil
-        focusFollowsTask?.cancel()
-        focusFollowsTask = nil
-        focusFollowsLastFocusedId = nil
-        return
+    private static func start() {
+        PointerEvents.startObserving { handle($0) }
+        reanchorToPointer()
     }
 
-    // Interestingly, this callback seems to not fire when the mouse is down which is good,
-    // because this is how I want it to work for windows/tabs/files dragging
-    focusFollowsMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { @MainActor _ in
-        let location = mouseLocation
-        // Ignore sub-pixel jitter / tiny moves that still spam mouseMoved.
-        let dx = location.x - focusFollowsLastPoint.x
-        let dy = location.y - focusFollowsLastPoint.y
-        if dx * dx + dy * dy < 2.25 { // < 1.5pt
-            return
+    private static func stop() {
+        PointerEvents.stopObserving()
+        pendingApply?.cancel()
+        pendingApply = nil
+        state = HoverState()
+    }
+
+    static func handle(_ sample: HoverSample) {
+        let decision = HoverFocusPolicy.decide(sample, &state, context(now: ProcessInfo.processInfo.systemUptime))
+        guard case .focus(let windowId) = decision else { return }
+        pendingApply?.cancel()
+        pendingApply = Task.startUnstructured { @MainActor in
+            try await apply(windowId)
         }
-        focusFollowsLastPoint = location
+    }
 
-        focusFollowsTask?.cancel()
-        focusFollowsTask = Task.startUnstructured { @MainActor in
-            guard let token: RunSessionGuard = .isServerEnabled else { return }
-            try checkCancellation()
+    static func context(now: TimeInterval) -> HoverContext {
+        HoverContext(
+            enabled: config.focusFollowsMouse.enabled && ServerState.isEnabled,
+            isDragging: currentlyManipulatedWithMouseWindowId != nil,
+            focusedWindowId: focus.windowOrNil?.windowId,
+            now: now,
+            isFocusable: { isHoverFocusable($0) },
+            modelHit: { windowUnderMouseCheap($0)?.windowId },
+        )
+    }
 
-            // Z-order-aware geometry (CGWindowList front-to-back). Floating windows that sit
-            // above tiles must win even when the cursor is over the tile's layout rect —
-            // otherwise nativeFocus raises the tile and the float "jumps" to the bottom.
-            guard let window = windowUnderMouseCheap(location) else {
-                try checkCancellation()
-                if await isAxWindowUnderMouse(location) == false { return }
-                guard let window = try await windowUnderMouseAxFallback(location) else { return }
-                try await focusFollowsApply(window, token: token)
-                return
-            }
+    /// Tree focus in a (cheap, layout-less) FFM light session, then OS focus: floats raise like
+    /// any window; a tile is focused WITHOUT raising (unless `raise = true`) so a floating window
+    /// over it stays visible, as in i3.
+    ///
+    /// One kernel job for both halves: the OS focus used to be applied AFTER the session returned,
+    /// so another session could change focus in between and this hover would then natively focus a
+    /// window the tree no longer considered focused.
+    static func apply(_ windowId: UInt32) async throws {
+        try await Kernel.exclusive("hover focus") { try await applyInKernel(windowId) }
+    }
 
-            // Already focused — zero session work (hot path while moving inside a window).
-            if window.windowId == focusFollowsLastFocusedId
-                || window.windowId == focus.windowOrNil?.windowId
-            {
-                focusFollowsLastFocusedId = window.windowId
-                return
-            }
-
-            // Menu / desktop filter only when we are about to change focus.
-            try checkCancellation()
-            if await isAxWindowUnderMouse(location) == false { return }
-
-            try await focusFollowsApply(window, token: token)
+    private static func applyInKernel(_ windowId: UInt32) async throws {
+        guard let token: RunSessionGuard = .isServerEnabled, let window = Window.get(byId: windowId) else { return }
+        try checkCancellation()
+        let previous = focus.windowOrNil?.windowId
+        try await runLightSession(.focusFollowsMouse, token) {
+            _ = window.focusWindow()
         }
+        try checkCancellation()
+        if config.focusFollowsMouse.raise || window.isFloating {
+            window.nativeFocus()
+        } else {
+            // Only a same-app previous window takes part in the 0x0D unfocus/focus switch
+            let samePid = previous.flatMap { Window.get(byId: $0) }?.app.pid == window.app.pid
+            let ok = await window.nativeFocusWithoutRaise(previousKeyWindowId: samePid ? previous : nil)
+            // Superseded by a newer hover mid-switch: raising THIS window now would steal focus
+            // from where the pointer went (and cover a float)
+            try checkCancellation()
+            if !ok { window.nativeFocus() }
+        }
+        FocusReconciler.noteRequested(window.windowId)
+        // FFM light sessions skip sideUiBorders — still move the active border style
+        WindowBordersManager.shared.syncActiveFocus()
+    }
+
+    /// See `HoverFocusPolicy.reanchor`. Called after every non-hover session that changed focus
+    /// or layout.
+    static func reanchorToPointer() {
+        guard config.focusFollowsMouse.enabled else { return }
+        HoverFocusPolicy.reanchor(&state, windowUnderPointer: windowUnderMouseCheap(pointerLocation())?.windowId)
+    }
+
+    static func resetForTests() {
+        pendingApply?.cancel()
+        pendingApply = nil
+        state = HoverState()
+        pointerLocation = { mouseLocation }
+    }
+
+    /// Wait for the focus application a hover started (tests)
+    static func settleForTests() async { _ = await pendingApply?.result }
+
+    /// Managed, focusable, and on a workspace that is actually showing
+    static func isHoverFocusable(_ id: UInt32) -> Bool {
+        guard let window = Window.get(byId: id), !window.isHiddenInCorner else { return false }
+        switch window.parent?.cases {
+            case .tilingContainer, .floatingWindowsContainer: break
+            default: return false
+        }
+        guard let ws = window.nodeWorkspace else { return false }
+        return ws.isVisible || (window.isSticky && window.nodeMonitor?.activeWorkspace.isVisible == true)
     }
 }
 
-@MainActor
-private func focusFollowsApply(_ window: Window, token: RunSessionGuard) async throws {
-    try checkCancellation()
-    try await runLightSession(.focusFollowsMouse, token) {
-        // Tree focus first; nativeFocusRespectingFloats is the only OS focus write (pipeline
-        // skips end-of-session nativeFocus for FFM — must not re-raise and undo raise:false).
-        _ = window.focusWindow()
-        window.nativeFocusRespectingFloats()
-    }
-    // FFM light sessions skip sideUiBorders — still move active border style/occlusion.
-    WindowBordersManager.shared.syncActiveFocus()
-    focusFollowsLastFocusedId = window.windowId
+
+@MainActor func syncFocusFollowsMouse(_ config: Config) {
+    HoverFocus.sync(config)
 }
 
 /// Geometry hit test. Floating windows always beat tiles they cover (live frame), then
@@ -136,44 +184,8 @@ private func windowIsEligibleForFfm(_ window: Window, on workspace: Workspace) -
 /// Live or believed frame for a floating window (layout clears belief on some paths).
 @MainActor
 func floatingWindowFrame(_ window: Window) -> Rect? {
-    if let applied = window.believedRect ?? window.lastAppliedLayoutVirtualRect {
+    if let applied = window.knownFrame ?? window.lastAppliedLayoutVirtualRect {
         return applied
     }
     return WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)
-}
-
-/// AX rect scan — only when cheap geometry found nothing.
-@MainActor
-private func windowUnderMouseAxFallback(_ location: CGPoint) async throws -> Window? {
-    let workspace = location.monitorApproximation.activeWorkspace
-    // Prefer front-to-back among floats that actually contain the point (live AX rect).
-    for child in workspace.floatingWindowsContainer.mruChildren {
-        try checkCancellation()
-        guard let child = child as? Window else { continue }
-        guard let rect = try await child.getAxRect(.cancellable) else { continue }
-        if rect.contains(location) { return child }
-    }
-    for w in workspace.allLeafWindowsRecursive {
-        try checkCancellation()
-        guard let rect = try await w.getAxRect(.cancellable) else { continue }
-        if rect.contains(location) { return w }
-    }
-    return nil
-}
-
-@concurrent
-private nonisolated func isAxWindowUnderMouse(_ location: CGPoint) async -> Bool? {
-    let systemwide = AXUIElementCreateSystemWide()
-    var element: AXUIElement?
-    if unsafe AXUIElementCopyElementAtPosition(systemwide, Float(location.x), Float(location.y), &element) != .success {
-        return nil
-    }
-    guard let element else { return nil }
-
-    var pid: pid_t = 0
-    if AXUIElementGetPid(element, &pid) == .success, pid == getpid() {
-        return nil
-    }
-
-    return element.get(Ax.parentWindowRecursive) != nil || element.get(Ax.roleAttr) == kAXWindowRole
 }

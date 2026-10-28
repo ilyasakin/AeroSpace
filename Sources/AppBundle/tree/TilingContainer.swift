@@ -4,16 +4,13 @@ import Common
 final class TilingContainer: TreeNode, NonLeafTreeNodeObject { // todo consider renaming to GenericContainer
     fileprivate var _orientation: Orientation
     var orientation: Orientation { _orientation }
-    /// Dirty-flag protocol: layout is part of the published tiling spine. Every mutation site must
-    /// call `setLayout` (or invalidate the generation itself) — a bare assignment leaves the stale
-    /// spine published: the command visually no-ops and live/spine mismatch can crash weight sync.
-    var layout: Layout
+    private(set) var layout: Layout
 
     @MainActor
     func setLayout(_ newLayout: Layout) {
         guard layout != newLayout else { return }
+        Kernel.noteModelMutation("setLayout")
         layout = newLayout
-        nodeWorkspace?.invalidateTilingStructureGeneration()
     }
 
     @MainActor
@@ -37,12 +34,28 @@ final class TilingContainer: TreeNode, NonLeafTreeNodeObject { // todo consider 
 extension TilingContainer {
     var isRootContainer: Bool { parent is Workspace }
 
+    /// Take the shape a snapshot describes (reusing this container for it)
+    @MainActor
+    func reshape(orientation: Orientation, layout: Layout) {
+        Kernel.noteModelMutation("reshape")
+        _orientation = orientation
+        self.layout = layout
+    }
+
     @MainActor
     func changeOrientation(_ targetOrientation: Orientation) {
+        Kernel.noteModelMutation("changeOrientation")
         if orientation == targetOrientation {
             return
         }
-        if config.enableNormalizationOppositeOrientationForNestedContainers {
+        // Dwindle picks every orientation by tile aspect ratio and normalizeContainers deliberately
+        // skips opposite-orientation alternation for it; alternating here transposed the WHOLE
+        // workspace on `layout horizontal|vertical`. i3 only ever changes the target container.
+        // Nor under i3 normalization: i3 `split`/`layout splith|splitv` change only the target
+        let alternate = config.enableNormalizationOppositeOrientationForNestedContainers
+            && nodeWorkspace?.effectiveTilingPolicy != .dwindle
+            && !config.i3Normalization
+        if alternate {
             var orientation = targetOrientation
             parentsWithSelf
                 .filterIsInstance(of: TilingContainer.self)
@@ -53,22 +66,15 @@ extension TilingContainer {
         } else {
             _orientation = targetOrientation
         }
-        // Orientation is spine-published state — see `layout` didSet
-        nodeWorkspace?.invalidateTilingStructureGeneration()
     }
 
     @MainActor
     func normalizeOppositeOrientationForNestedContainers() {
-        var changed = false
         if orientation == (parent as? TilingContainer)?.orientation {
             _orientation = orientation.opposite
-            changed = true
         }
         for child in children {
             (child as? TilingContainer)?.normalizeOppositeOrientationForNestedContainers()
-        }
-        if changed {
-            nodeWorkspace?.invalidateTilingStructureGeneration()
         }
     }
 }
@@ -87,5 +93,22 @@ extension String {
             case nil where self == "list": .tiles
             case nil: nil
         }
+    }
+}
+
+extension TilingContainer {
+    /// Weight units per pixel along `orientation`, from the last render. Weights are proportions
+    /// in no particular unit (layout no longer rewrites them as pixel spans), so a pixel amount —
+    /// `resize width +50`, `resize-to`, a mouse edge drag — goes through this. A container not
+    /// rendered yet (`join-with right; resize width +100` in one binding) uses the span the model
+    /// projects for it — the monitor's whole span was wrong for any nested container.
+    @MainActor
+    func weightPerPixel(_ orientation: Orientation) -> CGFloat {
+        let weightSum = CGFloat(children.sumOfDouble { $0.getWeight(orientation) })
+        let span = lastAppliedLayoutVirtualRect?.getDimension(orientation)
+            ?? nodeWorkspace?.projectedTileSize(of: self).map { orientation == .h ? $0.width : $0.height }
+            ?? nodeWorkspace?.workspaceMonitor.visibleRect.getDimension(orientation)
+            ?? weightSum
+        return span > 0 && weightSum > 0 ? weightSum / span : 1
     }
 }

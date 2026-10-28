@@ -9,7 +9,6 @@ import XCTest
 final class SessionPipelineTest: XCTestCase {
     func testHeavyPlanDoesNotClearFramesWritten() {
         let plan = SessionPipeline.planHeavy(layout: true, optimisticLayout: false)
-        XCTAssertFalse(plan.clearFramesWritten)
         XCTAssertTrue(plan.discoverWindows)
         XCTAssertTrue(plan.normalizeNativeState)
         XCTAssertTrue(plan.layout)
@@ -31,7 +30,6 @@ final class SessionPipelineTest: XCTestCase {
     func testLightHotkeyLayoutsWithoutFollowUpHeavy() {
         // Pure geometry/focus lights must not rediscover after every binding.
         let plan = SessionPipeline.planLight(event: .hotkeyBinding)
-        XCTAssertTrue(plan.clearFramesWritten)
         XCTAssertTrue(plan.layout)
         XCTAssertFalse(plan.scheduleFollowUpHeavy)
         XCTAssertFalse(plan.discoverWindows)
@@ -54,9 +52,18 @@ final class SessionPipelineTest: XCTestCase {
         XCTAssertTrue(event.isQueryOnly)
         XCTAssertFalse(event.needsDiscoveryFollowUp)
         let plan = SessionPipeline.planLight(event: event)
-        XCTAssertTrue(plan.clearFramesWritten)
         XCTAssertFalse(plan.layout)
         XCTAssertFalse(plan.scheduleFollowUpHeavy)
+        // Nothing a bar/border shows changes; status-bar scripts poll these per workspace switch
+        XCTAssertFalse(plan.sideUiBorders)
+        XCTAssertFalse(plan.sideUiTray)
+        XCTAssertTrue(plan.skipHeavyCancel, "a query must not pre-empt pending discovery")
+    }
+
+    func testNotificationHeaviesAreDebouncedButCommandFollowUpsAreNot() {
+        XCTAssertGreaterThan(RefreshSessionEvent.ax("AXWindowCreated").heavyDebounceNanoseconds, 0)
+        XCTAssertEqual(RefreshSessionEvent.startup.heavyDebounceNanoseconds, 0)
+        XCTAssertEqual(RefreshSessionEvent.globalObserverLeftMouseUp.heavyDebounceNanoseconds, 0)
     }
 
     func testFocusFollowsMouseSkipsLayoutBordersAndHeavy() {
@@ -64,7 +71,6 @@ final class SessionPipelineTest: XCTestCase {
         XCTAssertFalse(plan.layout)
         XCTAssertFalse(plan.scheduleFollowUpHeavy)
         // High-frequency hover must not thrash borders/status bar/CPU sampling every move.
-        XCTAssertFalse(plan.clearFramesWritten)
         XCTAssertFalse(plan.sideUiBorders)
         XCTAssertTrue(plan.sideUiTray) // tray may update, but only via fingerprint (no full walk when unchanged)
         XCTAssertFalse(plan.trayFullLeafWalk)
@@ -78,7 +84,6 @@ final class SessionPipelineTest: XCTestCase {
         XCTAssertTrue(plan.sideUiBorders)
         XCTAssertTrue(plan.sideUiTray)
         XCTAssertTrue(plan.trayFullLeafWalk)
-        XCTAssertTrue(plan.clearFramesWritten)
     }
 
     func testMouseManipulateAxSkipsSideUiAndFollowUpHeavy() {
@@ -92,7 +97,6 @@ final class SessionPipelineTest: XCTestCase {
         // Smooth sibling tracking: no focus AX / hygiene / cache / heavy-cancel thrash per tick.
         XCTAssertTrue(plan.skipFocusAndHygiene)
         XCTAssertTrue(plan.skipHeavyCancel)
-        XCTAssertFalse(plan.clearFramesWritten)
         XCTAssertFalse(plan.invalidateSessionCaches)
         XCTAssertTrue(plan.layoutVisibleOnly)
     }
@@ -102,7 +106,6 @@ final class SessionPipelineTest: XCTestCase {
         XCTAssertTrue(plan.skipFocusAndHygiene)
         XCTAssertTrue(plan.skipHeavyCancel)
         XCTAssertFalse(plan.invalidateSessionCaches)
-        XCTAssertFalse(plan.clearFramesWritten)
     }
 
     func testAxWithoutMouseManipulateDoesNotGetDiscoveryFromLightPlan() {

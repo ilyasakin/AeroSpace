@@ -100,7 +100,7 @@ extension Shell where T == any Command {
         switch self {
             case .cmd(let command):
                 let exitCode = Int32ExitCode(rawValue: await command.run(env, io).rawValue)
-                if command.shouldResetClosedWindowsCache { resetClosedWindowsCache() }
+                if command.shouldResetClosedWindowsCache { WindowMemory.forgetWorld() }
                 await refreshModel_nonCancellable()
                 return exitCode
             case .and(let commands): return await runShellAnd(commands, env, io)

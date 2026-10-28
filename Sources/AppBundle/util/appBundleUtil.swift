@@ -5,7 +5,7 @@ import os
 
 let signposter = OSSignposter(subsystem: aeroSpaceAppId, category: .pointsOfInterest)
 
-let myPid = NSRunningApplication.current.processIdentifier
+let myPid = ProcessInfo.processInfo.processIdentifier
 let lockScreenAppBundleId = "com.apple.loginwindow"
 let zoomAppBundleId = "us.zoom.xos"
 
@@ -78,11 +78,11 @@ private struct AppServerTerminationHandler: TerminationHandler {
         // Invisible workspaces park windows off-screen (hide-in-corner). On quit/crash-signal
         // we must put every managed window back on a visible, centered place so users can
         // find them without hunting the Dock-edge pixel strip.
-        for window in MacWindow.allWindowsMap.values {
+        for window in Window.all {
             // Prefer tree monitor (workspace home). AX center of a corner-parked window can
             // be off-screen and pick the wrong display under multi-monitor.
             // Avoid `.parent` when the tree may be mid-teardown — nodeMonitor is fine.
-            let axRect = window.macApp.getAxRectForTermination(window.windowId)
+            let axRect = MacOS.current.axFrameForTermination(window.windowId)
             let monitor = window.nodeMonitor
                 ?? axRect.map { $0.center.monitorApproximation }
                 ?? mainMonitor
@@ -90,7 +90,7 @@ private struct AppServerTerminationHandler: TerminationHandler {
             let preferredSize = axRect?.size ?? window.lastFloatingSize
             let windowSize = terminationRestoreSize(preferred: preferredSize, visibleRect: visible)
             let point = centeredTopLeft(windowSize: windowSize, in: visible)
-            window.macApp.setAxFrameForTermination(window.windowId, point, windowSize)
+            MacOS.current.writeFrameForTermination(window.windowId, topLeft: point, size: windowSize)
         }
         if isDebug {
             let semaphore = DispatchSemaphore(value: 0)

@@ -10,15 +10,11 @@ final class SessionLayoutStoreTest: XCTestCase {
     /// redirect, because the failure mode is silent and destroys state the running WM reloads.
     func testPersistentPathsNeverPointAtProductionUnderTest() {
         let session = SessionLayoutStore.fileUrl.path
-        let violations = SpineInvariant.logUrl.path
-        for path in [session, violations] {
-            XCTAssertFalse(
-                path.contains("Library/Application Support"),
-                "test wrote to the real app-support directory: \(path)",
-            )
-        }
+        XCTAssertFalse(
+            session.contains("Library/Application Support"),
+            "test wrote to the real app-support directory: \(session)",
+        )
         XCTAssertTrue(session.hasSuffix("session-layout.json"))
-        XCTAssertTrue(violations.hasSuffix("spine-violations.log"))
     }
 
     /// The format has carried a `version` field since it was written and nothing ever read it, so a
@@ -173,11 +169,10 @@ final class SessionLayoutStoreTest: XCTestCase {
         assertEquals(snap.workspaces[0].floatingWindowIds, [99])
     }
 
-    /// Regression: materialize must publish the restored spine as generation so layout does not
-    /// keep applying a stale discovery spine (wrong orientation / order).
-    func testMaterializePublishesGenerationOverStaleDiscoverySpine() async throws {
+    /// Regression: after a session restore, layout must follow the restored structure, not what
+    /// discovery had laid out before it (wrong orientation / order).
+    func testLayoutFollowsTheRestoredStructure() async throws {
         setUpWorkspacesForTests()
-        Workspace.clearTilingStructureGenerations()
         let ws = Workspace.get(byName: "2")
         let w1 = TestWindow.new(id: 501, parent: ws.floatingWindowsContainer)
         let w2 = TestWindow.new(id: 502, parent: ws.floatingWindowsContainer)
@@ -192,7 +187,6 @@ final class SessionLayoutStoreTest: XCTestCase {
                 .window(id: 502, weight: 1),
             ],
         )
-        ws.tilingStructureGeneration = staleHorizontal
         // Live dual-link currently matches that horizontal tree
         ws.materializeTilingSpine(staleHorizontal)
         XCTAssertEqual(ws.rootTilingContainer.orientation, .h)
@@ -209,8 +203,7 @@ final class SessionLayoutStoreTest: XCTestCase {
         )
         ws.materializeTilingSpine(restoredVertical)
 
-        // Generation must match restore (not stale horizontal).
-        let gen = try XCTUnwrap(ws.tilingStructureGeneration)
+        let gen = ws.currentTilingSpine()
         XCTAssertTrue(gen.structureEquals(restoredVertical))
         XCTAssertEqual(ws.rootTilingContainer.orientation, .v)
         XCTAssertEqual(Set(ws.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId)), [501, 502])

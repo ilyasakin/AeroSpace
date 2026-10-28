@@ -20,7 +20,7 @@ final class ResizeCommandTest: XCTestCase {
 
         testParseCommandFail("resize s 10", msg: """
             ERROR: Can't parse 's'.
-                   Possible values: (width|height|smart|smart-opposite)
+                   Possible values: (width|height|smart|smart-opposite|left|down|up|right)
             """, exitCode: 2)
         testParseCommandFail("resize smart foo", msg: "ERROR: <number> argument must be a number", exitCode: 2)
 
@@ -38,38 +38,40 @@ final class ResizeCommandTest: XCTestCase {
         }
         _ = window.focusWindow()
 
-        await parseCommand("resize width +100").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("resize width +100")
         assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 500, height: 300))
 
-        await parseCommand("resize height 600").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("resize height 600")
         assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 500, height: 600))
 
         // Test monitor is 1920x1080
-        await parseCommand("resize width 50%").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("resize width 50%")
         assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 960, height: 600))
 
         // smart scales both axes
-        await parseCommand("resize smart -10%").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("resize smart -10%")
         assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 960 - 192, height: 600 - 108))
 
         // clamped to monitor visible frame
-        await parseCommand("resize width +99999").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("resize width +99999")
         assertEquals(try! await window.getAxSize(.nonCancellable)?.width, 1920)
 
         assertEquals(window.lastFloatingSize?.width, 1920)
     }
 
-    func testResizeTiling_percentIsRejected() async {
+    func testResizeTiling_percentIsPptOfParentSpan() async {
+        // i3 `ppt`: percentage points of the parent's span
         var window1: Window!
         Workspace.get(byName: name).rootTilingContainer.apply {
             window1 = TestWindow.new(id: 1, parent: $0, adaptiveWeight: 4)
             TestWindow.new(id: 2, parent: $0, adaptiveWeight: 4)
         }
+        pinPxToWeights()
         _ = window1.focusWindow()
 
-        let result = await parseCommand("resize width 50%").cmdOrDie.run(.defaultEnv, .emptyStdin)
-        assertEquals(result.exitCode.rawValue, 2)
-        assertEquals(window1.hWeight, 4)
+        let result = await parseCommand("resize width 75%").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(result.exitCode.rawValue, 0)
+        assertEquals(window1.hWeight, 6)
     }
 
     func testWidthAdd_growsTargetShrinksSiblings() async {
@@ -81,6 +83,7 @@ final class ResizeCommandTest: XCTestCase {
             window2 = TestWindow.new(id: 2, parent: $0, adaptiveWeight: 4)
             window3 = TestWindow.new(id: 3, parent: $0, adaptiveWeight: 4)
         }
+        pinPxToWeights()
         _ = window1.focusWindow()
 
         await parseCommand("resize width +2").cmdOrDie.run(.defaultEnv, .emptyStdin)
@@ -99,6 +102,7 @@ final class ResizeCommandTest: XCTestCase {
             window2 = TestWindow.new(id: 2, parent: $0, adaptiveWeight: 4)
             window3 = TestWindow.new(id: 3, parent: $0, adaptiveWeight: 4)
         }
+        pinPxToWeights()
         _ = window1.focusWindow()
 
         await parseCommand("resize width -2").cmdOrDie.run(.defaultEnv, .emptyStdin)
@@ -117,6 +121,7 @@ final class ResizeCommandTest: XCTestCase {
             window2 = TestWindow.new(id: 2, parent: $0, adaptiveWeight: 4)
             window3 = TestWindow.new(id: 3, parent: $0, adaptiveWeight: 4)
         }
+        pinPxToWeights()
         _ = window1.focusWindow()
 
         await parseCommand("resize width 6").cmdOrDie.run(.defaultEnv, .emptyStdin)
@@ -137,6 +142,7 @@ final class ResizeCommandTest: XCTestCase {
                 window2 = TestWindow.new(id: 2, parent: $0, adaptiveWeight: 4)
             }
         }
+        pinPxToWeights()
         _ = window1.focusWindow()
 
         await parseCommand("resize height +2").cmdOrDie.run(.defaultEnv, .emptyStdin)
@@ -158,6 +164,7 @@ final class ResizeCommandTest: XCTestCase {
             }
             sibling = TestWindow.new(id: 3, parent: $0, adaptiveWeight: 4)
         }
+        pinPxToWeights()
         _ = window1.focusWindow()
 
         await parseCommand("resize smart +2").cmdOrDie.run(.defaultEnv, .emptyStdin)
@@ -182,6 +189,7 @@ final class ResizeCommandTest: XCTestCase {
             }
             sibling = TestWindow.new(id: 3, parent: $0, adaptiveWeight: 4)
         }
+        pinPxToWeights()
         _ = inner.focusWindow()
 
         await parseCommand("resize smart-opposite +2").cmdOrDie.run(.defaultEnv, .emptyStdin)
@@ -209,5 +217,18 @@ final class ResizeCommandTest: XCTestCase {
 
         let result = await parseCommand("resize width +2").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertEquals(result.exitCode.rawValue, 2)
+    }
+
+    /// Makes 1 weight unit == 1 px for every tile container of the workspace, so these tests can
+    /// state px arithmetic directly (weights equal spans after a real layout; before one, the
+    /// command converts through the measured span).
+    private func pinPxToWeights() {
+        func pin(_ c: TilingContainer) {
+            let w = c.children.sumOfDouble { $0.getWeight(.h) }
+            let h = c.children.sumOfDouble { $0.getWeight(.v) }
+            c.lastAppliedLayoutVirtualRect = Rect(topLeftX: 0, topLeftY: 0, width: w, height: h)
+            for child in c.children { if let cc = child as? TilingContainer { pin(cc) } }
+        }
+        pin(Workspace.get(byName: name).rootTilingContainer)
     }
 }

@@ -18,12 +18,20 @@ struct WorkspaceCommand: Command {
                     wrapAround: args.wrapAround,
                     stdin: args.useStdin ? io.readStdin() : nil,
                     target: target,
+                    allMonitors: args.allMonitors,
                 )
                 guard let workspace = workspace.getOrNil(appendErrorTo: &io.stderr) else { return .fail }
                 workspaceName = workspace.name
+            case .backAndForth:
+                return WorkspaceBackAndForthCommand(args: WorkspaceBackAndForthCmdArgs(rawArgs: [])).run(env, io)
             case .direct(let name):
-                workspaceName = name.raw
-                if args.autoBackAndForth && focusedWs.name == workspaceName {
+                workspaceName = args.number ? workspaceNamed(number: name.raw) : name.raw
+                if workspaceName == scratchpadWorkspaceName {
+                    return .fail(io.err("The scratchpad isn't a workspace you can show. Use 'scratchpad show'"))
+                }
+                if args._autoBackAndForth ?? config.workspaceAutoBackAndForth, focusedWs.name == workspaceName,
+                   prevFocusedWorkspace != nil // nothing to go back to: i3 just stays
+                {
                     return WorkspaceBackAndForthCommand(args: WorkspaceBackAndForthCmdArgs(rawArgs: [])).run(env, io)
                 }
         }
@@ -39,7 +47,13 @@ struct WorkspaceCommand: Command {
     }
 }
 
-@MainActor func getNextPrevWorkspace(current: Workspace, isNext: Bool, wrapAround: Bool, stdin: String?, target: LiveFocus) -> ResOrStr<Workspace> {
+/// i3 `workspace number N`: the first workspace whose name's leading number is N, else "N"
+@MainActor func workspaceNamed(number raw: String) -> String {
+    let digits = String(raw.prefix(while: \.isNumber))
+    return Workspace.userFacing.first { String($0.name.prefix(while: \.isNumber)) == digits }?.name ?? raw
+}
+
+@MainActor func getNextPrevWorkspace(current: Workspace, isNext: Bool, wrapAround: Bool, stdin: String?, target: LiveFocus, allMonitors: Bool = false) -> ResOrStr<Workspace> {
     Result { () throws(String) in
         let stdinWorkspaces: [WorkspaceName] = try stdin?.split(whereSeparator: \.isWhitespace)
             .map { String($0).trim() }
@@ -50,7 +64,7 @@ struct WorkspaceCommand: Command {
         let currentMonitor = current.workspaceMonitor
         let workspaces: [Workspace] = stdin != nil
             ? stdinWorkspaces.map { Workspace.get(byName: $0.raw) }
-            : Workspace.all.filter { $0.workspaceMonitor.displayId == currentMonitor.displayId }
+            : Workspace.userFacing.filter { allMonitors || $0.workspaceMonitor.displayId == currentMonitor.displayId }
                 .toSet()
                 .union([current])
                 .sorted()

@@ -20,6 +20,7 @@ public final class VolumePanel: NSPanelHud {
         panelFrame.origin.x = mainMonitor.width - panelFrame.size.width - 20
         panelFrame.origin.y = (mainMonitor.height - panelFrame.size.height) / 2
         self.setFrame(panelFrame, display: true)
+        guard Headless.permits(.onScreenPanel) else { return }
         self.orderFrontRegardless()
         startTimer()
     }

@@ -1,3 +1,4 @@
+import Common
 import Foundation
 
 /// Translates an i3 (i3wm / i3-gaps) config into a native config + compatibility diagnostics.
@@ -6,13 +7,14 @@ func importI3Config(_ text: String, _ options: ImportOptions = ImportOptions()) 
     var ctx = I3ImportContext(options: options)
     // i3 is manual tiling; pin it explicitly since the shipped default policy is dwindle
     ctx.builder.tilingPolicy = "manual"
+    // i3 defaults a config that doesn't mention them would otherwise lose
+    ctx.builder.mouseWarping = "output"
     ctx.parseLines(text)
-    // i3 doesn't flatten nested containers, and AeroSpace's flatten normalization makes the
-    // 'split' command a config-level error. Preserve i3 semantics when split bindings exist
-    if ctx.builder.bindings.contains(where: { binding in binding.commands.contains { $0.hasPrefix("split ") } }) {
-        ctx.builder.disableFlattenNormalization = true
-        ctx.note(0, "split bindings", "flatten-containers normalization disabled to keep i3's split semantics")
-    }
+    ctx.finalizeI3Gaps()
+    // i3's own tree normalization: only redundant split pairs collapse, `split` works
+    ctx.builder.i3Normalization = true
+    // i3 tabbed/stacked presentation: members fill the container under a title band
+    ctx.builder.i3AccordionMode = true
     let toml = emitAeroToml(builder: ctx.builder, diagnostics: ctx.diagnostics, sourceKind: "i3")
     return ImportResult(toml: toml, diagnostics: ctx.diagnostics, directiveCount: ctx.directiveCount)
 }
@@ -40,8 +42,15 @@ struct AeroConfigBuilder {
     var persistentWorkspaces: [String] = []
     var detectionRules: [(matchers: [String], treatAs: String)] = []
     var windowCallbacks: [(matchers: [String], run: [String])] = []
-    var disableFlattenNormalization = false
+    var i3Normalization = false
+    var i3AccordionMode = false
     var tilingPolicy: String? = nil
+    /// i3 focus_wrapping (yes|no|force|workspace)
+    var focusWrapping: String? = nil
+    /// i3 mouse_warping (none|output|container); i3's default is output
+    var mouseWarping: String? = nil
+    var workspaceAutoBackAndForth = false
+    var smartGaps = false
     /// Border style fragments emitted under [window-borders]
     var windowBorders: [String] = []
 }
@@ -176,6 +185,17 @@ private struct I3ImportContext {
                 handleWorkspaceDirective(rest, original: original, line: lineNo)
             case "gaps":
                 handleGaps(rest, original: original, line: lineNo)
+            case "focus_wrapping":
+                let value = rest.trimmingCharacters(in: .whitespaces)
+                switch value {
+                    case "yes", "true": builder.focusWrapping = "yes"
+                    case "no", "false": builder.focusWrapping = "no"
+                    case "force", "workspace": builder.focusWrapping = value
+                    default: skip(lineNo, original, "unknown focus_wrapping value")
+                }
+            case "force_focus_wrapping":
+                // Deprecated i3 spelling of `focus_wrapping force`
+                if ["yes", "true"].contains(rest.trimmingCharacters(in: .whitespaces)) { builder.focusWrapping = "force" }
             case "focus_follows_mouse":
                 builder.focusFollowsMouse = rest.trimmingCharacters(in: .whitespaces) != "no"
             case "workspace_layout":
@@ -201,18 +221,58 @@ private struct I3ImportContext {
                 skip(lineNo, original, "floating windows are dragged natively on macOS; no drag modifier needed")
             case "font", "title_format":
                 skip(lineNo, original, "window titles/fonts are drawn by macOS, not the window manager")
-            case "default_border", "default_floating_border", "new_window", "new_float", "hide_edge_borders", "smart_borders":
-                skip(lineNo, original, "no window borders on macOS; see the JankyBorders recipe in the guide")
+            case "default_border", "new_window":
+                // AeroSpace draws its own borders ([window-borders]); i3 title bars can't be drawn
+                let parts = rest.split(separator: " ").map(String.init)
+                switch parts.first {
+                    case "pixel":
+                        let width = parts.count > 1 ? Int(parts[1].removeSuffixIfPresent("px")) ?? 1 : 1
+                        builder.windowBorders.removeAll { $0.hasPrefix("width = ") }
+                        builder.windowBorders.append("width = \(width)")
+                    case "normal":
+                        let width = parts.count > 1 ? Int(parts[1].removeSuffixIfPresent("px")) ?? 2 : 2
+                        builder.windowBorders.removeAll { $0.hasPrefix("width = ") }
+                        builder.windowBorders.append("width = \(width)")
+                        note(lineNo, original, "title bars are drawn by macOS; only the border is kept")
+                    case "none":
+                        builder.windowBorders.removeAll()
+                    default:
+                        skip(lineNo, original, "unknown border style")
+                }
+            case "default_floating_border", "new_float":
+                skip(lineNo, original, "floating windows share the one border style")
+            case "hide_edge_borders", "smart_borders":
+                skip(lineNo, original, "edge/smart border hiding is not supported")
             case "smart_gaps":
-                skip(lineNo, original, "smart gaps are not supported")
-            case "workspace_auto_back_and_forth", "focus_wrapping", "force_focus_wrapping", "mouse_warping",
-                 "popup_during_fullscreen", "force_display_urgency_hint", "focus_on_window_activation",
+                switch rest.trimmingCharacters(in: .whitespaces) {
+                    case "on", "yes", "true": builder.smartGaps = true
+                    case "off", "no", "false": builder.smartGaps = false
+                    default: skip(lineNo, original, "only 'smart_gaps on|off' is supported")
+                }
+            case "mouse_warping":
+                let value = rest.trimmingCharacters(in: .whitespaces)
+                if ["none", "output", "container"].contains(value) { builder.mouseWarping = value }
+                else { skip(lineNo, original, "unknown mouse_warping value") }
+            case "workspace_auto_back_and_forth":
+                builder.workspaceAutoBackAndForth = ["yes", "true"].contains(rest.trimmingCharacters(in: .whitespaces))
+            case "popup_during_fullscreen", "force_display_urgency_hint", "focus_on_window_activation",
                  "show_marks", "tiling_drag", "ipc-socket", "ipc_socket", "restart_state",
                  "floating_minimum_size", "floating_maximum_size":
                 skip(lineNo, original, "behavior tweak with no equivalent")
             default:
-                if word.hasPrefix("client.") {
-                    skip(lineNo, original, "window decoration colors are not drawn on macOS; see the JankyBorders recipe")
+                if word == "client.focused" || word == "client.unfocused" {
+                    // client.<class> <border> <background> <text> <indicator> <child_border>
+                    let colors = rest.split(separator: " ").map(String.init)
+                    let color = colors.count >= 5 ? colors[4] : colors.first
+                    if let color, color.hasPrefix("#") {
+                        let key = word == "client.focused" ? "active-color" : "inactive-color"
+                        builder.windowBorders.removeAll { $0.hasPrefix(key) }
+                        builder.windowBorders.append("\(key) = \(tomlString(color))")
+                    } else {
+                        skip(lineNo, original, "can't parse the border color")
+                    }
+                } else if word.hasPrefix("client.") {
+                    skip(lineNo, original, "only focused/unfocused border colors are drawn")
                 } else {
                     skip(lineNo, original, "unrecognized directive")
                 }
@@ -302,41 +362,90 @@ private struct I3ImportContext {
         return sanitized.isEmpty ? "1" : sanitized
     }
 
-    /// Maps a (possibly `;`/`,`-chained) i3 action list. Returns mapped commands + reasons for dropped parts
+    /// Maps a (possibly `;`/`,`-chained) i3 action list. Returns mapped commands + reasons for dropped parts.
+    /// i3 criteria carry across `,` and are reset by `;` (commands.c); `exec` ignores them.
     mutating func mapActionList(_ action: String) -> (commands: [String], dropped: [String]) {
         var commands: [String] = []
         var dropped: [String] = []
-        for part in splitActions(action) {
-            switch mapAction(part) {
-                case .success(let mapped): commands += mapped
+        var prefix: String? = nil
+        for (part, afterSemicolon) in splitActions(action) {
+            if afterSemicolon { prefix = nil }
+            var body = part
+            if let (terms, rest) = splitI3CriteriaPrefix(part) {
+                prefix = "[" + terms.map(renderCriterionTerm).joined(separator: " ") + "] "
+                body = rest
+            }
+            switch mapAction(body) {
+                case .success(let mapped):
+                    commands += mapped.map { m in
+                        guard let prefix, !m.hasPrefix("exec-and-forget") else { return m }
+                        return prefix + m
+                    }
                 case .failure(let reason): dropped.append("'\(part)': \(reason)")
             }
         }
         return (commands, dropped)
     }
 
-    /// exec consumes the rest of the line; everything else splits on ';' and ','
-    func splitActions(_ action: String) -> [String] {
-        let trimmed = action.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("exec") { return [trimmed] }
-        return trimmed
-            .split(whereSeparator: { $0 == ";" || $0 == "," })
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+    func renderCriterionTerm(_ term: String) -> String {
+        guard let eq = term.firstIndex(of: "=") else { return term }
+        return term[..<eq] + "=\"" + term[term.index(after: eq)...] + "\""
+    }
+
+    /// Splits on `;` and `,` outside quotes and brackets; `exec` consumes the rest of its part.
+    /// Each element: the action and whether a `;` (not a `,`) preceded it.
+    func splitActions(_ action: String) -> [(String, Bool)] {
+        var result: [(String, Bool)] = []
+        var current = ""
+        var quote: Character? = nil
+        var bracketDepth = 0
+        var afterSemicolon = false
+        func flush() {
+            let t = current.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty { result.append((t, afterSemicolon)) }
+            current = ""
+        }
+        for ch in action {
+            if let q = quote {
+                if ch == q { quote = nil }
+                current.append(ch)
+                continue
+            }
+            let isExec = current.trimmingCharacters(in: .whitespaces).hasPrefix("exec")
+                || current.trimmingCharacters(in: .whitespaces).range(of: #"^\[[^\]]*\]\s*exec"#, options: .regularExpression) != nil
+            switch ch {
+                case "\"", "'": quote = ch; current.append(ch)
+                case "[": bracketDepth += 1; current.append(ch)
+                case "]": bracketDepth = max(0, bracketDepth - 1); current.append(ch)
+                case ";" where bracketDepth == 0 && !isExec, "," where bracketDepth == 0 && !isExec:
+                    flush()
+                    afterSemicolon = ch == ";"
+                default: current.append(ch)
+            }
+        }
+        flush()
+        return result
     }
 
     mutating func mapAction(_ action: String) -> Result<[String], String> {
-        let (word, rest) = action.splitFirstWord()
+        let (rawWord, rest) = action.splitFirstWord()
+        // i3 keywords are case-insensitive (strncasecmp); names/marks/titles keep their case
+        let word = rawWord.lowercased()
         let arg = rest.trimmingCharacters(in: .whitespaces)
+        let lowerArg = arg.lowercased()
         switch word {
             case "exec":
                 let cmd = arg.removePrefixIfPresent("--no-startup-id").trimmingCharacters(in: .whitespaces)
                 return .success(["exec-and-forget \(cmd)"])
             case "focus":
-                switch arg {
-                    case "left", "right", "up", "down": return .success(["focus \(arg)"])
-                    case "next": return .success(["focus dfs-next"])
-                    case "prev": return .success(["focus dfs-prev"])
+                switch lowerArg {
+                    case "left", "right", "up", "down": return .success(["focus \(lowerArg)"])
+                    case "next", "prev": return .success(["focus \(lowerArg)"])
+                    case "next sibling": return .success(["focus next-sibling"])
+                    case "prev sibling": return .success(["focus prev-sibling"])
+                    case "parent", "child", "floating", "tiling": return .success(["focus \(lowerArg)"])
+                    case "mode_toggle": return .success(["focus mode-toggle"])
+                    case "": return .success(["focus"]) // with a criteria prefix: focus the match
                     default:
                         if arg.hasPrefix("output ") {
                             return mapMonitorTarget(String(arg.dropFirst("output ".count)), command: "focus-monitor")
@@ -346,42 +455,65 @@ private struct I3ImportContext {
             case "move":
                 return mapMoveAction(arg)
             case "workspace":
+                let noAuto = arg.hasPrefix("--no-auto-back-and-forth")
                 var name = arg.removePrefixIfPresent("--no-auto-back-and-forth").trimmingCharacters(in: .whitespaces)
+                let isNumber = name.hasPrefix("number")
                 name = name.removePrefixIfPresent("number").trimmingCharacters(in: .whitespaces).unquoted()
                 switch name {
-                    case "next", "prev": return .success(["workspace \(name)"])
-                    case "next_on_output": return .success(["workspace next"])
-                    case "prev_on_output": return .success(["workspace prev"])
+                    // i3 `next`/`prev` span every output and wrap; `*_on_output` stay on this one
+                    case "next", "prev": return .success(["workspace --all-monitors --wrap-around \(name)"])
+                    case "next_on_output": return .success(["workspace --wrap-around next"])
+                    case "prev_on_output": return .success(["workspace --wrap-around prev"])
                     case "back_and_forth": return .success(["workspace-back-and-forth"])
-                    default: return .success(["workspace \(shellQuoteArg(sanitizeWorkspace(name)))"])
+                    default:
+                        let ws = shellQuoteArg(sanitizeWorkspace(name))
+                        let flags = (noAuto ? "--no-auto-back-and-forth " : "") + (isNumber && name.first?.isNumber == true ? "--number " : "")
+                        return .success(["workspace \(flags)\(ws)"])
                 }
             case "split":
-                switch arg {
+                switch lowerArg {
                     case "h", "horizontal": return .success(["split horizontal"])
                     case "v", "vertical": return .success(["split vertical"])
                     case "t", "toggle": return .success(["split opposite"])
                     default: return .failure("split \(arg) has no equivalent")
                 }
             case "layout":
+                let arg = lowerArg
                 switch arg {
-                    case "stacking", "stacked", "tabbed": return .success(["layout accordion"])
-                    case "splith": return .success(["layout tiles horizontal"])
-                    case "splitv": return .success(["layout tiles vertical"])
-                    case "toggle split": return .success(["layout tiles horizontal vertical"])
-                    case "toggle all", "toggle": return .success(["layout tiles accordion"])
-                    default: return .failure("layout \(arg) has no equivalent")
+                    // tabbed = a horizontal accordion, stacking = a vertical one (focus direction matches)
+                    case "tabbed": return .success(["layout h_accordion"])
+                    case "stacking", "stacked": return .success(["layout v_accordion"])
+                    case "splith": return .success(["layout h_tiles"])
+                    case "splitv": return .success(["layout v_tiles"])
+                    case "default": return .success(["layout tiles"])
+                    case "toggle split": return .success(["layout h_tiles v_tiles"])
+                    // i3 cycles stacked → tabbed → splith → splitv
+                    case "toggle all", "toggle": return .success(["layout v_accordion h_accordion h_tiles v_tiles"])
+                    default:
+                        if arg.hasPrefix("toggle ") {
+                            let names: [String: String] = ["split": "h_tiles v_tiles", "splith": "h_tiles", "splitv": "v_tiles", "tabbed": "h_accordion", "stacking": "v_accordion", "stacked": "v_accordion"]
+                            let parts = arg.dropFirst("toggle ".count).split(separator: " ").map { names[String($0)] }
+                            if parts.allSatisfy({ $0 != nil }) { return .success(["layout " + parts.compactMap(\.self).joined(separator: " ")]) }
+                        }
+                        return .failure("layout \(arg) has no equivalent")
                 }
             case "fullscreen":
-                return .success(["fullscreen"])
+                // `fullscreen disable` used to TOGGLE (turning fullscreen on); global maps to per-workspace
+                let mode = lowerArg.split(separator: " ").first.map(String.init) ?? "toggle"
+                switch mode {
+                    case "enable": return .success(["fullscreen on"])
+                    case "disable": return .success(["fullscreen off"])
+                    default: return .success(["fullscreen"])
+                }
             case "floating":
-                switch arg {
+                switch lowerArg {
                     case "enable": return .success(["layout floating"])
                     case "disable": return .success(["layout tiling"])
                     case "toggle": return .success(["layout floating tiling"])
                     default: return .failure("floating \(arg) has no equivalent")
                 }
             case "sticky":
-                switch arg {
+                switch lowerArg {
                     case "enable": return .success(["sticky on"])
                     case "disable": return .success(["sticky off"])
                     case "toggle": return .success(["sticky"])
@@ -391,6 +523,25 @@ private struct I3ImportContext {
                 return mapResizeAction(arg)
             case "kill":
                 return .success(["close"])
+            case "rename":
+                // i3: rename workspace [<old>] to <new>
+                let body = arg.removePrefixIfPresent("workspace").trimmingCharacters(in: .whitespaces)
+                // `to <new>` (focused workspace) or `<old> to <new>` — the FIRST " to " separates
+                let (oldPart, newPart): (Substring, Substring)
+                if body.hasPrefix("to ") {
+                    (oldPart, newPart) = ("", body.dropFirst(3))
+                } else if let r = body.range(of: " to ") {
+                    (oldPart, newPart) = (body[..<r.lowerBound], body[r.upperBound...])
+                } else {
+                    return .failure("rename \(arg) has no equivalent")
+                }
+                let old = oldPart.trimmingCharacters(in: .whitespaces).unquoted()
+                let new = shellQuoteArg(sanitizeWorkspace(newPart.trimmingCharacters(in: .whitespaces).unquoted()))
+                return .success([old.isEmpty ? "rename-workspace \(new)" : "rename-workspace --workspace \(shellQuoteArg(sanitizeWorkspace(old))) \(new)"])
+            case "gaps":
+                // Same grammar natively: gaps <type> current|all set|plus|minus|toggle <px>
+                let parts = arg.split(separator: " ")
+                return parts.count == 4 ? .success(["gaps " + arg]) : .failure("gaps \(arg) has no equivalent")
             case "reload", "restart":
                 return .success(["reload-config"])
             case "mode":
@@ -401,9 +552,25 @@ private struct I3ImportContext {
             case "exit":
                 return .failure("exiting the window manager is not something you bind on macOS")
             case "scratchpad":
-                return .failure("no scratchpad yet; see the summon-workspace/sticky recipes in the guide")
-            case "mark", "unmark":
-                return .failure("window marks are not supported")
+                return arg == "show" ? .success(["scratchpad show"]) : .failure("scratchpad \(arg) has no equivalent")
+            case "mark":
+                let words = arg.split(separator: " ").map(String.init)
+                let flags = words.filter { ["--add", "--replace", "--toggle"].contains($0) }
+                let name = words.filter { !flags.contains($0) }.joined(separator: " ").unquoted()
+                if name.isEmpty { return .failure("mark without a name") }
+                return .success(["mark " + (flags + [shellQuoteArg(name)]).joined(separator: " ")])
+            case "unmark":
+                let name = arg.unquoted()
+                return .success([name.isEmpty ? "unmark" : "unmark \(shellQuoteArg(name))"])
+            case "swap":
+                // i3: swap container with mark|con_id <x>
+                let parts = arg.removePrefixIfPresent("container").trimmingCharacters(in: .whitespaces)
+                    .removePrefixIfPresent("with").trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { return .failure("swap \(arg) has no equivalent") }
+                switch parts[0] {
+                    case "mark": return .success(["swap --with-mark \(shellQuoteArg(parts[1].unquoted()))"])
+                    default: return .failure("swap with \(parts[0]) has no equivalent")
+                }
             case "border", "opacity", "title_format", "shmlog", "debuglog":
                 return .failure("no equivalent")
             case "focus_follows_mouse":
@@ -415,24 +582,44 @@ private struct I3ImportContext {
 
     mutating func mapMoveAction(_ arg: String) -> Result<[String], String> {
         var arg = arg.removePrefixIfPresent("--no-auto-back-and-forth").trimmingCharacters(in: .whitespaces)
-        switch arg {
-            case "left", "right", "up", "down": return .success(["move \(arg)"])
-            case "scratchpad": return .failure("no scratchpad yet; see the summon-workspace/sticky recipes in the guide")
+        switch arg.lowercased() {
+            case "left", "right", "up", "down": return .success(["move \(arg.lowercased())"])
+            case "scratchpad": return .success(["scratchpad move"])
             default: break
+        }
+        // `move left 20 px` / `move left 20 px or 5 ppt` (floating)
+        let moveParts = arg.split(separator: " ").map(String.init)
+        if let dir = moveParts.first, ["left", "right", "up", "down"].contains(dir), moveParts.count >= 2,
+           let px = Int(moveParts[1].removeSuffixIfPresent("px"))
+        {
+            return .success(["move \(dir) \(px)"])
         }
         arg = arg.removePrefixIfPresent("container").trimmingCharacters(in: .whitespaces)
         arg = arg.removePrefixIfPresent("window").trimmingCharacters(in: .whitespaces)
         if arg.hasPrefix("workspace to output") {
             return mapMonitorTarget(String(arg.dropFirst("workspace to output".count)), command: "move-workspace-to-monitor")
         }
+        // i3 grammar: `move [window|container] [to] workspace|output|mark ...` — `to` is optional
+        if !arg.hasPrefix("to "), ["workspace ", "output ", "mark "].contains(where: { arg.hasPrefix($0) }) {
+            arg = "to " + arg
+        }
         if arg.hasPrefix("to workspace") {
             var name = String(arg.dropFirst("to workspace".count)).trimmingCharacters(in: .whitespaces)
+            let isNumber = name.hasPrefix("number")
             name = name.removePrefixIfPresent("number").trimmingCharacters(in: .whitespaces).unquoted()
+            if isNumber, name.first?.isNumber == true {
+                return .success(["move-node-to-workspace --number \(shellQuoteArg(sanitizeWorkspace(name)))"])
+            }
             switch name {
-                case "next", "prev": return .success(["move-node-to-workspace \(name)"])
-                case "back_and_forth": return .failure("moving to the previous workspace is not supported")
+                case "next", "prev": return .success(["move-node-to-workspace --wrap-around \(name)"])
+                case "next_on_output": return .success(["move-node-to-workspace --wrap-around next"])
+                case "prev_on_output": return .success(["move-node-to-workspace --wrap-around prev"])
+                case "back_and_forth": return .success(["move-node-to-workspace back-and-forth"])
                 default: return .success(["move-node-to-workspace \(shellQuoteArg(sanitizeWorkspace(name)))"])
             }
+        }
+        if arg.hasPrefix("to mark") {
+            return .success(["move-node-to-mark \(shellQuoteArg(String(arg.dropFirst("to mark".count)).trimmingCharacters(in: .whitespaces).unquoted()))"])
         }
         if arg.hasPrefix("to output") {
             return mapMonitorTarget(String(arg.dropFirst("to output".count)), command: "move-node-to-monitor")
@@ -473,11 +660,12 @@ private struct I3ImportContext {
         let sign = parts[0] == "grow" ? "+" : "-"
         let dimension: String
         switch parts[1] {
-            case "width", "left", "right": dimension = "width"
-            case "height", "up", "down": dimension = "height"
+            case "width", "height": dimension = parts[1]
+            // i3 `resize grow left`: that edge moves, trading space with the one neighbour there
+            case "left", "right", "up", "down": dimension = parts[1]
             default: return .failure("can't parse resize dimension '\(parts[1])'")
         }
-        let amount = parts.compactMap { Int($0) }.first ?? 10
+        let amount = parts.compactMap { Int($0.removeSuffixIfPresent("px")) }.first ?? 10
         // Prefer ppt when present: i3's ppt maps to the '%' unit
         if let orIndex = parts.firstIndex(of: "or"), let ppt = parts[orIndex...].compactMap({ Int($0) }).first {
             return .success(["resize \(dimension) \(sign)\(ppt)%"])
@@ -502,7 +690,7 @@ private struct I3ImportContext {
         // floating enable (possibly chained with more) becomes a detection rule
         if trimmedCommand.hasPrefix("floating enable") {
             builder.detectionRules.append((matchers: matchers, treatAs: "float"))
-            let leftover = splitActions(trimmedCommand).filter { $0 != "floating enable" }
+            let leftover = splitActions(trimmedCommand).map(\.0).filter { $0 != "floating enable" }
             if !leftover.isEmpty {
                 let (commands, dropped) = mapActionList(leftover.joined(separator: "; "))
                 for d in dropped { note(line, original, d) }
@@ -562,9 +750,12 @@ private struct I3ImportContext {
         }
     }
 
+    /// i3 4.22 gaps. `horizontal`/`vertical` are OUTER gaps (left+right / top+bottom), and i3's
+    /// effective gap at a screen edge is outer + inner — here the outer gap is the absolute
+    /// distance to the edge, so the inner gap is added in `finalizeI3Gaps`. `10px` is accepted.
     mutating func handleGaps(_ rest: String, original: String, line: Int) {
         let parts = rest.split(separator: " ").map(String.init)
-        guard parts.count >= 2, let value = Int(parts.last!) else {
+        guard parts.count >= 2, let value = Int(parts.last!.removeSuffixIfPresent("px")) else {
             skip(line, original, "can't parse gaps value")
             return
         }
@@ -574,11 +765,20 @@ private struct I3ImportContext {
                 builder.gapsInner["horizontal"] = value
             case "outer":
                 for side in ["left", "bottom", "top", "right"] { builder.gapsOuter[side] = value }
-            case "horizontal": builder.gapsInner["horizontal"] = value
-            case "vertical": builder.gapsInner["vertical"] = value
+            case "horizontal": for side in ["left", "right"] { builder.gapsOuter[side] = value }
+            case "vertical": for side in ["top", "bottom"] { builder.gapsOuter[side] = value }
             case "left", "bottom", "top", "right": builder.gapsOuter[parts[0]] = value
             default:
                 skip(line, original, "gaps form '\(parts[0])' is not supported")
+        }
+    }
+
+    /// Outer = i3 outer + i3 inner at every edge (see handleGaps)
+    mutating func finalizeI3Gaps() {
+        let inner = builder.gapsInner["horizontal"] ?? builder.gapsInner["vertical"] ?? 0
+        guard inner > 0 || !builder.gapsOuter.isEmpty else { return }
+        for side in ["left", "bottom", "top", "right"] {
+            builder.gapsOuter[side] = (builder.gapsOuter[side] ?? 0) + inner
         }
     }
 
@@ -661,4 +861,11 @@ extension String {
         if count >= 2, hasPrefix("\""), hasSuffix("\"") { return String(dropFirst().dropLast()) }
         return self
     }
+}
+
+/// One i3 command → AeroSpace command lines (empty = no equivalent). Shared by the importer and the
+/// i3 IPC RUN_COMMAND handler.
+func i3ActionToAerospaceCommands(_ action: String) -> [String] {
+    var ctx = I3ImportContext(options: ImportOptions())
+    return ctx.mapActionList(action).commands
 }

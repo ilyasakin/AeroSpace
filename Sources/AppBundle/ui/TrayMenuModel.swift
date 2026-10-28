@@ -9,6 +9,7 @@ public final class TrayMenuModel: ObservableObject {
     @Published var trayText: String = ""
     @Published var trayItems: [TrayItem] = []
     /// Is "layouting" enabled
+    /// Mirror of `ServerState.isEnabled` for SwiftUI (set only by it)
     @Published var isEnabled: Bool = true
     @Published var workspaces: [WorkspaceViewModel] = []
     @Published var experimentalUISettings: ExperimentalUISettings = ExperimentalUISettings()
@@ -49,6 +50,8 @@ func trayUpdateCanSkip(
 /// - Parameter fullLeafWalk: When false (FFM), skip the full leaf walk unless the visible
 ///   workspace/mode fingerprint changed — hover within a workspace is a no-op for the tray.
 @MainActor func updateTrayText(fullLeafWalk: Bool = true) {
+    Kernel.enterProjection()
+    defer { Kernel.exitProjection() }
     let sortedMonitors = sortedMonitors
     let focus = focus
     let multiMonitor = sortedMonitors.count > 1
@@ -65,7 +68,7 @@ func trayUpdateCanSkip(
     // Single pass over sorted workspaces (menu order). Collect apps + fullscreen in one walk
     var workspaceModels: [WorkspaceViewModel] = []
     var fullscreenByName: [String: Bool] = [:]
-    let allWorkspaces = Workspace.all
+    let allWorkspaces = Workspace.userFacing
     workspaceModels.reserveCapacity(allWorkspaces.count)
     fullscreenByName.reserveCapacity(allWorkspaces.count)
     for workspace in allWorkspaces {

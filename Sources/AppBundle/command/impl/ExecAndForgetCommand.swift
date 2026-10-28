@@ -8,6 +8,7 @@ struct ExecAndForgetCommand: Command {
     func run(_ env: CmdEnv, _ io: CmdIo) -> BinaryExitCode {
         // todo shall exec-and-forget fork exec session?
         // It doesn't throw if exit code is non-zero
+        guard Headless.permits(.spawnProcess) else { return .succ }
         let process = Process()
         process.environment = config.execConfig.envVariables + env.asMap
         process.executableURL = URL(filePath: "/bin/bash")

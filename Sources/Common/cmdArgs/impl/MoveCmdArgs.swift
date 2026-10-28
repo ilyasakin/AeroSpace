@@ -11,10 +11,15 @@ public struct MoveCmdArgs: CmdArgs {
             "--fail-if-fullscreen": trueBoolFlag(\.failIfFullscreen),
             "--fail-if-macos-native-fullscreen": trueBoolFlag(\.failIfMacosNativeFullscreen),
         ],
-        posArgs: [newMandatoryPosArgParser(\.direction, parseCardinalDirectionArg, placeholder: CardinalDirection.unionLiteral)],
+        posArgs: [
+            newMandatoryPosArgParser(\.direction, parseCardinalDirectionArg, placeholder: CardinalDirection.unionLiteral),
+            ArgParser(\.floatingAmount, upcastArgParserFun(parseFloatingMoveAmount)),
+        ],
     )
 
     public var direction: Lateinit<CardinalDirection> = .uninitialized
+    /// i3 `move <direction> <px>` for floating windows (default 10)
+    public var floatingAmount: Int? = nil
     public var rawBoundaries: Boundaries? = nil
     public var rawBoundariesAction: WhenBoundariesCrossed? = nil
     public var failIfFullscreen: Bool = false
@@ -55,4 +60,11 @@ private func parseBoundariesAction(i: SubArgParserInput) -> ParsedCliArgs<MoveCm
     } else {
         return .fail("<action> is mandatory", advanceBy: 0)
     }
+}
+
+private func parseFloatingMoveAmount(i: PosArgParserInput) -> ParsedCliArgs<Int> {
+    let raw = i.arg.hasSuffix("px") ? String(i.arg.dropLast(2)) : i.arg
+    guard let n = Int(raw), n > 0 else { return .fail("<px> must be a positive number", advanceBy: 1) }
+    // i3 also accepts a trailing `px` word
+    return .succ(n, advanceBy: i.getOrNil(relativeIndex: 1) == "px" ? 2 : 1)
 }

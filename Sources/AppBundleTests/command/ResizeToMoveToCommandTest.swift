@@ -24,7 +24,7 @@ final class ResizeToMoveToCommandTest: XCTestCase {
             window = TestWindow.new(id: 1, parent: $0, rect: Rect(topLeftX: 50, topLeftY: 50, width: 400, height: 300))
         }
         _ = window.focusWindow()
-        await parseCommand("resize-to 800 600").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("resize-to 800 600")
         assertEquals(try! await window.getAxSize(.nonCancellable), CGSize(width: 800, height: 600))
     }
 
@@ -35,7 +35,7 @@ final class ResizeToMoveToCommandTest: XCTestCase {
             window = TestWindow.new(id: 1, parent: $0, rect: Rect(topLeftX: 50, topLeftY: 50, width: 400, height: 300))
         }
         _ = window.focusWindow()
-        await parseCommand("move-to 120 80").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("move-to 120 80")
         let rect = try! await window.getAxRect(.nonCancellable)
         assertEquals(rect?.topLeftCorner, CGPoint(x: 120, y: 80))
     }

@@ -22,6 +22,9 @@ let config_help_generated = """
        OR: config [-h|--help] --all-keys
        OR: config [-h|--help] --config-path
     """
+let criteria_help_generated = """
+    USAGE: criteria [-h|--help] <criterion>... -- <command> [<arg>...]
+    """
 let debug_windows_help_generated = """
     USAGE: debug-windows [-h|--help] [--window-id <window-id>]
     """
@@ -63,11 +66,18 @@ let focus_help_generated = """
                  (dfs-next|dfs-prev)
        OR: focus [-h|--help] --window-id <window-id>
        OR: focus [-h|--help] --dfs-index <dfs-index>
+       OR: focus [-h|--help] (parent|child)
+       OR: focus [-h|--help] (floating|tiling|mode-toggle)
+       OR: focus [-h|--help] (next|prev|next-sibling|prev-sibling)
     """
 let fullscreen_help_generated = """
     USAGE: fullscreen [-h|--help]     [--window-id <window-id>] [--no-outer-gaps]
        OR: fullscreen [-h|--help] on  [--window-id <window-id>] [--no-outer-gaps] [--fail-if-noop]
        OR: fullscreen [-h|--help] off [--window-id <window-id>] [--fail-if-noop]
+    """
+let gaps_help_generated = """
+    USAGE: gaps [-h|--help] [--workspace <workspace>] (inner|outer|horizontal|vertical|top|right|bottom|left)
+                (current|all) (set|plus|minus|toggle) <px>
     """
 let import_config_help_generated = """
     USAGE: import-config [-h|--help] (i3) <path> [--output <path>] [--mod (alt|cmd)] [--dry-run]
@@ -113,11 +123,17 @@ let macos_native_fullscreen_help_generated = """
 let macos_native_minimize_help_generated = """
     USAGE: macos-native-minimize [-h|--help] [--window-id <window-id>]
     """
+let mark_help_generated = """
+    USAGE: mark [-h|--help] [--window-id <window-id>] [--add|--replace] [--toggle] <mark>
+    """
 let mode_help_generated = """
     USAGE: mode [-h|--help] [--] <binding-mode>
     """
 let move_mouse_help_generated = """
     USAGE: move-mouse [-h|--help] [--fail-if-noop] <mouse-position>
+    """
+let move_node_to_mark_help_generated = """
+    USAGE: move-node-to-mark [-h|--help] [--window-id <window-id>] [--focus-follows-window] <mark>
     """
 let move_node_to_monitor_help_generated = """
     USAGE: move-node-to-monitor [-h|--help] [--window-id <window-id>] [--focus-follows-window]
@@ -130,7 +146,8 @@ let move_node_to_workspace_help_generated = """
                                   [--stdin|--no-stdin]
                                   (next|prev)
        OR: move-node-to-workspace [-h|--help] [--focus-follows-window] [--fail-if-noop]
-                                  [--window-id <window-id>] [--] <workspace-name>
+                                  [--window-id <window-id>] [--number] [--] <workspace-name>
+       OR: move-node-to-workspace [-h|--help] [--focus-follows-window] [--window-id <window-id>] back-and-forth
     """
 let move_to_help_generated = """
     USAGE: move-to [-h|--help] [--window-id <window-id>] <x> <y>
@@ -143,20 +160,27 @@ let move_workspace_to_monitor_help_generated = """
 let move_help_generated = """
     USAGE: move [-h|--help] [--window-id <window-id>] [--boundaries <boundary>]
                 [--boundaries-action <boundary-action>] [--fail-if-fullscreen]
-                [--fail-if-macos-native-fullscreen] (left|down|up|right)
+                [--fail-if-macos-native-fullscreen] (left|down|up|right) [<px>]
     """
 let reload_config_help_generated = """
     USAGE: reload-config [-h|--help] [--no-gui] [--dry-run] [--warnings-as-errors]
+    """
+let rename_workspace_help_generated = """
+    USAGE: rename-workspace [-h|--help] [--workspace <workspace>] [--] <new-name>
     """
 let resize_to_help_generated = """
     USAGE: resize-to [-h|--help] [--window-id <window-id>] <width> <height>
     """
 let resize_help_generated = """
     USAGE: resize [-h|--help] [--window-id <window-id>] (smart|smart-opposite|width|height) [+|-]<number>[%]
+       OR: resize [-h|--help] [--window-id <window-id>] (left|down|up|right) (+|-)<number>[%]
     """
 let run_callback_help_generated = """
     USAGE: run-callback [-h|--help] [--for-every-window|--window-id <window-id>] on-window-detected
        OR: run-callback [-h|--help] (on-focus-changed|on-focused-monitor-changed)
+    """
+let scratchpad_help_generated = """
+    USAGE: scratchpad [-h|--help] [--window-id <window-id>] (show|move)
     """
 let split_help_generated = """
     USAGE: split [-h|--help] [--window-id <window-id>] (horizontal|vertical|opposite)
@@ -173,6 +197,7 @@ let summon_workspace_help_generated = """
 let swap_help_generated = """
     USAGE: swap [-h|--help] [--window-id <window-id>] [--swap-focus]
                 [--wrap-around] (left|down|up|right|dfs-next|dfs-prev)
+       OR: swap [-h|--help] [--window-id <window-id>] [--swap-focus] --with-mark <mark>
     """
 let test_not_help_generated = """
     USAGE: test-not [-h|--help] <lhs> = <rhs>
@@ -197,6 +222,9 @@ let trigger_binding_help_generated = """
 let true_help_generated = """
     USAGE: true [-h|--help]
     """
+let unmark_help_generated = """
+    USAGE: unmark [-h|--help] [--window-id <window-id>] [<mark>]
+    """
 let volume_help_generated = """
     USAGE: volume [-h|--help] (up|down) [--no-gui]
        OR: volume [-h|--help] (mute-toggle|mute-off|mute-on) [--no-gui]
@@ -206,6 +234,7 @@ let workspace_back_and_forth_help_generated = """
     USAGE: workspace-back-and-forth [-h|--help]
     """
 let workspace_help_generated = """
-    USAGE: workspace [-h|--help] [--auto-back-and-forth] [--fail-if-noop] [--] <workspace-name>
-       OR: workspace [-h|--help] [--wrap-around] [--stdin|--no-stdin] (next|prev)
+    USAGE: workspace [-h|--help] [--auto-back-and-forth] [--fail-if-noop] [--number] [--] <workspace-name>
+       OR: workspace [-h|--help] [--wrap-around] [--all-monitors] [--stdin|--no-stdin] (next|prev)
+       OR: workspace [-h|--help] back-and-forth
     """

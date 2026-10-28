@@ -4,42 +4,76 @@ import Common
 @MainActor
 var moveWithMouseTask: Task<(), any Error>? = nil
 
-func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
-    let windowId = ax.containingWindowId()
-    let notif = notif as String
+/// Frame notifications already queued for the kernel, per window and kind. Each one is handled by
+/// reading the window's frame when it runs, so while one is waiting, more of the same add nothing:
+/// a busy kernel used to run a dozen identical copies back to back (each judged on its own, each
+/// able to schedule a refresh)
+@MainActor var queuedFrameNotifications: Set<String> = []
+
+@MainActor func takeFrameNotificationSlot(_ windowId: UInt32, _ kind: String) -> Bool {
+    queuedFrameNotifications.insert("\(kind)/\(windowId)").inserted
+}
+
+@MainActor func releaseFrameNotificationSlot(_ windowId: UInt32, _ kind: String) {
+    queuedFrameNotifications.remove("\(kind)/\(windowId)")
+}
+
+func onAxWindowMoved(windowId: UInt32?, notif: String) {
     Task.startUnstructured { @MainActor in
         guard let token: RunSessionGuard = .isServerEnabled else { return }
         let window = windowId.flatMap { Window.get(byId: $0) }
-        guard let window else { return }
+        guard let window, takeFrameNotificationSlot(window.windowId, "moved") else { return }
+        await Kernel.exclusive("ax moved") {
+            releaseFrameNotificationSlot(window.windowId, "moved")
+            guard Window.get(byId: window.windowId) != nil else { return }
+            // Our own layout write coming back: nothing to learn, no drag to start (an echo during an
+            // unrelated mouse-down used to be mistaken for a user drag and rewrite weights)
+            let report: FrameRecord.Report = currentlyManipulatedWithMouseWindowId == window.windowId
+                ? .external : window.judgeFrameNotification()
+            if report == .lagging { scheduleLagRecheck(window.windowId, notif) }
+            if report != .external {
+                FrameTrace.log("echo-moved \(window.windowId) live=\(fmt(WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)))")
+                return
+            }
+            FrameTrace.log("external-moved \(window.windowId) live=\(fmt(WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)))")
 
-        let mouseMove: Bool
-        do {
-            mouseMove = try await isManipulatedWithMouse(window)
-        } catch {
-            return
-        }
+            let mouseMove: Bool
+            do {
+                mouseMove = try await isManipulatedWithMouse(window)
+            } catch {
+                return
+            }
 
-        if !mouseMove {
-            (window as? MacWindow)?.invalidateAxFrameCaches()
-            scheduleCancellableCompleteRefreshSession(.ax(notif))
-            return
-        }
+            if !mouseMove {
+                window.noteExternalFrameChange()
+                scheduleCancellableCompleteRefreshSession(.ax(notif))
+                return
+            }
 
-        // Stamp before light plan so session skips side-UI rebuild + follow-up heavy.
-        currentlyManipulatedWithMouseWindowId = window.windowId
-        // Floating free-drag: start display-Hz border sampling *before* the light session Task,
-        // so the first frames aren't waiting on session scheduling / AX.
-        if window.isFloating {
-            FloatingBorderTracker.kick(window)
-        }
-        // Edge/corner resize also fires AXMoved. Route those to resize so we never wipe the
-        // layout baseline or tile-swap mid-resize (see isMouseResizeLikeDrag).
-        resizeWithMouseTask?.cancel()
-        moveWithMouseTask?.cancel()
-        moveWithMouseTask = Task.startUnstructured {
-            try checkCancellation()
-            try await runLightSession(.ax(notif), token) {
-                try await moveWithMouse(window)
+            let continuingDrag = currentlyManipulatedWithMouseWindowId == window.windowId
+            // Stamp before light plan so session skips side-UI rebuild + follow-up heavy.
+            currentlyManipulatedWithMouseWindowId = window.windowId
+            // Floating free-drag: start display-Hz border sampling *before* the light session Task,
+            // so the first frames aren't waiting on session scheduling / AX.
+            if window.isFloating {
+                FloatingBorderTracker.kick(window)
+                // Mid-drag, a float only needs the tree touched when it crosses onto another monitor's
+                // workspace. A light session per AX tick (focus sync, layout, tray) kept the main
+                // thread busy, and the display-link sampler — one pulse in flight, stalls skip frames —
+                // dropped border frames: the ring trailed the window.
+                if continuingDrag, mouseLocation.monitorApproximation.activeWorkspace == window.nodeWorkspace {
+                    return
+                }
+            }
+            // Edge/corner resize also fires AXMoved. Route those to resize so we never wipe the
+            // layout baseline or tile-swap mid-resize (see isMouseResizeLikeDrag).
+            resizeWithMouseTask?.cancel()
+            moveWithMouseTask?.cancel()
+            moveWithMouseTask = Task.startUnstructured {
+                try checkCancellation()
+                try await runLightSession(.ax(notif), token) {
+                    try await moveWithMouse(window)
+                }
             }
         }
     }
@@ -47,7 +81,7 @@ func movedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableR
 
 @MainActor
 private func moveWithMouse(_ window: Window) async throws { // todo cover with tests
-    resetClosedWindowsCache()
+    WindowMemory.forgetWorld()
     switch window.windowParentCases {
         case .floatingWindowsContainer:
             moveFloatingWindow(window)
@@ -61,7 +95,7 @@ private func moveWithMouse(_ window: Window) async throws { // todo cover with t
             let inResizeGesture = currentlyManipulatedWithMouseWindowId == window.windowId
                 && mouseResizePhysicalBaselineIfSet(for: window) != nil
             let sizeBaseline = mouseResizePhysicalBaselineIfSet(for: window)
-                ?? window.believedRect
+                ?? window.knownFrame
             if inResizeGesture || isMouseResizeLikeDrag(believed: sizeBaseline, live: live) {
                 ensureMouseResizeWindowServerNotifications(for: window)
                 MouseResizeDriver.kick(window)
@@ -203,4 +237,20 @@ private func effectiveHitRect(_ node: TreeNode, virtual: Bool) -> Rect? {
         } ?? r
     }
     return acc
+}
+
+/// A frame notification that looked like WindowServer lag gets one more look once the lag window
+/// is over: an app restoring its own saved frame right after we placed it looks exactly like lag
+/// at first, and swallowing it left the window at its own frame with nothing to rewrite it.
+@MainActor
+func scheduleLagRecheck(_ windowId: UInt32, _ notif: String) {
+    Task.startUnstructured { @MainActor in
+        try? await Task.sleep(nanoseconds: UInt64((FrameRecord.windowServerLagSeconds + 0.1) * 1_000_000_000))
+        await Kernel.exclusive("frame lag recheck") {
+            guard let window = Window.get(byId: windowId), window.recheckAfterLag() else { return }
+            FrameTrace.log("lag-recheck \(windowId) was the app's own frame")
+            window.noteExternalFrameChange()
+            scheduleCancellableCompleteRefreshSession(.ax(notif))
+        }
+    }
 }

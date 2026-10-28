@@ -87,14 +87,8 @@ final class ConfigSettingsModel: ObservableObject {
         reparse()
         // Notify SwiftUI immediately — bindings read text/parsedConfig.
         objectWillChange.send()
-        Task.startUnstructured { @MainActor in
-            guard let token: RunSessionGuard = .isServerEnabled else { return }
-            try await runLightSession(.menuBarButton, token) {
-                _ = await reloadConfig_nonCancellable(args: ReloadConfigCmdArgs(rawArgs: []).copy(\.noGui, true))
-                // Bar modules/layout must refresh even if the light session skipped a full redraw.
-                StatusBarManager.shared.refresh()
-            }
-        }
+        // The session's side-UI phase repaints the bar with the new config
+        runUiCommand(["reload-config", "--no-gui"])
     }
 
     // MARK: - Typed bindings for structured controls

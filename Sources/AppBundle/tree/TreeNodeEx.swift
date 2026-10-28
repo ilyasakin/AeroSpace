@@ -63,8 +63,58 @@ extension TreeNode {
         }
     }
 
+    /// Every window under this node, most recently focused first: a DFS that visits each
+    /// container's children in its MRU order (never-focused children last, in child order). This
+    /// is i3's per-container focus stack flattened; replaying it least-recent-first through
+    /// `markAsMostRecentChild` rebuilds every stack along the way.
+    var windowsInFocusOrder: [Window] {
+        var result: [Window] = []
+        func visit(_ node: TreeNode) {
+            if let w = node as? Window {
+                result.append(w)
+                return
+            }
+            var seen: [ObjectIdentifier] = []
+            for child in node.mruChildren {
+                seen.append(ObjectIdentifier(child))
+                visit(child)
+            }
+            // Never-focused children rank last-child-first, matching `mostRecentChild`'s
+            // `children.last` fallback
+            for child in node.children.reversed() where !seen.contains(ObjectIdentifier(child)) {
+                visit(child)
+            }
+        }
+        visit(self)
+        return result
+    }
+
+    /// The window focus returns to inside this node (i3's focus stack): walk children in MRU order,
+    /// falling through EMPTY subtrees instead of dead-ending in them (closing the last float left
+    /// an empty floating container on top, and focus then fell to the top-left tile). Windows
+    /// parked in macOS-owned containers (native fullscreen, hidden app, minimized, popups) are not
+    /// focus targets — returning one switched native tabs or jumped Spaces on workspace switch-back.
     var mostRecentWindowRecursive: Window? {
-        self as? Window ?? mostRecentChild?.mostRecentWindowRecursive
+        if let w = self as? Window { return w }
+        var seen: [ObjectIdentifier] = []
+        for child in mruChildren {
+            seen.append(ObjectIdentifier(child))
+            if child.isMacosParkingContainer { continue }
+            if let w = child.mostRecentWindowRecursive { return w }
+        }
+        for child in children.reversed() where !seen.contains(ObjectIdentifier(child)) && !child.isMacosParkingContainer {
+            if let w = child.mostRecentWindowRecursive { return w }
+        }
+        return nil
+    }
+
+    /// Containers whose windows macOS (not the tiling tree) currently owns
+    var isMacosParkingContainer: Bool {
+        switch nodeCases {
+            case .macosMinimizedWindowsContainer, .macosFullscreenWindowsContainer,
+                 .macosHiddenAppsWindowsContainer, .macosPopupWindowsContainer: true
+            case .window, .workspace, .tilingContainer, .floatingWindowsContainer: false
+        }
     }
 
     var anyLeafWindowRecursive: Window? {

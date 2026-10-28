@@ -11,23 +11,12 @@ struct MoveToCommand: Command {
 
         if !window.isFloating {
             window.bindAsFloatingWindow(to: target.workspace)
-            if let size = window.lastFloatingSize { window.setAxFrame(nil, size) }
+            if let size = window.lastFloatingSize { window.requestFrame(topLeft: nil, size: size) }
             io.err("move-to floated the tiled window before placing it")
         }
 
         let topLeft = CGPoint(x: CGFloat(args.x.val), y: CGFloat(args.y.val))
-        window.setAxFrame(topLeft, nil)
-        if let size = try? await window.getAxSize(.nonCancellable) {
-            window.desiredRect = Rect(
-                topLeftX: topLeft.x,
-                topLeftY: topLeft.y,
-                width: size.width,
-                height: size.height,
-            )
-            window.lastFloatingSize = size
-        } else {
-            window.desiredRect = nil
-        }
+        window.requestFrame(topLeft: topLeft, size: nil)
         return .succ
     }
 }

@@ -15,7 +15,19 @@ struct SwapCommand: Command {
         }
 
         let targetWindow: Window?
-        switch args.target.val {
+        if let mark = args.withMark {
+            guard let marked = Window.marked(mark) else { return .fail(io.err("No window is marked '\(mark)'")) }
+            if marked == currentWindow { return .succ }
+            // Swapping with a window macOS owns (minimized / hidden / native fullscreen) would bind
+            // the visible one into the parking container and tile the parked one
+            let swappable = { (w: Window) in w.parent is TilingContainer || w.isFloating }
+            guard swappable(marked), swappable(currentWindow) else {
+                return .fail(io.err("Only tiled or floating windows can be swapped"))
+            }
+            swapWindows(mruDominant: currentWindow, marked)
+            return args.swapFocus ? .from(bool: marked.focusWindow()) : .succ
+        }
+        switch args.target.orDie() {
             case .direction(let direction):
                 switch currentWindow.closestParent(hasChildrenInDirection: direction, withLayout: nil) {
                     case let (parent, ownIndex)?:

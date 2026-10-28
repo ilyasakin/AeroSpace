@@ -28,6 +28,7 @@ extension PersistentTilingNode {
             layout: container.layout,
             weight: weight,
             children: children,
+            id: container.nodeId,
         )
     }
 }
@@ -45,9 +46,11 @@ extension PersistentTilingNode {
     /// Best-effort: an unresolvable window id (stale generation, closed window, foreign id) SKIPS
     /// that leaf and continues — a WM must degrade, not die, on model drift. Returns true when at
     /// least one leaf was bound (an all-dead spine returns false so callers can fall back).
+    /// `reusing`: containers of the tree being replaced, by node id. A snapshot container with one
+    /// of those ids gets that same object back (reshaped and refilled) rather than a new one.
     @MainActor
     @discardableResult
-    func restore(parent: NonLeafTreeNodeObject, index: Int) -> Bool {
+    func restore(parent: NonLeafTreeNodeObject, index: Int, reusing: [UInt64: TilingContainer] = [:]) -> Bool {
         switch self {
             case .window(let id, let weight):
                 guard let window = Window.get(byId: id) else { return false }
@@ -63,19 +66,20 @@ extension PersistentTilingNode {
                 }
                 window.bind(to: parent, adaptiveWeight: weight, index: index)
                 return true
-            case .container(let orientation, let layout, let weight, let children):
-                let container = TilingContainer(
-                    parent: parent,
-                    adaptiveWeight: weight,
-                    orientation,
-                    layout,
-                    index: index,
-                )
+            case .container(let orientation, let layout, let weight, let children, let id):
+                let container: TilingContainer
+                if let id, let existing = reusing[id], existing.parent == nil {
+                    existing.reshape(orientation: orientation, layout: layout)
+                    existing.bind(to: parent, adaptiveWeight: weight, index: index)
+                    container = existing
+                } else {
+                    container = TilingContainer(parent: parent, adaptiveWeight: weight, orientation, layout, index: index)
+                }
                 var boundAny = false
                 var nextIndex = 0
                 for child in children {
                     // Indices stay consistent because skipped leaves don't consume a slot
-                    if child.restore(parent: container, index: nextIndex) {
+                    if child.restore(parent: container, index: nextIndex, reusing: reusing) {
                         boundAny = true
                         nextIndex += 1
                     }

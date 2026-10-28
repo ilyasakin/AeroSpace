@@ -14,15 +14,84 @@ struct FocusCommand: Command {
         ) {
             return .fail
         }
+        // AeroSpace's "floats take part in directional focus" pre-pass. Not for i3 semantics: in i3
+        // floats are never in the tiling tree (they are cycled separately), and focus
+        // floating|tiling|mode-toggle, parent/child, next/prev must see the real layers.
+        let i3Semantics: Bool = switch args.target {
+            case .direction: args.usesI3Semantics
+            case .layer, .hierarchy, .sequence: true
+            case .windowId, .dfsIndex, .dfsRelative: false
+        }
+        let floatsAsTiling = args.floatingAsTiling && !i3Semantics
         // todo bug: floating windows break mru
-        let floatingWindows = args.floatingAsTiling ? await makeFloatingWindowsSeenAsTiling(workspace: target.workspace) : []
+        let floatingWindows = floatsAsTiling ? await makeFloatingWindowsSeenAsTiling(workspace: target.workspace) : []
         defer {
-            if args.floatingAsTiling {
+            if floatsAsTiling {
                 restoreFloatingWindows(floatingWindows: floatingWindows, workspace: target.workspace)
             }
         }
 
         switch args.target {
+            case .sequence(let seq):
+                guard let window = target.windowOrNil else { return .fail(io.err(noWindowIsFocused)) }
+                let node: TreeNode = window == focus.windowOrNil ? (focus.focusedNode ?? window) : window
+                guard let parent = node.parent as? TilingContainer else { return .succ }
+                switch seq {
+                    case .next, .prev:
+                        // i3 cmd_focus_direction next|prev: tree_next along the parent's orientation
+                        let dir: CardinalDirection = switch (parent.orientation, seq == .next) {
+                            case (.h, true): .right
+                            case (.h, false): .left
+                            case (.v, true): .down
+                            case (.v, false): .up
+                        }
+                        return i3FocusDirection(target, dir, io)
+                    case .nextSibling, .prevSibling:
+                        // i3 get_tree_next_sibling: no wrap; a container sibling becomes the focused node
+                        guard let index = node.ownIndex else { return .fail(io.err(bugPrompt())) }
+                        let siblingIndex = index + (seq == .nextSibling ? 1 : -1)
+                        guard parent.children.indices.contains(siblingIndex) else { return .succ }
+                        let sibling = parent.children[siblingIndex]
+                        guard let leaf = sibling.mostRecentWindowRecursive, leaf.focusWindow() else { return .fail }
+                        var depth = 0
+                        var n: TreeNode = leaf
+                        while n !== sibling, let p = n.parent {
+                            n = p
+                            depth += 1
+                        }
+                        setFocusLevel(depth)
+                        return .succ
+                }
+            case .layer(let layer):
+                // i3: the most recently focused window of the other layer on this workspace
+                let ws = target.workspace
+                let wantFloating: Bool = switch layer {
+                    case .floating: true
+                    case .tiling: false
+                    case .modeToggle: !(target.windowOrNil?.isFloating ?? false)
+                }
+                let pick = wantFloating
+                    ? ws.floatingWindowsContainer.mostRecentWindowRecursive
+                    : ws.rootTilingContainer.mostRecentWindowRecursive
+                guard let pick else { return .succ }
+                return .from(bool: pick.focusWindow())
+            case .hierarchy(let h):
+                // i3 `focus parent` stops at the workspace's root container; `focus child` at the
+                // window. Neither changes which window has keyboard focus.
+                guard target.windowOrNil != nil else { return .fail(io.err(noWindowIsFocused)) }
+                switch h {
+                    case .parent:
+                        // i3: "Currently in fullscreen, not going up"
+                        if focusLevel == 0, target.windowOrNil?.isFullscreen == true { return .succ }
+                        if focusLevel >= focus.maxFocusLevel { return .succ }
+                        setFocusLevel(focusLevel + 1)
+                    case .child:
+                        if focusLevel == 0 { return .succ }
+                        setFocusLevel(focusLevel - 1)
+                }
+                return .succ
+            case .direction(let direction) where args.usesI3Semantics:
+                return i3FocusDirection(target, direction, io)
             case .direction(let direction):
                 let window = target.windowOrNil
                 if let (parent, ownIndex) = window?.closestParent(hasChildrenInDirection: direction, withLayout: nil) {
@@ -64,6 +133,62 @@ struct FocusCommand: Command {
                 return .from(bool: windows[targetIndex].focusWindow())
         }
     }
+}
+
+extension FocusCmdArgs {
+    /// No explicit boundary flags: i3 `focus <direction>` with the `focus-wrapping` config
+    var usesI3Semantics: Bool { rawBoundaries == nil && rawBoundariesAction == nil && !wrapAroundRequested }
+}
+
+/// i3 `tree_next` / `get_tree_next` (src/tree.c). Climb from the focused window to the first
+/// ancestor running in the direction's orientation that has a sibling there; focus that sibling's
+/// focused descendant (`con_descend_focused` — the focus stack, not geometry). With no sibling at
+/// any level, `focus-wrapping` decides: the adjacent monitor, or a wrap to the far end of the
+/// innermost matching ancestor. A fullscreen window only lets focus leave to another monitor.
+@MainActor private func i3FocusDirection(_ target: LiveFocus, _ direction: CardinalDirection, _ io: CmdIo) -> BinaryExitCode {
+    let wrapping = config.focusWrapping
+    let o = direction.orientation
+    // i3 get_tree_next on a floating con: left/right cycle the workspace's floats (wrapping),
+    // up/down do nothing
+    if let window = target.windowOrNil, window.isFloating, let floats = window.parent?.children {
+        guard o == .h, floats.count > 1, let index = window.ownIndex else { return .succ }
+        let next = floats[(index + direction.focusOffset + floats.count) % floats.count]
+        return focusDescendant(of: next, io)
+    }
+    var firstWrap: TreeNode? = nil
+    if let window = target.windowOrNil, !window.isFullscreen, window.parent is TilingContainer {
+        // From a focused container (`focus parent`), climb from the container (i3 get_tree_next)
+        var con: TreeNode = window == focus.windowOrNil ? (focus.focusedNode ?? window) : window
+        while let parent = con.parent as? TilingContainer {
+            if parent.children.count > 1 && parent.orientation == o, let index = con.ownIndex {
+                let nextIndex = index + direction.focusOffset
+                if parent.children.indices.contains(nextIndex) {
+                    return focusDescendant(of: parent.children[nextIndex], io)
+                }
+                let wrap = direction.isPositive ? parent.children.first : parent.children.last
+                switch wrapping {
+                    case .no: break
+                    case .yes, .workspace: firstWrap = firstWrap ?? wrap
+                    case .force: return wrap.map { focusDescendant(of: $0, io) } ?? .succ
+                }
+            }
+            con = parent
+        }
+    }
+    if wrapping == .workspace {
+        return firstWrap.map { focusDescendant(of: $0, io) } ?? .succ
+    }
+    if let (monitors, index) = target.workspace.workspaceMonitor.findRelativeMonitor(inDirection: direction),
+       let targetMonitor = monitors.getOrNil(atIndex: index)
+    {
+        return .from(bool: targetMonitor.activeWorkspace.focusWorkspace())
+    }
+    return firstWrap.map { focusDescendant(of: $0, io) } ?? .succ
+}
+
+@MainActor private func focusDescendant(of node: TreeNode, _ io: CmdIo) -> BinaryExitCode {
+    guard let window = node.mostRecentWindowRecursive else { return .fail(io.err(bugPrompt())) }
+    return .from(bool: window.focusWindow())
 }
 
 @MainActor private func hitWorkspaceBoundaries(

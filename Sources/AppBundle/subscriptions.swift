@@ -13,7 +13,10 @@ private struct Subscriber {
 func handleSubscribeAndWaitTillError(_ connection: NWConnection, _ args: SubscribeCmdArgs) async {
     let id = UniqueToken()
     subscribers[id] = Subscriber(connection: connection, events: args.events)
-    defer { subscribers.removeValue(forKey: id) }
+    defer {
+        subscribers.removeValue(forKey: id)
+        EventBacklog.forget(connection)
+    }
     if args.sendInitial {
         let f = focus
         for eventType in args.events {
@@ -50,10 +53,12 @@ private let jsonEncoder: JSONEncoder = {
 
 func broadcastEvent(_ event: ServerEvent) {
     Task.startUnstructured { @MainActor in
-        for (id, subscriber) in subscribers {
-            guard subscriber.events.contains(event.eventType) else { continue }
-            if await subscriber.connection.writeAtomic(event, jsonEncoder).error != nil {
-                _ = subscribers.removeValue(forKey: id)
+        let interested = subscribers.filter { $0.value.events.contains(event.eventType) }
+        if interested.isEmpty { return }
+        guard let frame = nativeEventFrame(event, jsonEncoder) else { return } // encoded once
+        for (id, subscriber) in interested {
+            EventBacklog.send(frame, to: subscriber.connection) {
+                subscribers.removeValue(forKey: id)
             }
         }
         // i3 IPC events are emitted at the focus-transition call sites (workspace then window).

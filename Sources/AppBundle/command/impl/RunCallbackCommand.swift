@@ -10,7 +10,7 @@ struct RunCallbackCommand: Command {
         switch args.callback.val {
             case .onWindowDetected where args.forEveryWindow:
                 var exitCode = Int32ExitCode.succ
-                for window in MacWindow.allWindows {
+                for window in Window.all {
                     exitCode = await onWindowDetected(env, io, window)
                 }
                 return exitCode

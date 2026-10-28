@@ -160,6 +160,7 @@ extension FormatVar {
                     case .windowIsAlwaysOnTop: .success(.bool(w.window.isAlwaysOnTop))
                     case .windowIsFullscreen: .success(.bool(w.window.isFullscreen))
                     case .windowIsSticky: .success(.bool(w.window.isSticky))
+                    case .windowMarks: .success(.string(w.window.marks.joined(separator: ",")))
                     case .windowTitle: .success(.string(w.title.orDie("Title wasn't prefetched")))
                     case .windowLayout, .windowParentContainerLayout: toLayoutResult(w: w.window)
                 }

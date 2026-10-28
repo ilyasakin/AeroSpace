@@ -6,7 +6,7 @@ struct SplitCommand: Command {
     /*conforms*/ let shouldResetClosedWindowsCache = true
 
     func run(_ env: CmdEnv, _ io: CmdIo) -> BinaryExitCode {
-        if config.enableNormalizationFlattenContainers {
+        if config.enableNormalizationFlattenContainers && !config.i3Normalization {
             return .fail(io.err("'split' has no effect when 'enable-normalization-flatten-containers' normalization enabled. My recommendation: keep the normalizations enabled, and prefer 'join-with' over 'split'."))
         }
         guard let target = args.resolveTargetOrReportError(env, io) else { return .fail }
@@ -24,7 +24,9 @@ struct SplitCommand: Command {
                     case .horizontal: .h
                     case .opposite: parent.orientation.opposite
                 }
-                if parent.children.count == 1 {
+                // i3 tree_split: a lone child of a SPLIT container just re-orients it (a lone child of
+                // an accordion gets wrapped like any other)
+                if parent.children.count == 1 && parent.layout == .tiles {
                     parent.changeOrientation(orientation)
                 } else {
                     let data = window.unbindFromParent()

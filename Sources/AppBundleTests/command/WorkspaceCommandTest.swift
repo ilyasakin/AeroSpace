@@ -12,7 +12,7 @@ final class WorkspaceCommandTest: XCTestCase {
     func testParseWorkspaceCommand() {
         testParseCommandFail("workspace my mail", msg: "ERROR: Unknown argument 'mail'", exitCode: 2)
         testParseCommandFail("workspace 'my mail'", msg: "ERROR: Whitespace characters are forbidden in workspace names", exitCode: 2)
-        assertEquals(parseCommand("workspace").errorOrNil, "ERROR: Argument '(<workspace-name>|next|prev)' is mandatory")
+        assertEquals(parseCommand("workspace").errorOrNil, "ERROR: Argument '(<workspace-name>|next|prev|back-and-forth)' is mandatory")
         testParseSingleCommandSucc("workspace next", WorkspaceCmdArgs(target: .relative(.next)))
         testParseSingleCommandSucc("workspace --auto-back-and-forth W", WorkspaceCmdArgs(target: .direct(.parse("W").getOrDie()), autoBackAndForth: true))
         assertEquals(parseCommand("workspace --wrap-around W").errorOrNil, "--wrapAround requires using (next|prev) argument")
@@ -26,7 +26,7 @@ final class WorkspaceCommandTest: XCTestCase {
     func testParseDashDash() {
         testParseSingleCommandSucc("workspace -- foo", WorkspaceCmdArgs(target: .direct(.parse("foo").getOrDie())))
         assertEquals(parseCommand("workspace -- next").errorOrNil, "ERROR: 'next' is a reserved workspace name")
-        assertEquals(parseCommand("workspace --").errorOrNil, "ERROR: Argument \'(<workspace-name>|next|prev)\' is mandatory")
+        assertEquals(parseCommand("workspace --").errorOrNil, "ERROR: Argument \'(<workspace-name>|next|prev|back-and-forth)\' is mandatory")
         testParseSingleCommandSucc(
             "workspace --auto-back-and-forth -- foo",
             WorkspaceCmdArgs(target: .direct(.parse("foo").getOrDie()), autoBackAndForth: true),
@@ -76,12 +76,12 @@ final class WorkspaceCommandTest: XCTestCase {
         assertEquals(focus.workspace.name, "b")
     }
 
-    func testAutoBackAndForth_alreadyFocused_noPrev_fails() async {
+    func testAutoBackAndForth_alreadyFocused_noPrev_staysLikeI3() async {
         assertTrue(Workspace.get(byName: "a").focusWorkspace())
-        // _prevFocusedWorkspaceName is nil from setUp — WorkspaceBackAndForthCommand has nothing to focus.
+        // _prevFocusedWorkspaceName is nil from setUp — nothing to go back to: i3 just stays.
 
         let result = await parseCommand("workspace --auto-back-and-forth a").cmdOrDie.run(.defaultEnv, .emptyStdin)
-        assertEquals(result.exitCode.rawValue, 2)
+        assertEquals(result.exitCode.rawValue, 0)
         assertEquals(focus.workspace.name, "a")
     }
 

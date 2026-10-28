@@ -54,8 +54,8 @@ final class ImportI3Test: XCTestCase {
         assertTrue(result.toml.contains("alt-shift-q = 'close'"))
         assertTrue(result.toml.contains("alt-h = 'focus left'"))
         assertTrue(result.toml.contains("alt-space = 'layout floating tiling'"))
-        assertTrue(result.toml.contains("alt-1 = 'workspace 1'"))
-        assertTrue(result.toml.contains("alt-shift-1 = 'move-node-to-workspace 1'"))
+        assertTrue(result.toml.contains("alt-1 = 'workspace --number 1'")) // i3 `workspace number 1`
+        assertTrue(result.toml.contains("alt-shift-1 = 'move-node-to-workspace --number 1'")) // i3 `number`
         assertTrue(result.toml.contains("alt-r = 'mode resize'"))
         assertTrue(result.toml.contains("[mode.resize.binding]"))
         assertTrue(result.toml.contains("h = 'resize width -5%'"))
@@ -67,7 +67,7 @@ final class ImportI3Test: XCTestCase {
         assertTrue(result.toml.contains("run = 'move-node-to-workspace 3'"))
         assertTrue(result.toml.contains("1 = 'main'")) // workspace 1 output primary
         assertTrue(result.toml.contains("inner.vertical = 8"))
-        assertTrue(result.toml.contains("outer.top = 4"))
+        assertTrue(result.toml.contains("outer.top = 12")) // i3 edge gap = outer 4 + inner 8
         assertTrue(result.toml.contains("exec-and-forget autotiling"))
         assertTrue(result.toml.contains("focus-follows-mouse.enabled = false"))
 
@@ -149,5 +149,38 @@ final class ImportI3Test: XCTestCase {
         assertTrue(result.toml.contains("alt-t = 'workspace T'"))
         let parsed = parseConfig(result.toml)
         assertEquals(parsed.errors.map { $0.description(.error) }, [])
+    }
+
+    func testI3ParityFeaturesImport() {
+        let result = importI3Config("""
+            set $mod Mod1
+            default_border pixel 3
+            client.focused #4c7899 #285577 #ffffff #2e9ef4 #ff0000
+            client.unfocused #333333 #222222 #888888 #292d2e #222222
+            focus_wrapping no
+            workspace_auto_back_and_forth yes
+            gaps horizontal 10px
+            bindsym $mod+minus scratchpad show
+            bindsym $mod+Shift+minus move scratchpad
+            bindsym $mod+m [class="Spotify"] scratchpad show
+            bindsym $mod+Shift+m mark music
+            bindsym $mod+f fullscreen disable
+            bindsym $mod+t layout toggle all
+            bindsym $mod+Shift+h resize grow left 20 px
+            """)
+        assertEquals(parseConfig(result.toml).errors.map { $0.description(.error) }, [])
+        assertTrue(result.toml.contains("width = 3"))
+        assertTrue(result.toml.contains("active-color = '#ff0000'"))
+        assertTrue(result.toml.contains("inactive-color = '#222222'"))
+        assertTrue(result.toml.contains("focus-wrapping = 'no'"))
+        assertTrue(result.toml.contains("workspace-auto-back-and-forth = true"))
+        assertTrue(result.toml.contains("outer.left = 10"))
+        assertTrue(result.toml.contains("alt-minus = 'scratchpad show'"))
+        assertTrue(result.toml.contains("alt-shift-minus = 'scratchpad move'"))
+        assertTrue(result.toml.contains(#"alt-m = '[class="Spotify"] scratchpad show'"#))
+        assertTrue(result.toml.contains("alt-shift-m = 'mark music'"))
+        assertTrue(result.toml.contains("alt-f = 'fullscreen off'"))
+        assertTrue(result.toml.contains("alt-t = 'layout v_accordion h_accordion h_tiles v_tiles'"))
+        assertTrue(result.toml.contains("alt-shift-h = 'resize left +20'"))
     }
 }

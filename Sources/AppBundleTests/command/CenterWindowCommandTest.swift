@@ -19,7 +19,7 @@ final class CenterWindowCommandTest: XCTestCase {
         }
         _ = window.focusWindow()
 
-        await parseCommand("center-window").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("center-window")
 
         // Test monitor is 1920x1080 at (0, 0), zero gaps by default
         let rect = try! await window.getAxRect(.nonCancellable)!
@@ -39,7 +39,7 @@ final class CenterWindowCommandTest: XCTestCase {
         _ = window.focusWindow()
         assertEquals(window.isFloating, false)
 
-        await parseCommand("center-window").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("center-window")
 
         assertEquals(window.isFloating, true)
         let rect = try! await window.getAxRect(.nonCancellable)!
@@ -58,10 +58,10 @@ final class CenterWindowCommandTest: XCTestCase {
         _ = window.focusWindow()
         assertEquals(window.isFloating, false)
 
-        await parseCommand("layout floating").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("layout floating")
         assertEquals(window.isFloating, true)
-        await parseCommand("resize smart 60%").cmdOrDie.run(.defaultEnv, .emptyStdin)
-        await parseCommand("center-window").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        try! await HeadlessHarness.run("resize smart 60%")
+        try! await HeadlessHarness.run("center-window")
 
         let rect = try! await window.getAxRect(.nonCancellable)!
         // 60% of 1920×1080

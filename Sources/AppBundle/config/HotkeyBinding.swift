@@ -29,19 +29,10 @@ extension HotKey {
 @MainActor func activateMode_nonCancellable(_ targetMode: String?) async {
     let targetBindings = targetMode.flatMap { config.modes[$0] }?.bindings ?? [:]
     for binding in targetBindings.values where !hotkeys.keys.contains(binding.descriptionWithKeyCode) {
+        // Global hotkeys would compete with a live AeroSpace's bindings while tests run
+        guard Headless.permits(.globalHotkey) else { break }
         hotkeys[binding.descriptionWithKeyCode] = HotKey(key: binding.keyCode, modifiers: binding.modifiers, keyDownHandler: {
-            Task.startUnstructured {
-                if let activeMode {
-                    broadcastEvent(.bindingTriggered(
-                        mode: activeMode,
-                        binding: binding.descriptionWithKeyNotation,
-                    ))
-                    try await runLightSession(.hotkeyBinding, .checkServerIsEnabledOrDie()) { () throws in
-                        _ = await config.modes[activeMode]?.bindings[binding.descriptionWithKeyCode]?.commands
-                            .run(.defaultEnv, .emptyStdin)
-                    }
-                }
-            }
+            Task.startUnstructured { try await runHotkeyBinding(binding) }
         })
     }
     for (binding, key) in hotkeys {
@@ -52,6 +43,18 @@ extension HotKey {
     if oldMode != targetMode {
         broadcastEvent(.modeChanged(mode: targetMode))
         _ = await config.onModeChanged.run(.defaultEnv, .emptyStdin)
+    }
+}
+
+/// A hotkey press. Presses are queued as tasks, so one can land after `enable off` has flipped the
+/// server off (disabling awaits window restores before the hotkeys go) — that used to reach
+/// `checkServerIsEnabledOrDie` and crash the app. A press while disabled is simply dropped.
+@MainActor func runHotkeyBinding(_ binding: HotkeyBinding) async throws {
+    guard let token: RunSessionGuard = .isServerEnabled, let activeMode else { return }
+    broadcastEvent(.bindingTriggered(mode: activeMode, binding: binding.descriptionWithKeyNotation))
+    try await runLightSession(.hotkeyBinding, token) { () throws in
+        _ = await config.modes[activeMode]?.bindings[binding.descriptionWithKeyCode]?.commands
+            .run(.defaultEnv, .emptyStdin)
     }
 }
 

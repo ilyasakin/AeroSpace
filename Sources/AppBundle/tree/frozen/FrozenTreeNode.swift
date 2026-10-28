@@ -14,19 +14,19 @@ struct FrozenContainer: Sendable {
     let node: PersistentTilingNode
 
     var orientation: Orientation {
-        if case .container(let o, _, _, _) = node { return o }
+        if case .container(let o, _, _, _, _) = node { return o }
         die("FrozenContainer.node must be a container")
     }
 
     var layout: Layout {
-        if case .container(_, let l, _, _) = node { return l }
+        if case .container(_, let l, _, _, _) = node { return l }
         die("FrozenContainer.node must be a container")
     }
 
     var weight: CGFloat { node.weight }
 
     var children: [FrozenTreeNode] {
-        guard case .container(_, _, _, let children) = node else {
+        guard case .container(_, _, _, let children, _) = node else {
             die("FrozenContainer.node must be a container")
         }
         return children.map { child in

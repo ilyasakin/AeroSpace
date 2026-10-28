@@ -70,15 +70,14 @@ final class MoveCommandTest: XCTestCase {
         }
 
         await parseCommand("move right").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        // i3 con_descend_direction: enter the h branch from its left edge, down to leaf 2, and
+        // insert BEFORE it (its parent runs in the move orientation)
         assertEquals(
             root.layoutDescription,
             .h_tiles([
                 .window(0),
                 .h_tiles([
-                    .window(1),
-                    .h_tiles([
-                        .window(2),
-                    ]),
+                    .h_tiles([.window(1), .window(2)]),
                 ]),
             ]),
         )

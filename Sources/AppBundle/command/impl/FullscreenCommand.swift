@@ -25,8 +25,11 @@ struct FullscreenCommand: Command {
                     return .succ(io.err(msg))
             }
         }
-        window.isFullscreen = newState
-        window.noOuterGapsInFullscreen = args.noOuterGaps
+        if newState {
+            window.enterFullscreen(noOuterGaps: args.noOuterGaps)
+        } else {
+            window.exitFullscreen()
+        }
 
         // Focus on its own workspace
         window.markAsMostRecentChild()

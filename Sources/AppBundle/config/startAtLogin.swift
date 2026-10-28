@@ -4,6 +4,8 @@ import ServiceManagement
 
 @MainActor
 func syncStartAtLogin() {
+    // Registers / unregisters the login item and deletes a LaunchAgent plist: never from tests
+    guard Headless.permits(.systemSettings) else { return }
     cleanupPlistFromPrevVersions()
     let service = SMAppService.mainApp
     switch true {

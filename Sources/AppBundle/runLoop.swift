@@ -20,22 +20,76 @@ extension Thread {
     ) async throws -> T { // todo try to convert to typed throws
         try checkCancellation(cm)
         let job = RunLoopJob(cm)
+        let resumer = ResumeOnce<T>()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
-                // It's unsafe to implicitly cancel because cont.resume should be invoked exactly once
+                resumer.install(cont)
                 self.runInLoopAsync(job: job, autoCheckCancelled: false) { job in
+                    // Already resumed with CancellationError: the caller moved on, skip the work
+                    if resumer.isResolved { return }
                     do {
                         try job.checkCancellation()
-                        cont.resume(returning: try body(job))
+                        resumer.resume(.success(try body(job)))
                     } catch {
                         if cm == .nonCancellable { die() }
-                        cont.resume(throwing: error)
+                        resumer.resume(.failure(error))
                     }
                 }
             }
         } onCancel: {
             job.cancel()
+            // Resume the caller NOW. Waiting for the app's thread to reach the block meant a
+            // cancelled session stayed suspended behind a beachballing app for up to the AX
+            // messaging timeout, and anything awaiting it (discovery of every other app) with it.
+            if cm == .cancellable { resumer.resume(.failure(CancellationError())) }
         }
+    }
+}
+
+/// Resumes a checked continuation exactly once, from whichever side gets there first: the app
+/// thread finishing the job, or task cancellation. Cancellation that arrives before the
+/// continuation is installed is remembered and applied on install.
+final class ResumeOnce<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<T, any Error>? = nil
+    private var early: Result<T, any Error>? = nil
+    private var resolved = false
+
+    var isResolved: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return resolved
+    }
+
+    func install(_ c: CheckedContinuation<T, any Error>) {
+        lock.lock()
+        if let early {
+            // Resolved exactly once (the `resolved` flag); the value is never touched again
+            nonisolated(unsafe) let value = early
+            self.early = nil
+            lock.unlock()
+            c.resume(with: value)
+            return
+        }
+        cont = c
+        lock.unlock()
+    }
+
+    func resume(_ result: sending Result<T, any Error>) {
+        lock.lock()
+        if resolved {
+            lock.unlock()
+            return
+        }
+        resolved = true
+        guard let c = cont else {
+            early = result
+            lock.unlock()
+            return
+        }
+        cont = nil
+        lock.unlock()
+        c.resume(with: result)
     }
 }
 

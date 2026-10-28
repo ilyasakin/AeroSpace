@@ -20,6 +20,7 @@ public enum CmdKind: String, CaseIterable, Equatable, Sendable {
     case close
     case closeAllWindowsButCurrent = "close-all-windows-but-current"
     case config
+    case criteria
     case debugWindows = "debug-windows"
     case echo
     case enable
@@ -33,6 +34,7 @@ public enum CmdKind: String, CaseIterable, Equatable, Sendable {
     case focusBackAndForth = "focus-back-and-forth"
     case focusMonitor = "focus-monitor"
     case fullscreen
+    case gaps
     case importConfig = "import-config"
     case joinWith = "join-with"
     case layout
@@ -44,17 +46,21 @@ public enum CmdKind: String, CaseIterable, Equatable, Sendable {
     case listWorkspaces = "list-workspaces"
     case macosNativeFullscreen = "macos-native-fullscreen"
     case macosNativeMinimize = "macos-native-minimize"
+    case mark
     case mode
     case move = "move"
     case moveMouse = "move-mouse"
+    case moveNodeToMark = "move-node-to-mark"
     case moveNodeToMonitor = "move-node-to-monitor"
     case moveNodeToWorkspace = "move-node-to-workspace"
     case moveTo = "move-to"
     case moveWorkspaceToMonitor = "move-workspace-to-monitor"
     case reloadConfig = "reload-config"
+    case renameWorkspace = "rename-workspace"
     case resize
     case resizeTo = "resize-to"
     case runCallback = "run-callback"
+    case scratchpad
     case split
     case sticky
     case subscribe
@@ -69,6 +75,7 @@ public enum CmdKind: String, CaseIterable, Equatable, Sendable {
 
     case _true = "true"
 
+    case unmark
     case volume
     case workspace
     case workspaceBackAndForth = "workspace-back-and-forth"
@@ -90,6 +97,16 @@ func initSubcommands() -> [String: any SubCommandParserProtocol] {
                 result[kind.rawValue] = SubCommandParser(CloseAllWindowsButCurrentCmdArgs.init)
             case .config:
                 result[kind.rawValue] = SubCommandParser(parseConfigCmdArgs)
+            case .criteria:
+                result[kind.rawValue] = SubCommandParser(parseCriteriaCmdArgs)
+            case .gaps:
+                result[kind.rawValue] = SubCommandParser(GapsCmdArgs.init)
+            case .mark:
+                result[kind.rawValue] = SubCommandParser(MarkCmdArgs.init)
+            case .unmark:
+                result[kind.rawValue] = SubCommandParser(UnmarkCmdArgs.init)
+            case .moveNodeToMark:
+                result[kind.rawValue] = SubCommandParser(MoveNodeToMarkCmdArgs.init)
             case .debugWindows:
                 result[kind.rawValue] = SubCommandParser(DebugWindowsCmdArgs.init)
             case .echo:
@@ -160,6 +177,10 @@ func initSubcommands() -> [String: any SubCommandParserProtocol] {
                 result[kind.rawValue] = SubCommandParser(parseResizeToCmdArgs)
             case .runCallback:
                 result[kind.rawValue] = SubCommandParser(parseRunCallbackCmdArgs)
+            case .scratchpad:
+                result[kind.rawValue] = SubCommandParser(ScratchpadCmdArgs.init)
+            case .renameWorkspace:
+                result[kind.rawValue] = SubCommandParser(RenameWorkspaceCmdArgs.init)
             case .split:
                 result[kind.rawValue] = SubCommandParser(parseSplitCmdArgs)
             case .sticky:

@@ -67,6 +67,11 @@ struct ResolvedGaps {
         let right: Int
     }
 
+    init(inner: Inner, outer: Outer) {
+        self.inner = inner
+        self.outer = outer
+    }
+
     @MainActor init(gaps: Gaps, monitor: any Monitor) {
         inner = .init(
             vertical: gaps.inner.vertical.getValue(for: monitor),

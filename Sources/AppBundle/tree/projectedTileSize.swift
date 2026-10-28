@@ -33,7 +33,7 @@ extension Workspace {
         // parents only. Anything else (a float, a parked window) has no tile to project.
         guard current === rootTilingContainer else { return nil }
 
-        var size = workspaceMonitor.visibleRectPaddedByOuterGaps.then {
+        var size = tilingRect.then {
             CGSize(width: $0.width, height: $0.height)
         }
         for (child, parent) in steps.reversed() {
@@ -74,7 +74,7 @@ extension Workspace {
     func shouldSplitSideBySide(beside node: TreeNode) -> Bool {
         guard let size = projectedTileSize(of: node) else {
             // Not a tile: fall back to the workspace's own shape, still model state.
-            let r = workspaceMonitor.visibleRectPaddedByOuterGaps
+            let r = tilingRect
             return r.width > r.height
         }
         return size.width > size.height

@@ -26,7 +26,7 @@ struct StickyCommand: Command {
         if newState {
             if !window.isFloating {
                 window.bindAsFloatingWindow(to: target.workspace)
-                if let size = window.lastFloatingSize { window.setAxFrame(nil, size) }
+                if let size = window.lastFloatingSize { window.requestFrame(topLeft: nil, size: size) }
             }
             followActiveWorkspaceForStickyWindows()
         }

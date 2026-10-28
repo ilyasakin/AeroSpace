@@ -148,6 +148,7 @@ final class FocusCommandTest: XCTestCase {
     }
 
     func testFocusNoWrapping() async {
+        config.focusWrapping = .no
         Workspace.get(byName: name).rootTilingContainer.apply {
             assertEquals(TestWindow.new(id: 1, parent: $0).focusWindow(), true)
             TestWindow.new(id: 2, parent: $0)
@@ -156,6 +157,45 @@ final class FocusCommandTest: XCTestCase {
         assertEquals(focus.windowOrNil?.windowId, 1)
         await parseCommand("focus left").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertEquals(focus.windowOrNil?.windowId, 1)
+    }
+
+    func testFocusWrapsByDefaultLikeI3() async {
+        // i3 focus_wrapping yes: no neighbour and no monitor there → wrap inside the container
+        Workspace.get(byName: name).rootTilingContainer.apply {
+            assertEquals(TestWindow.new(id: 1, parent: $0).focusWindow(), true)
+            TestWindow.new(id: 2, parent: $0)
+            TestWindow.new(id: 3, parent: $0)
+        }
+        await parseCommand("focus left").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(focus.windowOrNil?.windowId, 3)
+    }
+
+    func testFocusWrapsInsideInnermostMatchingContainer() async {
+        // i3 first_wrap: the innermost ancestor running in the direction wins
+        Workspace.get(byName: name).rootTilingContainer.apply {
+            TestWindow.new(id: 1, parent: $0)
+            TilingContainer.newVTiles(parent: $0, adaptiveWeight: 1).apply {
+                TestWindow.new(id: 2, parent: $0)
+                assertEquals(TestWindow.new(id: 3, parent: $0).focusWindow(), true)
+            }
+        }
+        await parseCommand("focus down").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(focus.windowOrNil?.windowId, 2)
+    }
+
+    func testFocusWrappingForceNeverLeavesTheContainer() async {
+        config.focusWrapping = .force
+        Workspace.get(byName: name).rootTilingContainer.apply {
+            TestWindow.new(id: 1, parent: $0)
+            TilingContainer.newVTiles(parent: $0, adaptiveWeight: 1).apply {
+                TestWindow.new(id: 2, parent: $0)
+                assertEquals(TestWindow.new(id: 3, parent: $0).focusWindow(), true)
+            }
+        }
+        await parseCommand("focus left").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(focus.windowOrNil?.windowId, 1) // left IS a sibling at root level
+        await parseCommand("focus left").cmdOrDie.run(.defaultEnv, .emptyStdin)
+        assertEquals(focus.windowOrNil?.windowId, 3) // wraps to the v branch's focused leaf
     }
 
     func testFocusWrapping() async {
@@ -200,7 +240,8 @@ final class FocusCommandTest: XCTestCase {
         unrelatedWindow.markAsMostRecentChild()
         _ = startWindow.focusWindow()
         await parseCommand("focus right").cmdOrDie.run(.defaultEnv, .emptyStdin)
-        assertEquals(focus.windowOrNil?.windowId, 2)
+        // i3 con_descend_focused follows the focus stack all the way down (was: geometric edge 2)
+        assertEquals(focus.windowOrNil?.windowId, 5)
     }
 
     func testFocusOutsideOfTheContainer() async {

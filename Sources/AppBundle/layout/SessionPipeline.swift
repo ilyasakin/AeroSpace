@@ -31,8 +31,6 @@ import Common
 enum SessionPipeline {
     /// Policy knobs for one session. Built from the event; not free-form at call sites.
     struct Plan: Equatable {
-        /// Light only: drop SkyLight "written this session" marks so the next command starts clean
-        var clearFramesWritten: Bool
         /// Optional optimistic layout before discover (app activation path)
         var optimisticLayout: Bool
         /// Heavy: MacApp.refreshAll + register/gc windows
@@ -68,7 +66,6 @@ enum SessionPipeline {
         optimisticLayout: Bool,
     ) -> Plan {
         Plan(
-            clearFramesWritten: false, // keep marks across light→heavy lag
             optimisticLayout: optimisticLayout && layout,
             discoverWindows: true,
             normalizeNativeState: true,
@@ -90,7 +87,6 @@ enum SessionPipeline {
         let highFreq = isFfm || drag
         return Plan(
             // High-frequency paths must not churn framesWritten / session caches every event.
-            clearFramesWritten: !highFreq,
             optimisticLayout: false,
             discoverWindows: false,
             normalizeNativeState: false,
@@ -101,12 +97,15 @@ enum SessionPipeline {
             followUpOptimisticLayout: false,
             // Hover + drag must not rebuild borders/status/group tabs every tick.
             // Live drag geometry is WindowServer → WindowBordersManager.handleWindowMoved.
-            sideUiBorders: !isFfm && !drag,
+            // Queries (list-*, test, echo) change nothing a bar or border shows — status-bar
+            // scripts poll them per workspace switch, each one used to rebuild every side UI.
+            sideUiBorders: !isFfm && !drag && !event.isQueryOnly,
             // Drag: tray idle until mouse-up. FFM: tray only if focus/workspace fingerprint changes.
-            sideUiTray: !drag,
+            sideUiTray: !drag && !event.isQueryOnly,
             trayFullLeafWalk: !isFfm,
             skipFocusAndHygiene: highFreq,
-            skipHeavyCancel: highFreq,
+            // A query must not pre-empt pending discovery (it would only be re-queued after)
+            skipHeavyCancel: highFreq || event.isQueryOnly,
             invalidateSessionCaches: !highFreq,
             // Drag: only paint visible tiles — hide-in-corner of other spaces is idle work.
             layoutVisibleOnly: drag,
@@ -128,13 +127,20 @@ enum SessionPipeline {
             "event: \(event) axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)",
         )
         defer { signposter.endInterval("SessionPipeline.heavy", state) }
-        if !TrayMenuModel.shared.isEnabled { return true }
+        if !ServerState.isEnabled { return true }
+        SessionStats.noteHeavy(event)
 
-        phaseBegin(clearFramesWritten: plan.clearFramesWritten)
+        phaseBegin()
 
         let res = await Result {
             try await $refreshSessionEvent.withValue(event) {
-                try await phaseSyncFocusFromNative()
+                // macOS's report is judged against what discovery and native-state handling learn:
+                // after cmd-W / cmd-M / cmd-H macOS has already handed focus to another window of
+                // the app, maybe one parked on a hidden workspace. Read first, the model followed
+                // it there before the close/minimize/hide that makes it a hand-off was even known.
+                // The optimistic pre-layout (app activation) needs the user's focus up front.
+                let reportFocusEarly = plan.optimisticLayout || !plan.discoverWindows && !plan.normalizeNativeState
+                if reportFocusEarly { try await phaseSyncFocusFromNative() }
                 if plan.optimisticLayout { try await phaseLayout(visibleOnly: false) }
 
                 await phaseModelHygiene()
@@ -146,16 +152,27 @@ enum SessionPipeline {
                     phaseSideUiTrayAndSecureInput(fullLeafWalk: plan.trayFullLeafWalk)
                 }
 
-                if plan.normalizeNativeState { try await phaseNormalizeNativeState() }
+                if plan.normalizeNativeState {
+                    try await phaseNormalizeNativeState()
+                    // Discovery GC (app-initiated close) and native-state reparenting (minimize,
+                    // fullscreen, hide) both ran AFTER hygiene; without this, layout would place
+                    // empty containers and single-child wrappers, and the layout would jump again
+                    // on the next session. i3 closes empty containers immediately.
+                    normalizeAllContainers()
+                }
                 // A startup restore that found no windows (apps slower than AeroSpace at login)
                 // retries here now that discovery has run — before layout cements placements.
+                if !reportFocusEarly { try await phaseSyncFocusFromNative() }
                 SessionLayoutStore.retryRestoreIfPending()
                 if plan.layout { try await phaseLayout(visibleOnly: false) }
-                // Immutable structural snapshot after layout (lock-screen / #1215 history)
-                TreeHistory.recordLive()
+                // Discovery can change the model's focus (a closed window, a fullscreen rule)
+                FocusReconciler.reconcile()
+                SessionLayoutStore.scheduleSave()
                 if plan.sideUiBorders {
+                    try await refreshStaleTabTitles()
                     phaseSideUiBorders()
                 }
+                if plan.layout { HoverFocus.reanchorToPointer() }
             }
         }
         switch res {
@@ -179,6 +196,7 @@ enum SessionPipeline {
             "event: \(event) axTaskLocalAppThreadToken: \(axTaskLocalAppThreadToken?.idForDebug)",
         )
         defer { signposter.endInterval("SessionPipeline.light", state) }
+        SessionStats.lightSessions += 1
 
         // Focus-follows-mouse and mouse-drag must not cancel heavy (starves discovery; thrash).
         // Other lights may cancel a pending heavy for priority — but then we re-queue discovery
@@ -189,15 +207,20 @@ enum SessionPipeline {
             noteHeavyCancelledByLightSession()
         }
 
-        phaseBegin(
-            clearFramesWritten: plan.clearFramesWritten,
-            invalidateSessionCaches: plan.invalidateSessionCaches,
-        )
+        phaseBegin(invalidateSessionCaches: plan.invalidateSessionCaches)
 
         return try await $refreshSessionEvent.withValue(event) {
             // Hover/drag: skip native-focus AX + hygiene thrash; body owns the mutation.
             if !plan.skipFocusAndHygiene {
-                try await phaseSyncFocusFromNative()
+                // A deadline for every light session, not only commands: an activation or
+                // focus-changed session reading a beachballing app's focus held the kernel for
+                // seconds, and the hotkey pressed to get away queued behind it. On timeout the
+                // read is retried by a heavy (which a light session can pre-empt).
+                let deadline: Double = event.isCommand ? lightSessionFocusReadDeadline : 0.5
+                if try await !phaseSyncFocusFromNative(deadline: deadline) {
+                    // Timed out: reconcile focus once the app answers
+                    scheduleCancellableCompleteRefreshSession(event)
+                }
             }
             let focusBefore = focus.windowOrNil
 
@@ -216,26 +239,28 @@ enum SessionPipeline {
             }
             if plan.layout {
                 try await phaseLayout(visibleOnly: plan.layoutVisibleOnly)
-                // Drag skips sideUiBorders refresh; push layout rects into the overlay so sibling
-                // borders do not lag a frame on WindowServer (wrong edges, then snap-correct).
-                if plan.layoutVisibleOnly {
-                    WindowBordersManager.shared.syncAfterMouseLayout()
-                }
-                // Skip history capture on high-frequency mouse-drag (mouse-up heavy will capture).
+                // Drag skips sideUiBorders refresh; each moved window's own WindowServer event
+                // repaints its border (borders never paint layout geometry)
+                // Not on the high-frequency mouse-drag path (mouse-up's heavy saves)
                 if plan.sideUiBorders || !event.isAx {
-                    TreeHistory.recordLive()
+                    SessionLayoutStore.scheduleSave()
                 }
+            }
+
+            // Body-owned paths (FFM / mouse-drag) send focus with their own raise policy.
+            // Sent BEFORE side UI: the raise is what the user waits for; borders/bar redraw after.
+            if !plan.skipFocusAndHygiene {
+                FocusReconciler.reconcile()
             }
 
             if plan.sideUiBorders {
+                try await refreshStaleTabTitles()
                 phaseSideUiBorders()
             }
-
-            // Body-owned paths (FFM / mouse-drag) already called nativeFocus with the correct
-            // raise policy. Re-calling default nativeFocus() would AXRaise a tile under floats,
-            // sink them, then focus-change re-raise steals key-window → unfocus/refocus flicker.
-            if focusBefore != focusAfter, !plan.skipFocusAndHygiene {
-                focusAfter?.nativeFocusRespectingFloats() // syncFocusToMacOs
+            // Whatever is under a resting pointer after a keyboard/command focus change or a
+            // layout change is "already entered" — hovering must not steal focus back
+            if !event.isFocusFollowsMouse, plan.layout || focusBefore != focusAfter {
+                HoverFocus.reanchorToPointer()
             }
             if plan.scheduleFollowUpHeavy {
                 scheduleCancellableCompleteRefreshSession(
@@ -257,22 +282,34 @@ enum SessionPipeline {
 
     // MARK: - Phases
 
-    /// Phase 1 — session-local caches. See Plan.clearFramesWritten for the SkyLight write-lag policy.
-    private static func phaseBegin(clearFramesWritten: Bool, invalidateSessionCaches: Bool = true) {
+    /// Phase 1 — session-local caches (WindowServer lag after our own writes is the frame
+    /// records' business, not the session's)
+    private static func phaseBegin(invalidateSessionCaches: Bool = true) {
         if invalidateSessionCaches {
             invalidateWindowLevelCache()
             invalidateMonitorsCache()
         }
-        if clearFramesWritten {
-            clearFramesWrittenThisSession()
-        }
     }
 
-    /// Phase 2 — macOS focused window → tree focus
-    private static func phaseSyncFocusFromNative() async throws {
-        let nativeFocused = try await getNativeFocusedWindow(.cancellable)
+    /// Phase 2 — macOS focused window → tree focus. With a `deadline` (light sessions: the hotkey
+    /// path), an app too busy to answer within it leaves the tree's focus as it is instead of
+    /// holding the command hostage for up to the AX messaging timeout.
+    /// Returns false when the read timed out (focus left as it was)
+    @discardableResult
+    private static func phaseSyncFocusFromNative(deadline: Double? = nil) async throws -> Bool {
+        let read: NativeFocusRead
+        if let deadline {
+            read = try await withDeadline(seconds: deadline, fallback: .timedOut) {
+                .window(try await getNativeFocusedWindow(.cancellable)?.windowId)
+            }
+        } else {
+            read = .window(try await getNativeFocusedWindow(.cancellable)?.windowId)
+        }
+        guard case .window(let id) = read else { return false }
+        let nativeFocused = id.flatMap { Window.get(byId: $0) }
         if let nativeFocused { try await debugWindowsIfRecording(nativeFocused, .cancellable) }
-        updateFocusCache(nativeFocused)
+        FocusReconciler.macosReported(nativeFocused)
+        return true
     }
 
     /// Phase 3 — tree hygiene without AX discovery
@@ -307,6 +344,14 @@ enum SessionPipeline {
         GroupTabBarManager.shared.refresh()
         StatusBarManager.shared.refresh()
     }
+}
+
+/// How long a light session waits for the frontmost app to report its focused window
+let lightSessionFocusReadDeadline: Double = 0.1
+
+private enum NativeFocusRead: Sendable {
+    case timedOut
+    case window(UInt32?)
 }
 
 // MARK: - Task handle (shared with schedule)

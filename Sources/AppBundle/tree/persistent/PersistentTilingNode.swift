@@ -12,12 +12,46 @@ import Foundation
 /// cheap snapshots for lock-screen recovery, future multi-threaded layout, optional undo.
 enum PersistentTilingNode: Equatable, Sendable, Hashable {
     case window(id: UInt32, weight: CGFloat)
-    case container(orientation: Orientation, layout: Layout, weight: CGFloat, children: [PersistentTilingNode])
+    /// `id`: the container's stable node id when the snapshot was taken from the tree (nil for a
+    /// container a transform created, or one read from disk). Applying a snapshot reuses the
+    /// container with that id, so containers keep their identity across structural commits.
+    case container(orientation: Orientation, layout: Layout, weight: CGFloat, children: [PersistentTilingNode], id: UInt64? = nil)
+
+    /// Structural equality: ids are identity, not structure
+    static func == (lhs: PersistentTilingNode, rhs: PersistentTilingNode) -> Bool {
+        switch (lhs, rhs) {
+            case (.window(let a, let wa), .window(let b, let wb)): a == b && wa == wb
+            case (.container(let o1, let l1, let w1, let c1, _), .container(let o2, let l2, let w2, let c2, _)):
+                o1 == o2 && l1 == l2 && w1 == w2 && c1 == c2
+            default: false
+        }
+    }
+
+    func hash(into hasher: inout Hasher) {
+        switch self {
+            case .window(let id, let weight):
+                hasher.combine(0)
+                hasher.combine(id)
+                hasher.combine(weight)
+            case .container(let o, let l, let w, let children, _):
+                hasher.combine(1)
+                hasher.combine(o)
+                hasher.combine(l)
+                hasher.combine(w)
+                hasher.combine(children)
+        }
+    }
+
+    /// The container's stable node id, if the snapshot carries one
+    var containerId: UInt64? {
+        if case .container(_, _, _, _, let id) = self { return id }
+        return nil
+    }
 
     var weight: CGFloat {
         switch self {
             case .window(_, let w): w
-            case .container(_, _, let w, _): w
+            case .container(_, _, let w, _, _): w
         }
     }
 
@@ -35,14 +69,14 @@ enum PersistentTilingNode: Equatable, Sendable, Hashable {
     var windowIds: [UInt32] {
         switch self {
             case .window(let id, _): [id]
-            case .container(_, _, _, let children): children.flatMap(\.windowIds)
+            case .container(_, _, _, let children, _): children.flatMap(\.windowIds)
         }
     }
 
     var childCount: Int {
         switch self {
             case .window: 0
-            case .container(_, _, _, let children): children.count
+            case .container(_, _, _, let children, _): children.count
         }
     }
 
@@ -50,7 +84,7 @@ enum PersistentTilingNode: Equatable, Sendable, Hashable {
     func containsWindowId(_ id: UInt32) -> Bool {
         switch self {
             case .window(let wid, _): wid == id
-            case .container(_, _, _, let children): children.contains { $0.containsWindowId(id) }
+            case .container(_, _, _, let children, _): children.contains { $0.containsWindowId(id) }
         }
     }
 
@@ -61,7 +95,7 @@ enum PersistentTilingNode: Equatable, Sendable, Hashable {
         switch (self, other) {
             case (.window(let id1, _), .window(let id2, _)):
                 id1 == id2
-            case (.container(let o1, let l1, _, let c1), .container(let o2, let l2, _, let c2)):
+            case (.container(let o1, let l1, _, let c1, _), .container(let o2, let l2, _, let c2, _)):
                 o1 == o2 && l1 == l2 && c1.count == c2.count &&
                     zip(c1, c2).allSatisfy { $0.structureEquals($1) }
             default:
@@ -105,7 +139,7 @@ extension PersistentTilingNode {
     func node(at path: PersistentPath) -> PersistentTilingNode? {
         var current = self
         for index in path.indices {
-            guard case .container(_, _, _, let children) = current,
+            guard case .container(_, _, _, let children, _) = current,
                   children.indices.contains(index)
             else { return nil }
             current = children[index]
@@ -125,20 +159,20 @@ extension PersistentTilingNode {
 
     private func updating(remaining: ArraySlice<Int>, with newNode: PersistentTilingNode) -> PersistentTilingNode? {
         guard let first = remaining.first else { return newNode }
-        guard case .container(let orientation, let layout, let weight, var children) = self,
+        guard case .container(let orientation, let layout, let weight, var children, let id) = self,
               children.indices.contains(first)
         else { return nil }
         guard let updatedChild = children[first].updating(remaining: remaining.dropFirst(), with: newNode) else {
             return nil
         }
         children[first] = updatedChild
-        return .container(orientation: orientation, layout: layout, weight: weight, children: children)
+        return .container(orientation: orientation, layout: layout, weight: weight, children: children, id: id)
     }
 
     /// Insert `child` at `index` into the container at `path`.
     func inserting(child: PersistentTilingNode, at index: Int, intoContainerAt path: PersistentPath) -> PersistentTilingNode? {
         guard let target = node(at: path),
-              case .container(let orientation, let layout, let weight, var children) = target
+              case .container(let orientation, let layout, let weight, var children, let id) = target
         else { return nil }
         let i = index == INDEX_BIND_LAST ? children.count : index
         guard i >= 0, i <= children.count else { return nil }
@@ -148,6 +182,7 @@ extension PersistentTilingNode {
             layout: layout,
             weight: weight,
             children: children,
+            id: id,
         )
         return updating(at: path, with: newContainer)
     }
@@ -157,7 +192,7 @@ extension PersistentTilingNode {
         guard !path.isRoot, let last = path.indices.last else { return nil }
         let parentPath = path.dropLast
         guard let parent = node(at: parentPath),
-              case .container(let orientation, let layout, let weight, var children) = parent,
+              case .container(let orientation, let layout, let weight, var children, let id) = parent,
               children.indices.contains(last)
         else { return nil }
         let removed = children.remove(at: last)
@@ -166,6 +201,7 @@ extension PersistentTilingNode {
             layout: layout,
             weight: weight,
             children: children,
+            id: id,
         )
         guard let root = updating(at: parentPath, with: newParent) else { return nil }
         return (root, removed)
@@ -176,7 +212,7 @@ extension PersistentTilingNode {
         guard let node = node(at: path) else { return nil }
         let updated: PersistentTilingNode = switch node {
             case .window(let id, _): .window(id: id, weight: weight)
-            case .container(let o, let l, _, let c): .container(orientation: o, layout: l, weight: weight, children: c)
+            case .container(let o, let l, _, let c, let cid): .container(orientation: o, layout: l, weight: weight, children: c, id: cid)
         }
         return updating(at: path, with: updated)
     }
@@ -190,7 +226,7 @@ extension PersistentTilingNode {
         switch self {
             case .window(let wid, _):
                 return wid == id ? prefix : nil
-            case .container(_, _, _, let children):
+            case .container(_, _, _, let children, _):
                 for (i, child) in children.enumerated() {
                     if let found = child.path(ofWindowId: id, prefix: prefix.appending(i)) {
                         return found
@@ -204,7 +240,7 @@ extension PersistentTilingNode {
     func withWeight(_ newWeight: CGFloat) -> PersistentTilingNode {
         switch self {
             case .window(let id, _): .window(id: id, weight: newWeight)
-            case .container(let o, let l, _, let c): .container(orientation: o, layout: l, weight: newWeight, children: c)
+            case .container(let o, let l, _, let c, let cid): .container(orientation: o, layout: l, weight: newWeight, children: c, id: cid)
         }
     }
 
@@ -236,7 +272,7 @@ extension PersistentTilingNode {
     /// beside ~800-span siblings produced a ~1px sliver tile. New leaves must enter at parity.
     func averageChildWeight(ofContainerAt path: PersistentPath) -> CGFloat {
         guard let target = node(at: path),
-              case .container(_, _, _, let children) = target,
+              case .container(_, _, _, let children, _) = target,
               !children.isEmpty
         else { return 1 }
         return children.reduce(CGFloat(0)) { $0 + $1.weight } / CGFloat(children.count)
@@ -294,5 +330,3 @@ extension PersistentTilingNode {
         )
     }
 }
-
-

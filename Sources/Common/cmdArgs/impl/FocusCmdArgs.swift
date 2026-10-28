@@ -15,7 +15,7 @@ public struct FocusCmdArgs: CmdArgs {
             "--fail-if-macos-native-fullscreen": trueBoolFlag(\.failIfMacosNativeFullscreen),
             "--wrap-around": trueBoolFlag(\.wrapAroundAlias),
         ],
-        posArgs: [ArgParser(\.cardinalOrDfsDirection, upcastArgParserFun(parseCardinalOrDfsDirection))],
+        posArgs: [ArgParser(\.positional, upcastArgParserFun(parseFocusPositional))],
         conflictingOptions: [
             ["--wrap-around", "--boundaries-action"],
             ["--wrap-around", "--boundaries"],
@@ -27,8 +27,14 @@ public struct FocusCmdArgs: CmdArgs {
     public var failIfFullscreen: Bool = false
     public var failIfMacosNativeFullscreen: Bool = false
     fileprivate var wrapAroundAlias: Bool = false
+    public var wrapAroundRequested: Bool { wrapAroundAlias }
     public var dfsIndex: UInt32? = nil
-    public var cardinalOrDfsDirection: CardinalOrDfsDirection? = nil
+    /// (left|down|up|right) | (dfs-next|dfs-prev) | (parent|child)
+    public var positional: FocusPositional? = nil
+    public var cardinalOrDfsDirection: CardinalOrDfsDirection? {
+        get { if case .cardinalOrDfs(let d) = positional { d } else { nil } }
+        set { positional = newValue.map(FocusPositional.cardinalOrDfs) }
+    }
     public var floatingAsTiling: Bool = true
 
     public init(rawArgs: StrArrSlice, cardinalOrDfsDirection: CardinalOrDfsDirection) {
@@ -58,11 +64,47 @@ public struct FocusCmdArgs: CmdArgs {
     }
 }
 
+/// i3 `focus parent` / `focus child`
+public enum FocusHierarchy: String, CaseIterable, Equatable, Sendable {
+    case parent, child
+}
+
+/// i3 `focus floating|tiling|mode_toggle`
+public enum FocusLayer: String, CaseIterable, Equatable, Sendable {
+    case floating, tiling
+    case modeToggle = "mode-toggle"
+}
+
+/// i3 `focus next|prev` (directional focus along the parent's orientation) and
+/// `focus next|prev sibling` (the adjacent sibling node itself, container or window)
+public enum FocusSequence: String, CaseIterable, Equatable, Sendable {
+    case next, prev
+    case nextSibling = "next-sibling"
+    case prevSibling = "prev-sibling"
+}
+
+public enum FocusPositional: Equatable, Sendable {
+    case cardinalOrDfs(CardinalOrDfsDirection)
+    case hierarchy(FocusHierarchy)
+    case layer(FocusLayer)
+    case sequence(FocusSequence)
+}
+
+func parseFocusPositional(i: PosArgParserInput) -> ParsedCliArgs<FocusPositional> {
+    if let h = FocusHierarchy(rawValue: i.arg) { return .succ(.hierarchy(h), advanceBy: 1) }
+    if let l = FocusLayer(rawValue: i.arg == "mode_toggle" ? "mode-toggle" : i.arg) { return .succ(.layer(l), advanceBy: 1) }
+    if let s = FocusSequence(rawValue: i.arg) { return .succ(.sequence(s), advanceBy: 1) }
+    return parseCardinalOrDfsDirection(i: i).map(FocusPositional.cardinalOrDfs)
+}
+
 public enum FocusCmdTarget {
     case direction(CardinalDirection)
     case windowId(UInt32)
     case dfsIndex(UInt32)
     case dfsRelative(DfsNextPrev)
+    case hierarchy(FocusHierarchy)
+    case layer(FocusLayer)
+    case sequence(FocusSequence)
 
     var isDfsRelative: Bool {
         switch self {
@@ -74,6 +116,9 @@ public enum FocusCmdTarget {
 
 extension FocusCmdArgs {
     public var target: FocusCmdTarget {
+        if case .hierarchy(let h) = positional { return .hierarchy(h) }
+        if case .layer(let l) = positional { return .layer(l) }
+        if case .sequence(let s) = positional { return .sequence(s) }
         if let cardinalOrDfsDirection {
             return switch cardinalOrDfsDirection {
                 case .direction(let dir): .direction(dir)
@@ -103,7 +148,7 @@ func parseFocusCmdArgs(_ args: StrArrSlice) -> ParsedCmd<FocusCmdArgs> {
                 : .cmd(raw)
         }
         .filter("Mandatory argument is missing. \(CardinalOrDfsDirection.unionLiteral), --window-id or --dfs-index is required") {
-            $0.cardinalOrDfsDirection != nil || $0.windowId != nil || $0.dfsIndex != nil
+            $0.positional != nil || $0.windowId != nil || $0.dfsIndex != nil
         }
         .filter("--window-id is incompatible with other options") {
             $0.windowId == nil || $0 == FocusCmdArgs(rawArgs: args, windowId: $0.windowId.orDie())
@@ -117,7 +162,7 @@ func parseFocusCmdArgs(_ args: StrArrSlice) -> ParsedCmd<FocusCmdArgs> {
             }
             return switch $0.target {
                 case .direction: true
-                case .dfsIndex, .dfsRelative, .windowId: false
+                case .dfsIndex, .dfsRelative, .windowId, .hierarchy, .layer, .sequence: false
             }
         }
         .filter("(dfs-next|dfs-prev) only supports --boundaries workspace") {

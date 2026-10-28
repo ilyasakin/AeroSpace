@@ -25,8 +25,10 @@ final class StatusBarManager {
     private init() {}
 
     func refresh() {
+        Kernel.enterProjection()
+        defer { Kernel.exitProjection() }
         let cfg = config.statusBar
-        guard cfg.enabled, TrayMenuModel.shared.isEnabled else {
+        guard cfg.enabled, ServerState.isEnabled else {
             tearDown()
             return
         }
@@ -155,6 +157,7 @@ final class StatusBarManager {
         lastStatusCommand = cfg.statusCommand
         guard let exe = cfg.statusCommand.first, !exe.isEmpty else { return }
         if externalProcess?.isRunning == true { return }
+        guard Headless.permits(.spawnProcess) else { return }
 
         let process = Process()
         process.executableURL = URL(filePath: exe)
@@ -310,13 +313,7 @@ private final class StatusBarPanel: NSPanelHud {
             externalBlocks: externalBlocks,
             notchGap: notchGap,
             onWorkspaceClick: { name in
-                // Same path as the tray menu — focus must run inside a light session.
-                guard let token: RunSessionGuard = .isServerEnabled else { return }
-                Task.startUnstructured {
-                    try await runLightSession(.menuBarButton, token) {
-                        _ = Workspace.get(byName: name).focusWorkspace()
-                    }
-                }
+                runUiCommand(["workspace", name])
             },
             onExternalClick: { event in
                 StatusBarManager.shared.sendClick(event)
@@ -324,7 +321,7 @@ private final class StatusBarPanel: NSPanelHud {
         )
         // Only front when hidden — re-orderFront every timer tick can restack the bar over
         // same-or-lower-level system UI (including notification banners).
-        if !isVisible {
+        if !isVisible, Headless.permits(.onScreenPanel) {
             orderFront(nil)
         }
     }
@@ -517,7 +514,7 @@ private final class StatusBarContentView: NSView {
             for mod in modules {
                 switch mod {
                     case "workspaces":
-                        for ws in Workspace.all {
+                        for ws in Workspace.userFacing {
                             let active = ws.name == focus.workspace.name
                             if !statusBarShouldShowWorkspace(
                                 isEmpty: ws.isEffectivelyEmpty,
@@ -1161,15 +1158,7 @@ func statusBarTintedImage(_ image: NSImage, color: NSColor) -> NSImage {
 @MainActor
 func statusBarAppIcon(for window: Window?) -> NSImage? {
     guard let window else { return nil }
-    if let mac = window.app as? MacApp {
-        if let icon = mac.nsApp.icon {
-            return icon
-        }
-        if let path = mac.bundlePath {
-            return NSWorkspace.shared.icon(forFile: path)
-        }
-    }
-    return nil
+    return SystemServices.icon(of: window.app)
 }
 
 // MARK: - Color helper

@@ -15,16 +15,15 @@ final class AccordionLayoutCrashTest: XCTestCase {
             TestWindow.new(id: 1, parent: $0)
             TestWindow.new(id: 2, parent: $0)
         }
-        // Mutate live layout the way LayoutCommand does — must also invalidate the generation
+        // Mutate live layout the way LayoutCommand does
         workspace.rootTilingContainer.setLayout(.accordion)
-        XCTAssertNil(workspace.tilingStructureGeneration, "setLayout must invalidate the published spine")
 
         // The crash fired on the next layout tick — run a real layout pass
         try await workspace.layoutWorkspace()
 
-        // Still alive, and the published generation reflects the accordion
-        guard case .container(_, let layout, _, _)? = workspace.tilingStructureGeneration else {
-            XCTFail("layout must publish a generation")
+        // Still alive, and the tree reflects the accordion
+        guard case .container(_, let layout, _, _, _) = workspace.currentTilingSpine() else {
+            XCTFail("the root is a container")
             return
         }
         XCTAssertEqual(layout, .accordion)

@@ -368,7 +368,7 @@ final class LayoutCommandTest: XCTestCase {
         assertTrue(w2.isFloating)
         // Floating must not lock always-on-top (that only re-raises and blocks tile interaction).
         assertFalse(w2.isAlwaysOnTop)
-        assertNotNil(w2.floatingRestoreSlot)
+        assertNotNil(w2.tileRestoreSlot)
         // Remaining tiles keep order 1, 3
         assertEquals(
             workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId),
@@ -378,12 +378,12 @@ final class LayoutCommandTest: XCTestCase {
         // Focus another tile while float is open — restore slot stays valid
         assertEquals(w1.focusWindow(), true)
         assertTrue(w2.isFloating)
-        assertNotNil(w2.floatingRestoreSlot)
+        assertNotNil(w2.tileRestoreSlot)
 
         assertEquals(w2.focusWindow(), true)
         await parseCommand("layout tiling").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertFalse(w2.isFloating)
-        assertNil(w2.floatingRestoreSlot)
+        assertNil(w2.tileRestoreSlot)
         // Original order restored: 1, 2, 3 — not 1, 3, 2 (MRU-append)
         assertEquals(
             workspace.rootTilingContainer.allLeafWindowsRecursive.map(\.windowId),
@@ -412,7 +412,7 @@ final class LayoutCommandTest: XCTestCase {
 
         await parseCommand("layout floating").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertTrue(w3.isFloating)
-        assertNotNil(w3.floatingRestoreSlot)
+        assertNotNil(w3.tileRestoreSlot)
 
         await parseCommand("layout tiling").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertFalse(w3.isFloating)
@@ -437,7 +437,7 @@ final class LayoutCommandTest: XCTestCase {
         }
         assertEquals(w1.focusWindow(), true) // MRU tiling leaf = w1
         assertEquals(w3.focusWindow(), true)
-        assertNil(w3.floatingRestoreSlot)
+        assertNil(w3.tileRestoreSlot)
 
         await parseCommand("layout tiling").cmdOrDie.run(.defaultEnv, .emptyStdin)
         assertFalse(w3.isFloating)

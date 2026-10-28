@@ -10,7 +10,7 @@ import Common
 /// 1. Sample the drag target’s live frame (WindowServer overlay bounds)
 /// 2. Update tile weights from the drag-start baseline
 /// 3. Layout **only** that workspace (tiling only — skip floating)
-/// 4. Sync borders from layout rects
+/// 4. Borders follow on their own: every sibling's WindowServer event repaints its ring
 @MainActor
 enum MouseResizeDriver {
     private static var target: Window?
@@ -84,9 +84,10 @@ enum MouseResizeDriver {
     private static func scheduleTick() {
         guard !busy, let window = target else { return }
         busy = true
-        Task { @MainActor in
+        Task.startUnstructured { @MainActor in
             defer { busy = false }
-            await tick(window)
+            // Weights + layout of the drag's workspace: a kernel job, never mid-way through a session
+            await Kernel.exclusive("mouse resize tick") { await tick(window) }
         }
     }
 
@@ -107,7 +108,6 @@ enum MouseResizeDriver {
         guard let ws = window.nodeWorkspace else { return }
         do {
             try await ws.layoutWorkspace(skipFloating: true)
-            WindowBordersManager.shared.syncAfterMouseLayout()
         } catch {
             return
         }
@@ -124,61 +124,74 @@ let mouseResizeNoiseThreshold: CGFloat = 5
 /// Weight updates during drag — lower than move detection so siblings track the edge smoothly.
 let mouseResizeWeightThreshold: CGFloat = 1
 
-func resizedObs(_: AXObserver, ax: AXUIElement, notif: CFString, _: UnsafeMutableRawPointer?) {
-    let notif = notif as String
-    let windowId = ax.containingWindowId()
+func onAxWindowResized(windowId: UInt32?, notif: String) {
     Task.startUnstructured { @MainActor in
         guard RunSessionGuard.isServerEnabled != nil else { return }
         let window = windowId.flatMap { Window.get(byId: $0) }
-        guard let window else { return }
+        guard let window, takeFrameNotificationSlot(window.windowId, "resized") else { return }
+        await Kernel.exclusive("ax resized") {
+            releaseFrameNotificationSlot(window.windowId, "resized")
+            guard Window.get(byId: window.windowId) != nil else { return }
+            // Our own layout write coming back: nothing to learn, no drag to start (an echo during an
+            // unrelated mouse-down used to be mistaken for a user drag and rewrite weights)
+            let report: FrameRecord.Report = currentlyManipulatedWithMouseWindowId == window.windowId
+                ? .external : window.judgeFrameNotification()
+            if report == .lagging { scheduleLagRecheck(window.windowId, notif) }
+            if report != .external {
+                FrameTrace.log("echo-resized \(window.windowId) live=\(fmt(WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)))")
+                return
+            }
+            FrameTrace.log("external-resized \(window.windowId) live=\(fmt(WindowServerReads.current.windowBounds(windowId: window.windowId, forOverlay: true)))")
 
-        let mouseResize: Bool
-        do {
-            mouseResize = try await isManipulatedWithMouse(window)
-        } catch {
-            return
+            let mouseResize: Bool
+            do {
+                mouseResize = try await isManipulatedWithMouse(window)
+            } catch {
+                return
+            }
+
+            if !mouseResize {
+                window.noteExternalFrameChange()
+                scheduleCancellableCompleteRefreshSession(.ax(notif))
+                return
+            }
+
+            moveWithMouseTask?.cancel()
+            // Ensure WS delivers continuous resize events for this window (and siblings).
+            ensureMouseResizeWindowServerNotifications(for: window)
+            MouseResizeDriver.kick(window)
         }
-
-        if !mouseResize {
-            (window as? MacWindow)?.invalidateAxFrameCaches()
-            scheduleCancellableCompleteRefreshSession(.ax(notif))
-            return
-        }
-
-        moveWithMouseTask?.cancel()
-        // Ensure WS delivers continuous resize events for this window (and siblings).
-        ensureMouseResizeWindowServerNotifications(for: window)
-        MouseResizeDriver.kick(window)
     }
 }
 
 @MainActor
-private var mouseResizeWsEventsRegistered = false
-
-@MainActor
 func ensureMouseResizeWindowServerNotifications(for window: Window) {
-    // Borders also register this; do it here so resize is smooth even with borders off.
-    if !mouseResizeWsEventsRegistered {
-        mouseResizeWsEventsRegistered = true
-        SkyLight.registerWindowEvents(windowBordersEventProc)
-    }
+    // Needed even with borders off: WindowServer events drive the resize
+    WindowServerEvents.startDelivering()
     var ids: [UInt32] = [window.windowId]
     if let parent = window.parent as? TilingContainer {
         for child in parent.children {
             if let w = child as? Window { ids.append(w.windowId) }
         }
     }
-    // Include all bordered tiles so sibling WS events still paint; driver only reacts to target.
-    ids.append(contentsOf: WindowBordersManager.shared.borderedWindowIds)
-    SkyLight.requestNotifications(for: ids)
+    // Bordered tiles are already in the tracked set; the driver only reacts to the target.
+    WindowBordersManager.shared.ensureNotifications(forGesture: ids)
 }
 
 @MainActor
 func resetManipulatedWithMouseIfPossible() async throws {
-    if currentlyManipulatedWithMouseWindowId != nil {
+    await Kernel.exclusive("mouse gesture ended") { endMouseGesture() }
+}
+
+@MainActor private func endMouseGesture() {
+    if let target = currentlyManipulatedWithMouseWindowId {
         currentlyManipulatedWithMouseWindowId = nil
         MouseResizeDriver.stop()
         FloatingBorderTracker.stop()
+        WindowBordersManager.shared.endGesture(targetWindowId: target)
+        // The user put the dragged window somewhere: a tile dropped over its own slot, a gap or
+        // empty space must still snap back (its layout target didn't change, so nothing rewrote it)
+        Window.get(byId: target)?.noteExternalFrameChange()
         for workspace in Workspace.allUnsorted {
             workspace.resetResizeWeightBeforeResizeRecursive()
         }
@@ -209,10 +222,8 @@ func liveRectForMouseResizeSync(_ window: Window) -> Rect? {
 @MainActor
 func liveRectForMouseResize(_ window: Window) async throws -> Rect? {
     if let bounds = liveRectForMouseResizeSync(window) { return bounds }
-    if let mac = window as? MacWindow {
-        return try await mac.macApp.getAxRect(mac.windowId, .cancellable)
-    }
-    return try await window.getAxRect(.cancellable)
+    // The window's own answer, bypassing belief: the user is moving it
+    return try await MacOS.current.axFrame(window.windowId, .cancellable)
 }
 
 @MainActor
@@ -248,40 +259,51 @@ func applyResizeWeights(_ window: Window, live: Rect?) -> Bool {
     ]
 
     var changed = false
-    let ws = window.nodeWorkspace
-    // Save/restore rather than force-false, so a nested suppression scope isn't cancelled here.
-    let previousSuppression = unsafe Workspace.suppressTilingGenerationInvalidation
-    unsafe Workspace.suppressTilingGenerationInvalidation = true
-    defer {
-        unsafe Workspace.suppressTilingGenerationInvalidation = previousSuppression
-        if changed { ws?.invalidateTilingStructureGeneration() }
-    }
 
     for (diff, parent, startIndex, pastTheEndIndex) in table {
         if let parent, let startIndex, let pastTheEndIndex, pastTheEndIndex - startIndex > 0
             && abs(diff) > mouseResizeWeightThreshold
         {
-            let siblingDiff = diff.div(pastTheEndIndex - startIndex).orDie()
             let orientation = parent.orientation
-
-            window.parentsWithSelf.lazy
+            // The drag is in pixels; weights are proportions per container. Each container converts
+            // through its own rendered span (constant during the drag: weight only moves between
+            // siblings of one container, so its weight sum doesn't change)
+            let growingNodes = Array(window.parentsWithSelf.lazy
                 .prefix(while: { $0 != parent })
                 .filter {
                     let parent = $0.parent as? TilingContainer
                     return parent?.orientation == orientation && parent?.layout == .tiles
-                }
-                .forEach {
-                    $0.setWeight(orientation, $0.getWeightBeforeResize(orientation) + diff)
-                    changed = true
-                }
+                })
+            func perPx(_ node: TreeNode) -> CGFloat { (node.parent as? TilingContainer)?.weightPerPixel(orientation) ?? 1 }
+            let growingPx = growingNodes.map { $0.getWeightBeforeResize(orientation) / perPx($0) }
+            let parentPerPx = parent.weightPerPixel(orientation)
+            let shrinkingPx = parent.children[startIndex ..< pastTheEndIndex].map { $0.getWeightBeforeResize(orientation) / parentPerPx }
+            // Dragging past a neighbour's edge must not produce zero/negative spans
+            let diffPx = clampedMouseResizeDiff(diff, growing: growingPx, shrinking: shrinkingPx, minimum: 1)
+            let siblingDiffPx = diffPx.div(pastTheEndIndex - startIndex).orDie()
+
+            for node in growingNodes {
+                node.setWeight(orientation, node.getWeightBeforeResize(orientation) + diffPx * perPx(node))
+                changed = true
+            }
             for sibling in parent.children[startIndex ..< pastTheEndIndex] {
-                sibling.setWeight(orientation, sibling.getWeightBeforeResize(orientation) - siblingDiff)
+                sibling.setWeight(orientation, sibling.getWeightBeforeResize(orientation) - siblingDiffPx * parentPerPx)
                 changed = true
             }
         }
     }
     currentlyManipulatedWithMouseWindowId = window.windowId
     return changed
+}
+
+/// Clamp a mouse-resize diff (px) so every growing ancestor keeps at least `minimum` span and every
+/// shrinking sibling (which each give up `diff / count`) does too.
+func clampedMouseResizeDiff(_ diff: CGFloat, growing: [CGFloat], shrinking: [CGFloat], minimum: CGFloat) -> CGFloat {
+    guard !shrinking.isEmpty else { return diff }
+    let count = CGFloat(shrinking.count)
+    let maxDiff = shrinking.map { ($0 - minimum) * count }.min() ?? diff
+    let minDiff = growing.map { minimum - $0 }.max() ?? -CGFloat.infinity
+    return min(max(diff, minDiff), max(maxDiff, minDiff))
 }
 
 /// Public entry used by tests and move-with-mouse fallback (weights only; caller layouts if needed).
@@ -301,10 +323,8 @@ func resizeWithMouse(_ window: Window) async throws {
 extension TreeNode {
     @MainActor
     fileprivate func getWeightBeforeResize(_ orientation: Orientation) -> CGFloat {
-        let currentWeight = getWeight(orientation)
-        return getUserData(key: adaptiveWeightBeforeResizeWithMouseKey)
-            ?? (lastAppliedLayoutVirtualRect?.getDimension(orientation) ?? currentWeight)
-            .also { putUserData(key: adaptiveWeightBeforeResizeWithMouseKey, data: $0) }
+        getUserData(key: adaptiveWeightBeforeResizeWithMouseKey)
+            ?? getWeight(orientation).also { putUserData(key: adaptiveWeightBeforeResizeWithMouseKey, data: $0) }
     }
 
     fileprivate func resetResizeWeightBeforeResizeRecursive() {

@@ -59,7 +59,7 @@ struct SettingsView: View {
                 Spacer()
                 Button("Reveal in Finder") {
                     if let url = model.editedUrl {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                        SystemServices.revealInFinder(url)
                     }
                 }
                 .controlSize(.small)

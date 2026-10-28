@@ -3,12 +3,12 @@ import Foundation
 /// Cache for per-window macOS native state (native fullscreen / minimized) that
 /// normalizeLayoutReason would otherwise re-query over AX for every window on every refresh.
 ///
-/// Invalidation happens on the AX notifications that accompany every real state change:
-/// moved/resized (native fullscreen transitions always change the frame) and
-/// miniaturized/deminiaturized. See MacWindow.invalidateAxFrameCaches.
+/// Invalidation happens on what accompanies every real state change: a frame change we didn't
+/// make (native fullscreen transitions always change the frame; `judgeFrameNotification`), a
+/// write macOS refused (`frameAnswered`), and miniaturized/deminiaturized (`noteNativeStateChanged`).
 @MainActor private var cache: [UInt32: MacosNativeWindowState] = [:]
 
-struct MacosNativeWindowState {
+struct MacosNativeWindowState: Equatable {
     let isFullscreen: Bool
     let isMinimized: Bool
 }
@@ -20,25 +20,16 @@ func peekMacosNativeWindowState(_ windowId: UInt32) -> MacosNativeWindowState? {
     cache[windowId]
 }
 
+/// `nil` when the state could not be READ. Callers must treat that as "unknown — change nothing":
+/// reading a failure as "not fullscreen, not minimized" re-tiled a native-fullscreen video every
+/// time its app was slow to answer AX, and the next good read parked it again (flapping, with the
+/// siblings reflowing on every cycle).
 @MainActor
-func getMacosNativeWindowState(_ window: Window) async throws -> MacosNativeWindowState {
+func getMacosNativeWindowState(_ window: Window) async throws -> MacosNativeWindowState? {
     let windowId = window.windowId
     if let cached = cache[windowId] { return cached }
-    guard let macWindow = window as? MacWindow else {
-        // Unit tests. Don't cache, the generic API can't distinguish "false" from "AX error"
-        let isFullscreen = try await window.isMacosFullscreen(.cancellable)
-        let isMinimized: Bool = if isFullscreen { false } else { try await window.isMacosMinimized(.cancellable) }
-        return MacosNativeWindowState(isFullscreen: isFullscreen, isMinimized: isMinimized)
-    }
-    // Both attributes in one thread-hop onto the app's AX thread
-    let read = try await macWindow.macApp.nativeFullscreenAndMinimized(windowId, .cancellable)
-    let isFullscreen = read?.fullscreen
-    let isMinimized = read?.minimized
-    let state = MacosNativeWindowState(isFullscreen: isFullscreen == true, isMinimized: isMinimized == true)
-    // nil means the AX request failed (busy app, dying window) - don't cache, retry next refresh
-    if isFullscreen != nil && isMinimized != nil {
-        cache[windowId] = state
-    }
+    guard let state = try await window.readMacosNativeState(.cancellable) else { return nil }
+    if window is MacWindow { cache[windowId] = state } // test doubles: never cache
     return state
 }
 
@@ -46,3 +37,20 @@ func getMacosNativeWindowState(_ window: Window) async throws -> MacosNativeWind
 func invalidateMacosNativeWindowStateCache(windowId: UInt32) {
     cache.removeValue(forKey: windowId)
 }
+
+/// Pure: a window without the `AXFullScreen` attribute at all (it can't go fullscreen) answers nil
+/// for it while its `AXMinimized` read succeeds — that is "not fullscreen", not "unknown". Only when
+/// NEITHER attribute could be read (the app didn't answer) is the state unknown.
+func macosNativeState(fullscreen: Bool?, minimized: Bool?) -> MacosNativeWindowState? {
+    if fullscreen == nil && minimized == nil { return nil }
+    return MacosNativeWindowState(isFullscreen: fullscreen ?? false, isMinimized: minimized ?? false)
+}
+
+/// Tests: the state AeroSpace believes, as if read earlier (test doubles are never cached)
+@MainActor
+func seedMacosNativeWindowStateCacheForTests(windowId: UInt32, _ state: MacosNativeWindowState) {
+    cache[windowId] = state
+}
+
+@MainActor
+func resetMacosNativeWindowStateCacheForTests() { cache = [:] }

@@ -101,7 +101,7 @@ final class MasterLayoutTest: XCTestCase {
     func testLayoutMasterOnWorkspace_masterStaysHalf() async {
         setUpWorkspacesForTests()
         let workspace = Workspace.get(byName: name)
-        workspace.rootTilingContainer.layout = .master
+        workspace.rootTilingContainer.setLayout(.master)
         workspace.rootTilingContainer.changeOrientation(.h)
         let w1 = TestWindow.new(id: 1, parent: workspace.rootTilingContainer)
         let w2 = TestWindow.new(id: 2, parent: workspace.rootTilingContainer)

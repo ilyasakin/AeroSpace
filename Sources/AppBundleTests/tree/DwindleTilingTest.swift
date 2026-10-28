@@ -6,7 +6,6 @@ import XCTest
 final class DwindleTilingTest: XCTestCase {
     override func setUp() async throws {
         setUpWorkspacesForTests()
-        Workspace.clearTilingStructureGenerations()
     }
 
     private func insertTiled(_ window: Window, on workspace: Workspace) async throws {
@@ -135,16 +134,16 @@ final class DwindleTilingTest: XCTestCase {
         a.desiredRect = Rect(topLeftX: 0, topLeftY: 0, width: 1920, height: 1080)
         let b = TestWindow.new(id: 2, parent: workspace.floatingWindowsContainer)
         try await insertTiled(b, on: workspace)
-        let gen = try XCTUnwrap(workspace.tilingStructureGeneration)
+        let gen = workspace.currentTilingSpine()
         // Root is a single split container with both windows
         XCTAssertEqual(gen.windowIds, [1, 2])
-        guard case .container(_, _, _, let children) = gen else {
+        guard case .container(_, _, _, let children, _) = gen else {
             return XCTFail("expected root container")
         }
         // After dwindle of sole root window: either root is the wrapper or root has one wrapper child
         let hasSplit = children.count == 2 || (
             children.count == 1 && {
-                if case .container(_, _, _, let inner) = children[0] { return inner.count == 2 }
+                if case .container(_, _, _, let inner, _) = children[0] { return inner.count == 2 }
                 return false
             }()
         )

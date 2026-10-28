@@ -3,6 +3,7 @@ import Common
 import Network
 
 func startUnixSocketServer() {
+    guard Headless.permits(.socketListener) else { return }
     try? FileManager.default.removeItem(atPath: socketPath)
     let params = NWParameters.tcp
     params.requiredLocalEndpoint = .unix(path: socketPath)

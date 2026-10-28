@@ -13,26 +13,19 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
         Divider()
 
         if viewModel.axPermissionStatus == .granted {
-            if let token: RunSessionGuard = .isServerEnabled, viewModel.lastReloadConfigContainedWarnings {
+            if viewModel.isEnabled, viewModel.lastReloadConfigContainedWarnings {
                 Button {
-                    Task.startUnstructured {
-                        try await runLightSession(.menuBarButton, token) {
-                            let args: ReloadConfigCmdArgs = ReloadConfigCmdArgs(rawArgs: []).copy(\.warningsAsErrors, true)
-                            _ = await reloadConfig_nonCancellable(args: args)
-                        }
-                    }
+                    runUiCommand(["reload-config", "--warnings-as-errors"])
                 } label: {
                     Label("Config contains warnings...", systemImage: "exclamationmark.triangle.fill")
                 }
                 Divider()
             }
-            if let token: RunSessionGuard = .isServerEnabled {
+            if viewModel.isEnabled {
                 Text("Workspaces:")
                 ForEach(viewModel.workspaces, id: \.name) { workspace in
                     Button {
-                        Task.startUnstructured {
-                            try await runLightSession(.menuBarButton, token) { _ = Workspace.get(byName: workspace.name).focusWorkspace() }
-                        }
+                        runUiCommand(["workspace", workspace.name])
                     } label: {
                         Toggle(isOn: .constant(workspace.isFocused)) {
                             Text(workspace.name + workspace.suffix).font(.system(.body, design: .monospaced))
@@ -42,7 +35,7 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
                 Divider()
             }
             Button {
-                NSWorkspace.shared.open(URL(string: "https://github.com/sponsors/nikitabobko").orDie())
+                SystemServices.open(URL(string: "https://github.com/sponsors/nikitabobko").orDie())
                 viewModel.sponsorshipMessage = sponsorshipPrompts.randomElement().orDie()
             } label: {
                 Text("Sponsor AeroSpace on GitHub")
@@ -50,12 +43,7 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
             }
             Divider()
             Button(viewModel.isEnabled ? "Disable" : "Enable") {
-                Task.startUnstructured {
-                    try await runLightSession(.menuBarButton, .forceRun) {
-                        _ = await EnableCommand(args: EnableCmdArgs(rawArgs: [], targetState: .toggle))
-                            .run(.defaultEnv, .emptyStdin)
-                    }
-                }
+                runUiCommand(["enable", "toggle"])
             }.keyboardShortcut("E", modifiers: .command)
             getExperimentalUISettingsMenu(viewModel: viewModel)
             SettingsButton()
@@ -122,14 +110,9 @@ func openConfigButton(showShortcutGroup: Bool = false) -> some View {
 
 @MainActor @ViewBuilder
 func reloadConfigButton(showShortcutGroup: Bool = false, warningsAsErrors: Bool) -> some View {
-    if let token: RunSessionGuard = .isServerEnabled {
+    if ServerState.isEnabled {
         let button = Button("Reload config") {
-            Task.startUnstructured {
-                try await runLightSession(.menuBarButton, token) {
-                    let args: ReloadConfigCmdArgs = ReloadConfigCmdArgs(rawArgs: []).copy(\.warningsAsErrors, warningsAsErrors)
-                    _ = await reloadConfig_nonCancellable(args: args)
-                }
-            }
+            runUiCommand(warningsAsErrors ? ["reload-config", "--warnings-as-errors"] : ["reload-config"])
         }.keyboardShortcut("R", modifiers: .command)
         switch showShortcutGroup {
             case true: shortcutGroup(label: Text("⌘ R"), content: button)
@@ -149,7 +132,7 @@ func shortcutGroup(label: some View, content: some View) -> some View {
 }
 
 func getTextEditorToOpenConfig() -> URL {
-    NSWorkspace.shared.urlForApplication(toOpen: findCustomConfigUrl().urlOrNil ?? defaultConfigUrl)?
+    SystemServices.applicationToOpen(findCustomConfigUrl().urlOrNil ?? defaultConfigUrl)?
         .takeIf { $0.lastPathComponent != "Xcode.app" } // Blacklist Xcode. It is too heavy to open plain text files
         ?? URL(filePath: "/System/Applications/TextEdit.app")
 }

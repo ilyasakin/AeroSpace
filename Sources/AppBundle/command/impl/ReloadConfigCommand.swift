@@ -67,7 +67,8 @@ struct ReloadConfigResult {
         TrayMenuModel.shared.lastReloadConfigContainedWarnings = containsWarnings
         resetHotKeys()
         config = parseResult.config
-        unsafe SkyLight.readsEnabled = config.skyLightReads
+        resetRuntimeGapsOverrides() // i3: `gaps` changes last until reload
+        SystemServices.setWindowServerReadsEnabled(config.skyLightReads)
         configUrl = result.configUrl
         await activateMode_nonCancellable(activeMode)
         syncStartAtLogin()

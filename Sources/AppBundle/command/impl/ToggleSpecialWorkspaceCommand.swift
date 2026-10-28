@@ -24,6 +24,18 @@ enum SpecialWorkspaceToggleState {
         remembered.removeValue(forKey: key(special: special, monitor: monitorName))
     }
 
+    /// Both the special workspace (in the key) and the remembered previous one (the value) can be
+    /// the renamed workspace
+    static func renameWorkspace(from old: String, to new: String) {
+        var renamed: [String: String] = [:]
+        for (key, previous) in remembered {
+            let parts = key.split(separator: "\u{1e}", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            let newKey = parts.count == 2 && parts[1] == old ? Self.key(special: new, monitor: parts[0]) : key
+            renamed[newKey] = previous == old ? new : previous
+        }
+        remembered = renamed
+    }
+
     /// Test/reset helper
     static func resetAll() { remembered.removeAll() }
 }

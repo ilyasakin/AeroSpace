@@ -10,13 +10,17 @@ struct CloseCommand: Command {
         guard let window = target.windowOrNil else {
             return .fail(io.err("Empty workspace"))
         }
-        // Access ax directly. Not cool :(
-        if await args.quitIfLastWindow.andAsync({ @MainActor @Sendable in (try? await window.macAppUnsafe.getAxWindowsCount(.nonCancellable)) == 1 }) {
-            let app = window.macAppUnsafe
-            if app.nsApp.terminate() {
+        // i3 `kill` on a focused container (`focus parent`) closes every window in it
+        if window == focus.windowOrNil, let container = focus.focusedNode as? TilingContainer {
+            for w in container.allLeafWindowsRecursive { w.closeAxWindow() }
+            return .succ
+        }
+        if await args.quitIfLastWindow.andAsync({ @MainActor @Sendable in await MacOS.current.windowCountOfApp(ofWindow: window.windowId) == 1 }) {
+            let pid = window.app.pid
+            if MacOS.current.quitApp(ofWindow: window.windowId) {
                 for workspace in Workspace.allUnsorted {
-                    for window in workspace.allLeafWindowsRecursive where window.app.pid == app.pid {
-                        (window as! MacWindow).garbageCollect(skipClosedWindowsCache: true)
+                    for window in workspace.allLeafWindowsRecursive where window.app.pid == pid {
+                        window.garbageCollect(skipClosedWindowsCache: true)
                     }
                 }
                 return .succ

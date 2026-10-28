@@ -114,13 +114,23 @@ private nonisolated(unsafe) var mainMonitorCache: Monitor? = nil
 @MainActor func invalidateMonitorsCache() {
     unsafe monitorsCache = nil
     unsafe mainMonitorCache = nil
+    invalidateSpaceFullscreenCache()
 }
 
 /// Main screen in AeroSpace's coordinate system. Cached per refresh session (with monitors).
 /// Must NOT go through `monitors` when building — MonitorImpl.rect normalizes via mainMonitor.height
 /// (would recurse). Built as LazyMonitor from NSScreen.screens only.
+/// Tests only: simulate a monitor set (hotplug scenarios). nil = the single fixed test monitor.
+nonisolated(unsafe) var testMonitorsOverride: [Monitor]? = nil
+
+/// A synthetic monitor for tests
+func makeTestMonitor(id: UInt32, rect: Rect, isMain: Bool) -> Monitor {
+    MonitorImpl(displayId: DisplayId(rawValue: id), monitorAppKitNsScreenScreensId: Int(id), name: "Test \(id)",
+                rect: rect, visibleRect: rect, isMain: isMain)
+}
+
 var mainMonitor: Monitor {
-    if isUnitTest { return testMonitor }
+    if isUnitTest { return unsafe testMonitorsOverride?.first(where: \.isMain) ?? testMonitorsOverride?.first ?? testMonitor }
     if Thread.isMainThread, let cached = unsafe mainMonitorCache {
         return cached
     }
@@ -137,7 +147,7 @@ var mainMonitor: Monitor {
 }
 
 var monitors: [Monitor] {
-    if isUnitTest { return [testMonitor] }
+    if isUnitTest { return unsafe testMonitorsOverride ?? [testMonitor] }
     if Thread.isMainThread, let cached = unsafe monitorsCache {
         return cached
     }

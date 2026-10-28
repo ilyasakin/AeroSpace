@@ -67,6 +67,8 @@ final class ResizeWithMouseTest: XCTestCase {
         left.lastAppliedLayoutVirtualRect = Rect(topLeftX: 0, topLeftY: 0, width: 500, height: 1000)
         right.desiredRect = Rect(topLeftX: 500, topLeftY: 0, width: 500, height: 1000)
         right.lastAppliedLayoutVirtualRect = Rect(topLeftX: 500, topLeftY: 0, width: 500, height: 1000)
+        // ...which also gives the container its span (pixels convert to weight through it)
+        Workspace.get(byName: name).rootTilingContainer.lastAppliedLayoutVirtualRect = Rect(topLeftX: 0, topLeftY: 0, width: 1000, height: 1000)
 
         // User dragged the left window's right edge +100 px (live frame only; baseline stays).
         left.setAxFrame(CGPoint(x: 0, y: 0), CGSize(width: 600, height: 1000))

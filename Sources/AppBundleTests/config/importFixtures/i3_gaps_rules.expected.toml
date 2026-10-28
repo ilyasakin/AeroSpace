@@ -3,6 +3,10 @@
 
 config-version = 2
 
+# i3's tree normalization: only redundant nested splits collapse, and 'split' works
+i3-normalization = true
+accordion-mode = 'i3'
+
 after-startup-command = [
     'exec-and-forget picom -b',
 ]
@@ -10,18 +14,26 @@ after-startup-command = [
 focus-follows-mouse.enabled = true
 default-root-container-layout = 'accordion'
 tiling-policy = 'manual'
+mouse-warping = 'output'
+workspace-auto-back-and-forth = true
+smart-gaps = true
 
 [gaps]
 inner.vertical = 10
 inner.horizontal = 10
-outer.left = 4
-outer.bottom = 4
-outer.top = 30
-outer.right = 4
+outer.left = 14
+outer.bottom = 14
+outer.top = 40
+outer.right = 14
 
 [workspace-to-monitor-force-assignment]
 '1:www' = 'DP-1'
 '2:code' = 'main'
+
+[window-borders]
+enabled = true
+width = 2
+active-color = '#285577'
 
 [[window-detection-rules]]
 if.app-id = 'net.kovidgoyal.kitty'
@@ -63,15 +75,7 @@ cmd-g = ['fullscreen', 'layout floating tiling']
 # ============================================================
 # Lines from the i3 config that don't apply on macOS
 # ============================================================
-# line 9: smart_gaps on
-#     ^ smart gaps are not supported
-# line 11: default_border pixel 2
-#     ^ no window borders on macOS; see the JankyBorders recipe in the guide
 # line 12: hide_edge_borders both
-#     ^ no window borders on macOS; see the JankyBorders recipe in the guide
-# line 13: client.focused #4c7899 #285577 #ffffff #2e9ef4 #285577
-#     ^ window decoration colors are not drawn on macOS; see the JankyBorders recipe
+#     ^ edge/smart border hiding is not supported
 # line 33: for_window [window_role="pop-up"] floating enable
 #     ^ none of the criteria can be matched on macOS
-# line 41: workspace_auto_back_and_forth yes
-#     ^ behavior tweak with no equivalent

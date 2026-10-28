@@ -6,9 +6,9 @@ struct ListAppsCommand: Command {
     /*conforms*/ let shouldResetClosedWindowsCache = false
 
     func run(_ env: CmdEnv, _ io: CmdIo) -> BinaryExitCode {
-        var result = Array(MacApp.allAppsMap.values)
+        var result = SystemServices.trackedApps
         if let hidden = args.macosHidden {
-            result = result.filter { $0.nsApp.isHidden == hidden }
+            result = result.filter { $0.isHidden == hidden }
         }
 
         lazy var list = result.map(AeroObj.app)

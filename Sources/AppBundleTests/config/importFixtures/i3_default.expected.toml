@@ -3,9 +3,9 @@
 
 config-version = 2
 
-# i3 doesn't flatten nested containers; disabled so the imported 'split' bindings work
-enable-normalization-flatten-containers = false
-enable-normalization-opposite-orientation-for-nested-containers = false
+# i3's tree normalization: only redundant nested splits collapse, and 'split' works
+i3-normalization = true
+accordion-mode = 'i3'
 
 after-startup-command = [
     'exec-and-forget dex --autostart --environment i3',
@@ -14,6 +14,7 @@ after-startup-command = [
 ]
 
 tiling-policy = 'manual'
+mouse-warping = 'output'
 
 [mode.main.binding]
 alt-enter = 'exec-and-forget i3-sensible-terminal'
@@ -38,18 +39,20 @@ alt-shift-right = 'move right'
 alt-h = 'split horizontal'
 alt-v = 'split vertical'
 alt-f = 'fullscreen'
-alt-s = 'layout accordion'
-alt-w = 'layout accordion'
-alt-e = 'layout tiles horizontal vertical'
+alt-s = 'layout v_accordion'
+alt-w = 'layout h_accordion'
+alt-e = 'layout h_tiles v_tiles'
 alt-shift-space = 'layout floating tiling'
-alt-1 = 'workspace 1'
-alt-2 = 'workspace 2'
-alt-3 = 'workspace 3'
-alt-4 = 'workspace 4'
-alt-shift-1 = 'move-node-to-workspace 1'
-alt-shift-2 = 'move-node-to-workspace 2'
-alt-shift-3 = 'move-node-to-workspace 3'
-alt-shift-4 = 'move-node-to-workspace 4'
+alt-space = 'focus mode-toggle'
+alt-a = 'focus parent'
+alt-1 = 'workspace --number 1'
+alt-2 = 'workspace --number 2'
+alt-3 = 'workspace --number 3'
+alt-4 = 'workspace --number 4'
+alt-shift-1 = 'move-node-to-workspace --number 1'
+alt-shift-2 = 'move-node-to-workspace --number 2'
+alt-shift-3 = 'move-node-to-workspace --number 3'
+alt-shift-4 = 'move-node-to-workspace --number 4'
 alt-shift-c = 'reload-config'
 alt-shift-r = 'reload-config'
 alt-shift-e = "exec-and-forget \"i3-nagbar -t warning -m 'Exit i3?' -B 'Yes' 'i3-msg exit'\""
@@ -83,9 +86,5 @@ alt-r = 'mode main'
 #     ^ floating windows are dragged natively on macOS; no drag modifier needed
 # line 16: tiling_drag modifier titlebar
 #     ^ behavior tweak with no equivalent
-# line 51: bindsym $mod+space focus mode_toggle
-#     ^ none of the actions in this binding have an equivalent
-# line 52: bindsym $mod+a focus parent
-#     ^ none of the actions in this binding have an equivalent
 # line 91: bar {
 #     ^ no i3bar on macOS; see the sketchybar integration recipe in the guide

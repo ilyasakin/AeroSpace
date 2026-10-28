@@ -23,6 +23,7 @@ import Common
 @MainActor
 private func getStubWorkspace(for display: DisplayId) -> Workspace {
     if let prev = displayToPrevVisibleWorkspace[display].map({ Workspace.get(byName: $0) }),
+       !prev.isScratchpad,
        !prev.isVisible && prev.workspaceMonitor.displayId == display && prev.forceAssignedMonitor == nil
     {
         return prev
@@ -32,7 +33,7 @@ private func getStubWorkspace(for display: DisplayId) -> Workspace {
     // workspaces share a monitor.
     var best: Workspace?
     for candidate in Workspace.allUnsorted
-        where !candidate.isVisible && candidate.workspaceMonitor.displayId == display
+        where !candidate.isVisible && !candidate.isScratchpad && candidate.workspaceMonitor.displayId == display
     {
         if best.map({ candidate < $0 }) ?? true { best = candidate }
     }
@@ -57,6 +58,8 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
     }
     /// Set by the tiling-policy command. nil means "follow the config"
     var tilingPolicyOverride: TilingPolicy? = nil
+    /// Runtime `gaps current ...` changes (see GapsOverride)
+    var gapsOverride = GapsOverride()
 
     @MainActor
     private init(_ name: String) {
@@ -68,6 +71,11 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
     /// Sorted by name. Use for UI/CLI listing. Hot-path iterate-all callers should prefer `allUnsorted`.
     /// The sorted array is cached until a workspace is created or GC'd (membership change only —
     /// name order is stable for the lifetime of each Workspace instance)
+    /// Every workspace a user sees or cycles through — excludes the hidden scratchpad
+    @MainActor static var userFacing: [Workspace] { all.filter { !$0.isScratchpad } }
+
+    var isScratchpad: Bool { name == scratchpadWorkspaceName }
+
     @MainActor static var all: [Workspace] {
         if let cached = sortedWorkspacesCache, cached.generation == workspaceListGeneration {
             return cached.list
@@ -99,7 +107,7 @@ final class Workspace: TreeNode, NonLeafTreeNodeObject, Hashable, Comparable {
     }
 
     override func getWeight(_ targetOrientation: Orientation) -> CGFloat {
-        workspaceMonitor.visibleRectPaddedByOuterGaps.getDimension(targetOrientation)
+        tilingRect.getDimension(targetOrientation)
     }
 
     override func setWeight(_ targetOrientation: Orientation, _ newValue: CGFloat) {
@@ -165,9 +173,12 @@ extension Monitor {
         }
         // What if the monitor set changed? (a display appeared or disappeared)
         rearrangeWorkspacesOnMonitors()
-        // Normally, recursion should happen only once more because we must take the value from the cache
-        // (Unless, monitor configuration data race happens)
-        return self.activeWorkspace
+        if let existing = displayToVisibleWorkspace[displayId] { return existing }
+        // This display isn't in the current monitor set (asleep / just unplugged, or no screens at
+        // all): give it a stub directly. Recursing here never terminated when `monitors` was empty.
+        let stub = getStubWorkspace(for: displayId)
+        _ = displayId.setActiveWorkspace(stub)
+        return stub
     }
 
     @MainActor
@@ -178,8 +189,18 @@ extension Monitor {
 
 @MainActor
 func gcMonitors() {
-    if displayToVisibleWorkspace.count != monitors.count {
+    // Compare the SET of displays: swapping one display for another (a different dock / KVM
+    // target) keeps the count and used to keep a mapping keyed on a display that is gone
+    if Set(displayToVisibleWorkspace.keys) != Set(monitors.map(\.displayId)) {
         rearrangeWorkspacesOnMonitors()
+        // The focused workspace's display went away: like i3 moving a gone output's workspaces to
+        // a remaining one, keep it focused and SHOW it (on its fallback monitor) — otherwise focus
+        // stayed on an invisible workspace and typing went to a window parked in the corner.
+        // (setActiveWorkspace directly: focusWorkspace() is a no-op when the focus value is unchanged)
+        let focused = focus.workspace
+        if !focused.isVisible, !focused.isScratchpad {
+            _ = focused.workspaceMonitor.setActiveWorkspace(focused)
+        }
     }
 }
 
@@ -226,6 +247,11 @@ private func rearrangeWorkspacesOnMonitors() {
     let previous = displayToVisibleWorkspace
     displayToVisibleWorkspace = [:]
     visibleWorkspaceToDisplay = [:]
+    // A display that went away remembers what it showed, so re-plugging it (sleep, KVM, dock)
+    // brings THAT workspace back instead of an older one
+    for (display, workspace) in previous where !connected.contains(display) {
+        displayToPrevVisibleWorkspace[display] = workspace.name
+    }
 
     for display in connected {
         // Still connected → same identity → keeps its workspace.
@@ -244,8 +270,53 @@ private func rearrangeWorkspacesOnMonitors() {
 
 @MainActor
 private func isValidAssignment(workspace: Workspace, display: DisplayId) -> Bool {
-    switch workspace.forceAssignedMonitor {
+    // The scratchpad is never shown (i3's __i3_scratch)
+    if workspace.isScratchpad { return false }
+    return switch workspace.forceAssignedMonitor {
         case let forceAssigned? where forceAssigned.displayId != display: false
         default: true
+    }
+}
+
+extension Workspace {
+    /// i3 `rename workspace <old> to <new>`: a new workspace object takes over everything — the
+    /// windows (all containers move as they are), the monitor, the focus and back-and-forth memory,
+    /// and the runtime per-workspace settings. Fails if `newName` is taken (as in i3).
+    @MainActor func rename(to newName: String) -> Bool {
+        if newName == name { return true }
+        if workspaceNameToWorkspace[newName] != nil { return false }
+        let renamed = Workspace.get(byName: newName)
+        for (index, child) in children.enumerated() {
+            child.unbindFromParent()
+            child.bind(to: renamed, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: index)
+        }
+        renamed.tilingPolicyOverride = tilingPolicyOverride
+        renamed.gapsOverride = gapsOverride
+        renamed.assignedDisplay = assignedDisplay
+        if let display = visibleWorkspaceToDisplay[self] {
+            _ = display.setActiveWorkspace(renamed)
+        }
+        for (display, prev) in displayToPrevVisibleWorkspace where prev == name {
+            displayToPrevVisibleWorkspace[display] = newName
+        }
+        noteWorkspaceRenamed(from: name, to: newName)
+        renameNameKeyedWorkspaceState(from: name, to: newName)
+        workspaceNameToWorkspace.removeValue(forKey: name)
+        workspaceListGeneration &+= 1
+        return true
+    }
+}
+
+/// Everything outside the workspace object that refers to a workspace by NAME. Rename used to move
+/// only focus and the monitor: departed/floated windows, the special workspace toggle and session
+/// restore still pointed at a workspace that no longer existed.
+/// (Step 6 of the re-architecture merges these memories into one; until then, one place.)
+@MainActor private func renameNameKeyedWorkspaceState(from old: String, to new: String) {
+    WindowMemory.renameWorkspace(from: old, to: new)
+    SpecialWorkspaceToggleState.renameWorkspace(from: old, to: new)
+    for workspace in Workspace.allUnsorted {
+        for window in workspace.allLeafWindowsRecursive where window.tileRestoreSlot?.workspaceName == old {
+            window.tileRestoreSlot?.workspaceName = new
+        }
     }
 }
