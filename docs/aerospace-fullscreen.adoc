@@ -19,6 +19,13 @@ aerospace fullscreen [-h|--help] off [--window-id <window-id>] [--fail-if-noop]
 == Description
 
 // tag::body[]
+
+Fullscreen follows i3: at most one window per workspace is fullscreen (making another one fullscreen
+ends the first); it stays fullscreen until you turn it off or explicitly focus another tiled window
+of the workspace; a new window opening on the workspace appears behind it without taking focus;
+directional `focus` and `move` can only leave it towards another monitor. A floating window returns
+to its previous frame when it leaves fullscreen.
+
 {manpurpose}
 
 Switching to a different tiling window within the same workspace while the current focused window is in fullscreen mode results in the fullscreen window exiting fullscreen mode.

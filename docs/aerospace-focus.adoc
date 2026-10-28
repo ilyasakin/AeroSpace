@@ -18,6 +18,9 @@ aerospace focus [-h|--help] [--ignore-floating] [--wrap-around]
                 (dfs-next|dfs-prev)
 aerospace focus [-h|--help] --window-id <window-id>
 aerospace focus [-h|--help] --dfs-index <dfs-index>
+aerospace focus [-h|--help] (parent|child)
+aerospace focus [-h|--help] (floating|tiling|mode-toggle)
+aerospace focus [-h|--help] (next|prev|next-sibling|prev-sibling)
 
 // end::synopsis[]
 
@@ -33,8 +36,24 @@ The floating window parent container is determined as the smallest tiling contai
 The technique eliminates the need for an additional binding for floating windows.
 This behavior can be disabled with `--ignore-floating` flag.
 
-`focus child|parent` isn't supported because the necessity of this operation is under the question.
-https://github.com/nikitabobko/AeroSpace/issues/5
+`focus next` / `focus prev` are i3's: directional focus along the orientation of the focused node's
+parent (right/down, left/up). `focus next-sibling` / `focus prev-sibling` (i3 `focus next sibling`)
+focus the adjacent sibling node itself — a container becomes the focused node — without wrapping.
+
+`focus floating` / `focus tiling` focus the most recently focused floating / tiling window of the
+workspace; `focus mode-toggle` switches between the two (i3 `focus mode_toggle`).
+
+`focus parent` moves the focus to the container around the focused window (repeat to go further
+up, up to the workspace's root container); `focus child` goes back down. Keyboard focus stays on the
+window, but commands then act on the focused container, as in i3: `move` and
+`move-node-to-workspace` move it, `close` closes every window in it, `layout` and `resize` change
+it, and directional `focus` starts from it. Focusing any window resets the focus to that window.
+
+Without `--boundaries`, `--boundaries-action` or `--wrap-around`, directional focus follows i3
+(`tree_next`): it moves to the neighbour of the nearest ancestor container that runs in that
+direction and focuses that neighbour's most recently focused window. When there is no neighbour
+at any level, the `focus-wrapping` config option (i3 `focus_wrapping`, default `yes`) decides
+between the adjacent monitor and wrapping around.
 
 // =========================================================== Options
 include::util/conditional-options-header.adoc[]
@@ -44,7 +63,7 @@ include::util/conditional-options-header.adoc[]
 --boundaries <boundary>::
 Defines focus boundaries. +
 `<boundary>` possible values: `(workspace|all-monitors-outer-frame)`. +
-The default is: `workspace`
+The default is: `workspace` (when any boundary flag is given; otherwise see `focus-wrapping`)
 
 --boundaries-action <action>::
 Defines the behavior when requested to cross the `<boundary>`. +

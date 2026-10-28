@@ -1,0 +1,36 @@
+= aerospace-unmark(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-unmark
+// tag::purpose[]
+:manpurpose: Remove marks (i3 unmark)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace unmark [-h|--help] [--window-id <window-id>] [<mark>]
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+`unmark <mark>` removes that mark from whichever window has it; `unmark` alone removes every mark
+from every window. With `--window-id`, only that window's marks are touched.
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

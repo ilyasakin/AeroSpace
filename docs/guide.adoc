@@ -350,6 +350,11 @@ While in a `v_accordion`, you can navigate the windows using the `focus (up|down
 
 Accordion padding is configurable via `accordion-padding` option.
 
+`accordion-mode = 'i3'` switches accordions to i3's tabbed / stacked presentation: every member
+fills the container below a title band — one row of tabs for a horizontal accordion (i3 `tabbed`),
+one title row per member for a vertical one (i3 `stacking`) — showing the window titles. The
+focused member is on top. Importing an i3 config turns it on.
+
 [#normalization]
 === Normalization
 
@@ -360,6 +365,11 @@ The root container is an exception, it is allowed to have a single window child.
 Configured by `enable-normalization-flatten-containers`
 . Containers that nest into each other must have opposite orientations.
 Configured by `enable-normalization-opposite-orientation-for-nested-containers`
+
+`i3-normalization = true` replaces both with i3's own rule (`tree_flatten`): empty containers
+close, a container holding a single window is kept (that is what `split` creates, and `split` works),
+and only a redundant pair collapses — a container whose one child is a container of the other
+orientation matching the grandparent's. Importing an i3 config turns it on.
 
 [.lead]
 *Example 1*
@@ -424,33 +434,44 @@ The floating window parent container is determined as the smallest tiling contai
 
 This technique eliminates the need for an additional binding for focusing floating windows.
 
-==== i3-like floating focus (SIP stays on)
+==== Floating windows and z-order
 
-AeroSpace aims for i3-like floating **without** disabling SIP or installing a Dock
-scripting addition.
+Floating windows have native macOS z-order: focusing or clicking a window raises it, like any
+other app. macOS offers no durable window level for another app's window without disabling SIP,
+so AeroSpace does not try to hold floats above the tiling layer.
 
-* **Keyboard / focus-follows-mouse:** when floats exist, focusing a tile uses private
-  focus-without-raise (`_SLPSSetFrontProcessWithOptions` + key-window events). The tile
-  gets keyboard focus **without** `AXRaise`, so AeroSpace does not sink the float.
-* **Float toggle:** becoming floating raises the window once above the tiling stack.
-* **Click (experimental):** when `floating.click-without-raise` is enabled (default),
-  AeroSpace installs a session `CGEventTap` that intercepts left-clicks where the
-  *topmost* window under the cursor is an exposed tiling window and the workspace has
-  floats. The system raise-on-click is swallowed; private focus-without-raise runs;
-  the click is redelivered to the target app. Clicks on floating windows pass through
-  normally. Requires Accessibility (and may need Input Monitoring on some macOS versions).
-* **Manual recovery:** xref:commands.adoc#raise-floating[raise-floating] puts floats
-  back above tiling after Mission Control or other external reorders.
-
-Disable click intercept:
+[#focus-follows-mouse]
+==== Focus follows mouse
 
 [source,toml]
 ----
-[floating]
-click-without-raise = false
+focus-follows-mouse.enabled = true
+# Raise the hovered window (default false). Floating windows are always raised.
+focus-follows-mouse.raise = false
 ----
 
-Do *not* use always-on-top as a substitute for floating.
+Like i3's `focus_follows_mouse`, focus moves only when the pointer *enters* a different window.
+Moving inside a window never refocuses it, so after a keyboard focus change the window the pointer
+rests in does not take focus back. Menus, the Dock, the desktop behind a gap and other apps'
+popups under the pointer never take focus; neither do drags, or motion AeroSpace generates itself.
+
+With `raise = false` a hovered tile gets keyboard focus without being raised (private
+`_SLPSSetFrontProcessWithOptions` + key-window events, no `AXRaise`), so a floating window over it
+stays visible — the i3 look. Where that private API is unavailable the window is raised normally.
+
+[#mouse-warping]
+==== Mouse warping
+
+[source,toml]
+----
+# i3 'mouse_warping': none|output|container (default: none)
+mouse-warping = 'output'
+----
+
+When a *command* moves focus (hotkey, CLI, i3 IPC), `output` moves the pointer to the centre of the
+newly focused monitor if focus crossed monitors, and `container` to the centre of the newly focused
+window if the pointer is outside it. Focus changes made with the mouse never warp. Importing an i3
+config sets i3's default, `output`.
 
 [#emulation-of-virtual-workspaces]
 == Emulation of virtual workspaces

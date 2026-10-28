@@ -1,0 +1,47 @@
+= aerospace-scratchpad(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-scratchpad
+// tag::purpose[]
+:manpurpose: i3 scratchpad: stash windows out of sight and summon them back
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace scratchpad [-h|--help] [--window-id <window-id>] (show|move)
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+`scratchpad move` (i3 `move scratchpad`) makes the window floating and hides it in the scratchpad,
+a workspace that is never shown or listed. With `focus parent`, every window of the focused
+container goes.
+
+`scratchpad show` (i3 `scratchpad show`):
+
+* the focused window is a scratchpad window: it is hidden again;
+* a scratchpad window is visible on this workspace but not focused: it is focused;
+* otherwise the most recently used hidden scratchpad window is shown floating on the focused
+  workspace — centred the first time, where you left it afterwards.
+
+With `--window-id` or criteria (`[app-id="com.spotify.client"] scratchpad show`) that particular
+window is toggled. A scratchpad window stops being one when it is tiled again (`layout tiling`).
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

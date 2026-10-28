@@ -20,6 +20,15 @@ auto-reload-config = false
 # Normalizations. See: https://nikitabobko.github.io/AeroSpace/guide#normalization
 enable-normalization-flatten-containers = true
 enable-normalization-opposite-orientation-for-nested-containers = true
+# i3's tree normalization instead of the two above (only redundant nested splits collapse; 'split' works)
+i3-normalization = false
+
+# How accordion containers look: 'peek' (members overlap with accordion-padding peeks) or 'i3'
+# (i3 tabbed/stacked: members fill the container below a tab row / one title row per member)
+accordion-mode = 'peek'
+
+# i3 'smart_gaps on': no gaps while a workspace shows a single tile
+smart-gaps = false
 
 # See: https://nikitabobko.github.io/AeroSpace/guide#layouts
 # The 'accordion-padding' specifies the size of accordion padding
@@ -43,6 +52,16 @@ default-root-container-orientation = 'auto'
 # 'dwindle-split-percent' (10-90, default 50) controls how much of the tile the
 # existing window keeps; 62 approximates the golden-ratio spiral
 tiling-policy = 'dwindle'
+
+# i3 'focus_wrapping': what directional 'focus' does when there is no window in that direction
+# (only when 'focus' is run without --boundaries/--boundaries-action/--wrap-around)
+# Possible values: yes|no|force|workspace
+# 'yes' (default): move to the adjacent monitor if there is one, otherwise wrap around inside the
+#                  innermost container running in that direction
+# 'no': move to the adjacent monitor if there is one, otherwise do nothing
+# 'force': always wrap inside the innermost container running in that direction
+# 'workspace': like 'yes', but never leave the workspace
+focus-wrapping = 'yes'
 
 # Mouse follows focus when focused monitor changes
 # Drop it from your config, if you don't like this behavior
@@ -69,7 +88,18 @@ persistent-workspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B",
 # See: https://nikitabobko.github.io/AeroSpace/commands#mode
 on-mode-changed = []
 
+# i3 'focus_follows_mouse': focus moves when the pointer ENTERS a window
+# See https://nikitabobko.github.io/AeroSpace/guide#focus-follows-mouse
 focus-follows-mouse.enabled = false
+# Raise the hovered window; false keeps a floating window above the hovered tile (floats always raise)
+focus-follows-mouse.raise = false
+
+# i3 'workspace_auto_back_and_forth': 'workspace X' while already on X goes back to the previous one
+workspace-auto-back-and-forth = false
+
+# i3 'mouse_warping' when a command moves focus: none|output|container
+# See https://nikitabobko.github.io/AeroSpace/guide#mouse-warping
+mouse-warping = 'none'
 
 # Possible values: (qwerty|dvorak|colemak)
 # See https://nikitabobko.github.io/AeroSpace/guide#key-mapping

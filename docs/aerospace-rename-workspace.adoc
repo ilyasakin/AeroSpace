@@ -1,0 +1,37 @@
+= aerospace-rename-workspace(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-rename-workspace
+// tag::purpose[]
+:manpurpose: Rename a workspace (i3 rename workspace)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace rename-workspace [-h|--help] [--workspace <workspace>] [--] <new-name>
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+Renames the focused workspace (or `--workspace`). Its windows, monitor and focus stay as they are,
+and `workspace-back-and-forth` keeps working across the rename. Fails if a workspace named
+`<new-name>` already exists.
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--workspace <workspace>::
+include::./util/workspace-flag-desc.adoc[]
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

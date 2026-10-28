@@ -1,0 +1,45 @@
+= aerospace-mark(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-mark
+// tag::purpose[]
+:manpurpose: Mark a window with an identifier (i3 marks)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace mark [-h|--help] [--window-id <window-id>] [--add|--replace] [--toggle] <mark>
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+Marks work like i3's: a mark identifies at most one window at a time (marking a window with a mark
+another window holds moves the mark), and a window can carry several marks.
+Marked windows can be targeted with the `con_mark` criterion (see xref:aerospace-criteria.adoc[criteria]),
+moved to with xref:aerospace-move-node-to-mark.adoc[move-node-to-mark], and swapped with
+`swap --with-mark`. The marks are exposed as `%{window-marks}` in xref:aerospace-list-windows.adoc[list-windows].
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--window-id <window-id>::
+include::./util/window-id-flag-desc.adoc[]
+
+--add:: Add the mark to the window's existing marks.
+
+--replace:: Replace the window's marks with this one (the default).
+
+--toggle:: Remove the mark if the window already has it.
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

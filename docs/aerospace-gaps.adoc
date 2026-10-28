@@ -1,0 +1,41 @@
+= aerospace-gaps(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-gaps
+// tag::purpose[]
+:manpurpose: Change gaps at runtime (i3 gaps command)
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace gaps [-h|--help] [--workspace <workspace>] (inner|outer|horizontal|vertical|top|right|bottom|left)
+               (current|all) (set|plus|minus|toggle) <px>
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+`current` changes the focused workspace (or `--workspace`), `all` changes every workspace.
+`horizontal` / `vertical` are the outer gaps on the left+right / top+bottom edges (i3 4.22).
+`toggle` switches between 0 and `<px>`. Runtime changes last until `reload-config`.
+
+The `smart-gaps` config option (i3 `smart_gaps on`) drops all gaps while a workspace shows a
+single tile.
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+--workspace <workspace>::
+include::./util/workspace-flag-desc.adoc[]
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

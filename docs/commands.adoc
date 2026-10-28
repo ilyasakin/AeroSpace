@@ -33,6 +33,13 @@ include::aerospace-config.adoc[tags=synopsis]
 include::aerospace-config.adoc[tags=purpose]
 include::aerospace-config.adoc[tags=body]
 
+== criteria
+----
+include::aerospace-criteria.adoc[tags=synopsis]
+----
+include::aerospace-criteria.adoc[tags=purpose]
+include::aerospace-criteria.adoc[tags=body]
+
 == debug-windows
 ----
 include::aerospace-debug-windows.adoc[tags=synopsis]
@@ -111,6 +118,13 @@ include::aerospace-fullscreen.adoc[tags=synopsis]
 include::aerospace-fullscreen.adoc[tags=purpose]
 include::aerospace-fullscreen.adoc[tags=body]
 
+== gaps
+----
+include::aerospace-gaps.adoc[tags=synopsis]
+----
+include::aerospace-gaps.adoc[tags=purpose]
+include::aerospace-gaps.adoc[tags=body]
+
 == join-with
 ----
 include::aerospace-join-with.adoc[tags=synopsis]
@@ -181,6 +195,13 @@ include::aerospace-macos-native-minimize.adoc[tags=synopsis]
 include::aerospace-macos-native-minimize.adoc[tags=purpose]
 include::aerospace-macos-native-minimize.adoc[tags=body]
 
+== mark
+----
+include::aerospace-mark.adoc[tags=synopsis]
+----
+include::aerospace-mark.adoc[tags=purpose]
+include::aerospace-mark.adoc[tags=body]
+
 == mode
 ----
 include::aerospace-mode.adoc[tags=synopsis]
@@ -203,6 +224,13 @@ include::./aerospace-move-mouse.adoc[tags=synopsis]
 include::./aerospace-move-mouse.adoc[tags=purpose]
 include::./aerospace-move-mouse.adoc[tags=body]
 
+== move-node-to-mark
+----
+include::aerospace-move-node-to-mark.adoc[tags=synopsis]
+----
+include::aerospace-move-node-to-mark.adoc[tags=purpose]
+include::aerospace-move-node-to-mark.adoc[tags=body]
+
 == move-node-to-monitor
 ----
 include::aerospace-move-node-to-monitor.adoc[tags=synopsis]
@@ -224,19 +252,19 @@ include::aerospace-move-workspace-to-monitor.adoc[tags=synopsis]
 include::aerospace-move-workspace-to-monitor.adoc[tags=purpose]
 include::aerospace-move-workspace-to-monitor.adoc[tags=body]
 
-== raise-floating
-----
-include::aerospace-raise-floating.adoc[tags=synopsis]
-----
-include::aerospace-raise-floating.adoc[tags=purpose]
-include::aerospace-raise-floating.adoc[tags=body]
-
 == reload-config
 ----
 include::aerospace-reload-config.adoc[tags=synopsis]
 ----
 include::aerospace-reload-config.adoc[tags=purpose]
 include::aerospace-reload-config.adoc[tags=body]
+
+== rename-workspace
+----
+include::aerospace-rename-workspace.adoc[tags=synopsis]
+----
+include::aerospace-rename-workspace.adoc[tags=purpose]
+include::aerospace-rename-workspace.adoc[tags=body]
 
 == resize
 ----
@@ -251,6 +279,13 @@ include::aerospace-run-callback.adoc[tags=synopsis]
 ----
 include::aerospace-run-callback.adoc[tags=purpose]
 include::aerospace-run-callback.adoc[tags=body]
+
+== scratchpad
+----
+include::aerospace-scratchpad.adoc[tags=synopsis]
+----
+include::aerospace-scratchpad.adoc[tags=purpose]
+include::aerospace-scratchpad.adoc[tags=body]
 
 == split
 ----
@@ -308,6 +343,13 @@ include::aerospace-true.adoc[tags=synopsis]
 ----
 include::aerospace-true.adoc[tags=purpose]
 include::aerospace-true.adoc[tags=body]
+
+== unmark
+----
+include::aerospace-unmark.adoc[tags=synopsis]
+----
+include::aerospace-unmark.adoc[tags=purpose]
+include::aerospace-unmark.adoc[tags=body]
 
 == volume
 ----

@@ -9,8 +9,9 @@ include::util/man-attributes.adoc[]
 == Synopsis
 [verse]
 // tag::synopsis[]
-aerospace workspace [-h|--help] [--auto-back-and-forth] [--fail-if-noop] [--] <workspace-name>
-aerospace workspace [-h|--help] [--wrap-around] [--stdin|--no-stdin] (next|prev)
+aerospace workspace [-h|--help] [--auto-back-and-forth] [--fail-if-noop] [--number] [--] <workspace-name>
+aerospace workspace [-h|--help] [--wrap-around] [--all-monitors] [--stdin|--no-stdin] (next|prev)
+aerospace workspace [-h|--help] back-and-forth
 
 // end::synopsis[]
 
@@ -28,6 +29,11 @@ Focuses next or previous workspace in *the list*.
 
 * If `--stdin` is specified, then *the list* is taken from stdin
 * Otherwise, *the list* is defined as all workspaces (even empty ones) on focused monitor in alphabetical order
+  (i3 `next_on_output`), or on every monitor with `--all-monitors` (i3 `next`)
+
+*3. back-and-forth*
+
+The previously focused workspace (same as `workspace-back-and-forth`).
 
 // =========================================================== Options
 include::util/conditional-options-header.adoc[]
@@ -37,7 +43,14 @@ include::util/conditional-options-header.adoc[]
 
 --auto-back-and-forth::
 Automatic `back-and-forth` when switching to already focused workspace.
-Incompatible with `--fail-if-noop`
+Incompatible with `--fail-if-noop`.
+The `workspace-auto-back-and-forth` config option (i3 `workspace_auto_back_and_forth`) turns it on for every `workspace` command.
+
+--all-monitors:: `(next|prev)` cycle through the workspaces of every monitor (i3 `workspace next`)
+
+--number::
+i3 `workspace number N`: focus the workspace whose name starts with the number N (`3:mail` for `3`),
+or a workspace named N if there is none
 
 --fail-if-noop::
 Exit with non-zero exit code if switch to the already focused workspace.

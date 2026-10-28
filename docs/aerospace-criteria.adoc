@@ -1,0 +1,52 @@
+= aerospace-criteria(1)
+include::util/man-attributes.adoc[]
+:manname: aerospace-criteria
+// tag::purpose[]
+:manpurpose: Run a command on every window matching i3-style criteria
+// end::purpose[]
+
+// =========================================================== Synopsis
+== Synopsis
+[verse]
+// tag::synopsis[]
+aerospace criteria [-h|--help] <criterion>... -- <command> [<arg>...]
+
+// end::synopsis[]
+
+// =========================================================== Description
+== Description
+
+// tag::body[]
+{manpurpose}
+
+The i3 command prefix `[criterion ...] <command>` is accepted everywhere commands are (bindings,
+callbacks, the CLI and i3 IPC) and means exactly `criteria criterion ... -- <command>`:
+
+[source,toml]
+----
+alt-f = '[app-id="com.apple.Safari"] focus'
+alt-m = '[con_mark="music"] move-node-to-workspace M'
+----
+
+`<command>` runs once per matching window, targeted at that window (like `--window-id`).
+Values are regular expressions (i3 uses PCRE); `__focused__` matches the focused window's value.
+
+Criteria::
+`app-id`, `class`, `instance`::: the app's bundle id or name
+`app-name`::: the app's name
+`title`::: the window title
+`window-id`, `con_id`, `id`::: the window id (exact)
+`con_mark`, `mark`::: a mark set with xref:aerospace-mark.adoc[mark]
+`workspace`::: the window's workspace name
+`floating`, `tiling`::: floating / tiling windows (no value)
+`all`::: every window (no value)
+
+// =========================================================== Options
+include::./util/conditional-options-header.adoc[]
+
+-h, --help:: Print help
+
+// end::body[]
+
+// =========================================================== Footer
+include::util/man-footer.adoc[]

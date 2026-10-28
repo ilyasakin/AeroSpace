@@ -10,6 +10,7 @@ include::util/man-attributes.adoc[]
 [verse]
 // tag::synopsis[]
 aerospace resize [-h|--help] [--window-id <window-id>] (smart|smart-opposite|width|height) [+|-]<number>[%]
+aerospace resize [-h|--help] [--window-id <window-id>] (left|down|up|right) (+|-)<number>[%]
 
 // end::synopsis[]
 
@@ -17,6 +18,12 @@ aerospace resize [-h|--help] [--window-id <window-id>] (smart|smart-opposite|wid
 == Description
 
 // tag::body[]
+
+`(left|down|up|right) (+|-)<number>` is i3's `resize grow|shrink <direction>`: the window's edge on that
+side moves by `<number>` px (or `%` of the parent), and the space comes from — or goes to — the one
+neighbour on that side only. i3 refuses a resize that would leave either tile under 1px. A floating
+window grows or shrinks on that edge.
+
 {manpurpose}
 
 The dimension to resize is chosen by the first argument

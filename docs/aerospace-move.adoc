@@ -11,7 +11,7 @@ include::util/man-attributes.adoc[]
 // tag::synopsis[]
 aerospace move [-h|--help] [--window-id <window-id>] [--boundaries <boundary>]
                [--boundaries-action <boundary-action>] [--fail-if-fullscreen]
-               [--fail-if-macos-native-fullscreen] (left|down|up|right)
+               [--fail-if-macos-native-fullscreen] (left|down|up|right) [<px>]
 
 // end::synopsis[]
 
@@ -20,6 +20,15 @@ aerospace move [-h|--help] [--window-id <window-id>] [--boundaries <boundary>]
 
 // tag::body[]
 Move the focused window in the given direction. See the "Examples" section for more details.
+
+A floating window moves by `<px>` (default 10) in the direction, like i3's `move left 20 px`.
+
+Without `--boundaries`/`--boundaries-action`, `move` follows i3 (`tree_move`) exactly:
+moving into a neighbouring container enters it from the side you are moving towards (the near end
+along a matching orientation, after the focused window across it); moving out of a container
+enters the bordering branch of the neighbour; a missing split in the move's orientation is created
+at the workspace root; and at the workspace edge the window moves to the adjacent monitor, or stays
+put if there is none.
 
 Deprecated name: `move-through`
 
@@ -34,12 +43,12 @@ include::./util/window-id-flag-desc.adoc[]
 --boundaries <boundary>::
 Defines move boundaries. +
 `<boundary>` possible values: `(workspace|all-monitors-outer-frame)`. +
-The default is: `workspace`
+When omitted (and `--boundaries-action` is omitted too), i3 semantics apply (see above).
 
 --boundaries-action <boundary-action>::
 Defines the behavior when requested to move across the `<boundary>`. +
 `<boundary-action>` possible values: `(stop|fail|create-implicit-container)`. +
-The default is: `create-implicit-container`
+The default is: `create-implicit-container` (only when `--boundaries` is given)
 
 --fail-if-fullscreen::
 Exit with non-zero code if the target window is fullscreen by the `fullscreen` command.
