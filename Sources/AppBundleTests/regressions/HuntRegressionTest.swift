@@ -75,6 +75,23 @@ final class HuntRegressionTest: XCTestCase {
         XCTAssertTrue(tv.parent is MacosFullscreenWindowsContainer, "out of the tiling")
     }
 
+    /// ws 1: a TV window read non-fullscreen for one pass, got parked as a native tab of its
+    /// fullscreen sibling, then read fullscreen again. It must move to the fullscreen container,
+    /// or every switch away from the workspace tries (and fails) to park it in the hide corner
+    func testAParkedWindowThatIsFullscreenMovesToTheFullscreenContainer() async throws {
+        let ws = focus.workspace
+        TestWindow.new(id: 1, parent: ws.rootTilingContainer)
+        let tv = TestWindow.new(id: 2, parent: ws.rootTilingContainer)
+        tv.layoutReason = .macos(prevParentKind: .tilingContainer)
+        tv.bind(to: ws.macOsNativeHiddenAppsWindowsContainer, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
+        seedMacosNativeWindowStateCacheForTests(windowId: 2, MacosNativeWindowState(isFullscreen: true, isMinimized: false))
+        SimulatedMacOS.shared.fullscreen.insert(2)
+
+        try await normalizeLayoutReason()
+        XCTAssertTrue(tv.parent is MacosFullscreenWindowsContainer, "fullscreen, not a parked tab")
+        XCTAssertTrue(tv.isOwnedByMacos, "so hideInCorner leaves it alone")
+    }
+
     /// The same window, when no frame notification came: macOS refusing our write gives it away
     func testARefusedWriteRereadsNativeState() async throws {
         let ws = focus.workspace

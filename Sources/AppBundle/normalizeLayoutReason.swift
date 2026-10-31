@@ -116,6 +116,15 @@ private func _normalizeLayoutReason(workspace: Workspace, windows: [Window], det
                 {
                     continue
                 }
+                // Already macOS-owned, but in the wrong container for its state now: a TV window
+                // reported non-fullscreen for one pass, was parked as a native tab (it shares the
+                // fullscreen frame with its sibling), then was fullscreen again. Left in the
+                // hidden-apps container, it was parked in the hide corner — and refused — on every
+                // switch away from its workspace
+                if isMacosFullscreen, !(window.parent is MacosFullscreenWindowsContainer) {
+                    window.bind(to: workspace.macOsNativeFullscreenWindowsContainer, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
+                    continue
+                }
                 // The representative is never in parkedTabs, so it stays tiled even while it's a
                 // background tab. A parked sibling re-tiles only when it becomes the representative
                 // (its lower-id siblings closed).
