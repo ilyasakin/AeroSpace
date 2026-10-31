@@ -31,10 +31,11 @@ enum WindowServerEvents {
 }
 
 /// WindowServer move/resize callback (runs on the thread that registered it - the main thread).
-/// `data` points to the moved window's CGWindowID.
+/// `data` points to the moved window's CGWindowID. SkyLight hands over a datagram buffer that is
+/// not always 4-byte aligned, and `load(as:)` traps on a misaligned pointer, so read it unaligned.
 private let windowServerEventProc: SkyLight.NotifyProc = { _, data, _, _ in
     guard let data else { return }
-    let windowId = data.load(as: UInt32.self)
+    let windowId = data.loadUnaligned(as: UInt32.self)
     if Thread.isMainThread {
         MainActor.assumeIsolated { WindowBordersManager.shared.handleWindowMoved(windowId: windowId) }
     } else {
