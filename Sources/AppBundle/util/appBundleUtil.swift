@@ -34,6 +34,8 @@ func initTerminationHandler() {
             terminationHandler?.beforeTermination()
         }
     }
+    // macOS's App Intents daemon quits background apps it thinks it launched — refuse that one
+    QuitEventGuard.install()
     // Catchable process signals (debug *and* release). SIGKILL is uncatchable.
     interceptTermination(SIGINT)
     interceptTermination(SIGTERM)
