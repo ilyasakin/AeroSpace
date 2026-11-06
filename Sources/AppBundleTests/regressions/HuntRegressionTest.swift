@@ -25,6 +25,21 @@ final class HuntRegressionTest: XCTestCase {
         XCTAssertTrue(focus.windowOrNil === next)
     }
 
+    /// Safari on a hidden workspace answered its park with its old on-screen frame. The window
+    /// stayed marked as parked, so `hideInCorner` never tried again and it stayed visible on top of
+    /// every other workspace
+    func testAParkThatDidNotTakeIsRetried() async throws {
+        let hidden = Workspace.get(byName: "3")
+        XCTAssertFalse(hidden.isVisible)
+        let safari = TestWindow.new(id: 92, parent: hidden.rootTilingContainer)
+        safari.hiddenCorner = .bottomRightCorner
+        let corner = Rect(topLeftX: 2559, topLeftY: 1439, width: 1256, height: 1383)
+        let seq = safari.frame.wrote(corner, now: ProcessInfo.processInfo.systemUptime)
+        safari.frameAnswered(seq: seq, reported: Rect(topLeftX: 1304, topLeftY: 57, width: 1256, height: 1383))
+
+        XCTAssertNil(safari.hiddenCorner, "not parked: the next pass must park it again")
+    }
+
     func testAPopupDoesNotUseUpItsAppsRememberedPlacement() async throws {
         WindowMemory.rememberLastSession([(savedId: 50, workspace: "4", app: "app")])
         _ = try await registerDiscoveredWindow(windowId: 900, appBundleId: "app", frame: nil, windowType: .popup) { parent in

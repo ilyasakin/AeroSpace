@@ -258,6 +258,16 @@ extension Window {
                 // macOS refuses writes to a window it owns (native fullscreen, minimized): re-read
                 // that state before believing the window is still ours to place
                 invalidateMacosNativeWindowStateCache(windowId: windowId)
+                // A park that didn't take: the window is still on screen (an off-screen answer
+                // became `.landed` above). `hideInCorner` skips a window it believes is parked, so
+                // forget the corner — the next pass parks it again — and run that pass, a bounded
+                // number of times. Without this a Safari window whose park was dropped stayed
+                // visible over every other workspace.
+                if hiddenCorner != nil, nodeWorkspace?.isVisible == false {
+                    hiddenCorner = nil
+                    if frame.shouldResend { scheduleCancellableCompleteRefreshSession(.ax("park-missed")) }
+                    break
+                }
                 // A visible tile whose frame never landed (a busy app dropped it, or took the size
                 // before the move and lost it): its layout target is unchanged, so no pass would
                 // ever rewrite it. Re-send, a bounded number of times.
