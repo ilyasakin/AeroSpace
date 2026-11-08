@@ -94,6 +94,11 @@ focus-follows-mouse.enabled = false
 # Raise the hovered window; false keeps a floating window above the hovered tile (floats always raise)
 focus-follows-mouse.raise = false
 
+# Darken every window except the focused one (amount: percent, 0-90)
+# See https://nikitabobko.github.io/AeroSpace/guide#dim-inactive-windows
+dim-inactive-windows.enabled = false
+dim-inactive-windows.amount = 10
+
 # i3 'workspace_auto_back_and_forth': 'workspace X' while already on X goes back to the previous one
 workspace-auto-back-and-forth = false
 

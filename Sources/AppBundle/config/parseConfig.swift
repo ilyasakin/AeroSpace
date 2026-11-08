@@ -240,6 +240,7 @@ private let configParser: [String: any ParserProtocol<Config>] = [
     "window-borders": Parser(\.windowBorders, parseWindowBorders),
     "bar": Parser(\.statusBar, parseStatusBar),
     "focus-follows-mouse": Parser(\.focusFollowsMouse, parseFocusFollowsMouse),
+    "dim-inactive-windows": Parser(\.dimInactiveWindows, parseDimInactiveWindows),
     "floating": Parser(\.floating, parseFloating),
     "workspace-to-monitor-force-assignment": Parser(\.workspaceToMonitorForceAssignment, parseWorkspaceToMonitorAssignment),
     "on-window-detected": Parser(\.onWindowDetected, parseOnWindowDetectedArray),

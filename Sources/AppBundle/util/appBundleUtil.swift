@@ -76,6 +76,7 @@ private struct AppServerTerminationHandler: TerminationHandler {
         // We restore below; the crash watchdog must not move anything after we exit
         CrashWatchdog.stop()
 
+        WindowDimming.shared.undimAll()
         // Persist tiling before we start moving windows for quit.
         SessionLayoutStore.saveNow()
 

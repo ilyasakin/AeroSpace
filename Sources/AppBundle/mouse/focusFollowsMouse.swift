@@ -92,6 +92,7 @@ enum HoverFocus {
         FocusReconciler.noteRequested(window.windowId)
         // FFM light sessions skip sideUiBorders — still move the active border style
         WindowBordersManager.shared.syncActiveFocus()
+        WindowDimming.shared.refresh()
     }
 
     /// See `HoverFocusPolicy.reanchor`. Called after every non-hover session that changed focus

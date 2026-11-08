@@ -164,6 +164,22 @@ enum SkyLight {
         )
     }()
 
+    private typealias SetBrightnessFun = @convention(c) (Int32, UnsafePointer<UInt32>, UnsafePointer<Float>, Int32) -> Int32
+    private static let setWindowListBrightness: SetBrightnessFun? = {
+        guard let handle = unsafe dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY),
+              let sym = unsafe dlsym(handle, "SLSSetWindowListBrightness")
+        else { return nil }
+        return unsafe unsafeBitCast(sym, to: SetBrightnessFun.self)
+    }()
+
+    /// Darken windows of any app (0 = normal, -1 = black). Takes effect with SIP on and outlives
+    /// this process, so whoever dims must also undo it (verified on macOS 27.2)
+    static func setBrightness(_ windowIds: [UInt32], _ value: Float) {
+        guard !windowIds.isEmpty, let impl = unsafe impl, let set = unsafe setWindowListBrightness else { return }
+        let values = [Float](repeating: value, count: windowIds.count)
+        _ = unsafe set(impl.connection, windowIds, values, Int32(windowIds.count))
+    }
+
     /// nil = SkyLight unavailable or no such window. Thread-safe (a WindowServer read)
     static func windowInfo(_ windowId: UInt32) -> WindowInfo? {
         guard let impl = unsafe impl, let q = unsafe queryImpl else { return nil }

@@ -16,6 +16,7 @@ public enum CrashWatchdog {
               let parent = pid_t(arguments[i + 1])
         else { return }
         waitForExit(of: parent)
+        undimAllWindows()
         let moved = restoreParkedWindows()
         FileHandle.standardError.write("aerospace crash watchdog: parent \(parent) died, restored \(moved) windows\n".data(using: .utf8)!)
         exit(0)
@@ -52,6 +53,15 @@ public enum CrashWatchdog {
         guard kevent(kq, &change, 1, nil, 0, nil) == 0 else { return }
         var event = kevent()
         while kevent(kq, nil, 0, &event, 1, nil) < 0, errno == EINTR {}
+    }
+
+    /// `dim-inactive-windows` darkening outlives the process that set it
+    private static func undimAllWindows() {
+        let list = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let ids = list.compactMap { w -> UInt32? in
+            (w[kCGWindowLayer as String] as? Int) == 0 ? (w[kCGWindowNumber as String] as? Int).map(UInt32.init) : nil
+        }
+        SkyLight.setBrightness(ids, 0)
     }
 
     /// Returns how many windows were moved

@@ -459,6 +459,22 @@ With `raise = false` a hovered tile gets keyboard focus without being raised (pr
 `_SLPSSetFrontProcessWithOptions` + key-window events, no `AXRaise`), so a floating window over it
 stays visible — the i3 look. Where that private API is unavailable the window is raised normally.
 
+[#dim-inactive-windows]
+==== Dim inactive windows
+
+[source,toml]
+----
+[dim-inactive-windows]
+enabled = true
+# How much darker unfocused windows get, in percent (0-90, default 10)
+amount = 10
+----
+
+Every window on a visible workspace except the focused one is darkened by WindowServer (works with
+SIP enabled). After `focus parent`, all windows of the focused container count as focused. The
+windows are restored when AeroSpace quits, and by its crash watchdog if it dies. Dark windows darken
+noticeably more than light ones at the same amount.
+
 [#mouse-warping]
 ==== Mouse warping
 

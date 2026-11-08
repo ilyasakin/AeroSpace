@@ -341,6 +341,7 @@ enum SessionPipeline {
     /// Phase 8b — borders (must run after layout when layout ran this session)
     private static func phaseSideUiBorders() {
         WindowBordersManager.shared.refresh()
+        WindowDimming.shared.refresh()
         GroupTabBarManager.shared.refresh()
         StatusBarManager.shared.refresh()
     }

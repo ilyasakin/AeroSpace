@@ -75,6 +75,7 @@ struct Config: ConvenienceMutable {
     var execConfig: ExecConfig = ExecConfig()
     var focusFollowsMouse: FocusFollowsMouse = FocusFollowsMouse()
     var floating: FloatingConfig = FloatingConfig()
+    var dimInactiveWindows: DimInactiveWindows = DimInactiveWindows()
 
     var onFocusChanged: Shell<any Command> = .empty
     // var onFocusedWorkspaceChanged: [any Command] = []
@@ -88,6 +89,16 @@ struct Config: ConvenienceMutable {
     var onWindowDetected: [WindowDetectedCallback] = []
     var windowDetectionRules: [WindowDetectionRule] = []
     var onModeChanged: Shell<any Command> = .empty
+}
+
+/// Darken every window on screen except the focused one (WindowServer brightness; works with SIP
+/// on). `amount` is how much darker, in percent of WindowServer's range (0 – 90).
+struct DimInactiveWindows: ConvenienceMutable, Equatable {
+    var enabled: Bool = false
+    var amount: Int = 10
+
+    /// WindowServer brightness for an unfocused window: 0 is untouched, -1 black
+    var brightness: Float { -Float(min(max(amount, 0), 90)) / 100 }
 }
 
 struct FocusFollowsMouse: ConvenienceMutable {

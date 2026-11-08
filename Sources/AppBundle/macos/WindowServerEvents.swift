@@ -18,6 +18,12 @@ enum WindowServerEvents {
     }
 
     static func request(_ windowIds: [UInt32]) { SkyLight.requestNotifications(for: windowIds) }
+
+    /// See `SkyLight.setBrightness`
+    static func setBrightness(_ windowIds: [UInt32], _ value: Float) {
+        guard Headless.permits(.skyLightWindow) else { return }
+        SkyLight.setBrightness(windowIds, value)
+    }
     static func remove(_ windowIds: [UInt32]) { SkyLight.removeNotifications(for: windowIds) }
 
     static func currentSpaceIsFullscreen(_ displayId: CGDirectDisplayID) -> Bool {
