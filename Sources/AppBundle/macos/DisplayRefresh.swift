@@ -158,6 +158,8 @@ enum DisplayRefresh {
 @MainActor
 enum WorkspaceDisplayLink {
     private final class LinkState {
+        /// macOS 14+: the screen's CADisplayLink, firing on the main run loop
+        var screenLink: AnyObject?
         var link: CVDisplayLink?
         var subscribers: [UUID: () -> Void] = [:]
         var hz: Double = DisplayRefresh.fallbackHz
@@ -229,7 +231,7 @@ enum WorkspaceDisplayLink {
     }
 
     /// Fan-out vsync to subscribers (called from display-link C callback via main queue).
-    fileprivate static func pulse(displayId: CGDirectDisplayID) {
+    static func pulse(displayId: CGDirectDisplayID) {
         guard let state = states[displayId] else { return }
         for handler in state.subscribers.values {
             handler()
@@ -237,6 +239,16 @@ enum WorkspaceDisplayLink {
     }
 
     private static func startLink(displayId: CGDirectDisplayID, state: LinkState) {
+        // macOS 14+: the screen's own display link. It fires on the main run loop at vsync (no
+        // cross-thread hop), skips frames by itself while main is busy, and stops with the display
+        if #available(macOS 14.0, *), let screen = DisplayRefresh.nsScreen(forDisplayId: displayId) {
+            let target = ScreenLinkTarget(displayId: displayId)
+            let link = screen.displayLink(target: target, selector: #selector(ScreenLinkTarget.tick))
+            link.add(to: .main, forMode: .common)
+            state.hz = DisplayRefresh.hz(forScreen: screen)
+            state.screenLink = link
+            return
+        }
         var link: CVDisplayLink?
         guard CVDisplayLinkCreateWithCGDisplay(displayId, &link) == kCVReturnSuccess,
               let link
@@ -267,10 +279,22 @@ enum WorkspaceDisplayLink {
     }
 
     private static func stopLink(state: LinkState) {
+        if #available(macOS 14.0, *), let screenLink = state.screenLink as? CADisplayLink {
+            screenLink.invalidate()
+            state.screenLink = nil
+        }
         guard let link = state.link else { return }
         CVDisplayLinkStop(link)
         // Detach the callback so a link the system keeps alive briefly cannot pulse again.
         CVDisplayLinkSetOutputCallback(link, nil, nil)
         state.link = nil
     }
+}
+
+/// Selector target of a screen display link (it retains its target; `invalidate` releases it)
+@MainActor
+private final class ScreenLinkTarget: NSObject {
+    let displayId: CGDirectDisplayID
+    init(displayId: CGDirectDisplayID) { self.displayId = displayId }
+    @objc func tick() { WorkspaceDisplayLink.pulse(displayId: displayId) }
 }

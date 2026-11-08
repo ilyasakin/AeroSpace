@@ -44,4 +44,24 @@ final class DisplayRefreshTest: XCTestCase {
         // No crash; pulse count is best-effort (may be 0 if link was slow to start)
         _ = pulses
     }
+
+    /// The screen display link pulses on the main run loop at about the display's rate, and stops
+    /// with the last subscriber
+    func testPulsesArriveOnMainAndStopAfterUnsubscribe() async throws {
+        let id = CGMainDisplayID()
+        let sub = UUID()
+        var pulses = 0
+        var offMain = false
+        WorkspaceDisplayLink.subscribe(displayId: id, id: sub) {
+            if !Thread.isMainThread { offMain = true }
+            pulses += 1
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        WorkspaceDisplayLink.unsubscribe(displayId: id, id: sub)
+        let atStop = pulses
+        XCTAssertGreaterThan(atStop, 5, "~0.3 s of vsync")
+        XCTAssertFalse(offMain)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(pulses, atStop, "no pulses after the last subscriber left")
+    }
 }
