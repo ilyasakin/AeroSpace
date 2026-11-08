@@ -17,7 +17,9 @@ public func menuBar(viewModel: TrayMenuModel) -> some Scene { // todo should it 
                 Button {
                     runUiCommand(["reload-config", "--warnings-as-errors"])
                 } label: {
+                    // macOS 27 hides menu item symbol images by default; the warning sign is the point
                     Label("Config contains warnings...", systemImage: "exclamationmark.triangle.fill")
+                        .labelStyle(.titleAndIcon)
                 }
                 Divider()
             }
