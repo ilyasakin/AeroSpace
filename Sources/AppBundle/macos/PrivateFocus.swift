@@ -87,8 +87,12 @@ enum PrivateFocus {
         case focusNext
     }
 
+    /// The records say they are 0xF8 bytes, but WindowServer (macOS 14.7.4+) reads past that:
+    /// the buffer is larger and zeroed so the overread sees zeros, not heap garbage
+    static let eventBufferSize = 0x100
+
     static func sameAppSwitchEventBytes(windowId: UInt32, phase: SameAppPhase) -> [UInt8] {
-        var bytes = [UInt8](repeating: 0, count: 0xF8)
+        var bytes = [UInt8](repeating: 0, count: eventBufferSize)
         bytes[0x04] = 0xF8
         bytes[0x08] = 0x0D
         bytes[0x8A] = phase == .unfocusPrevious ? 0x02 : 0x01
@@ -96,14 +100,28 @@ enum PrivateFocus {
         return bytes
     }
 
-    static func makeKeyWindowEventBytes(windowId: UInt32, phase: UInt8) -> [UInt8] {
-        var bytes = [UInt8](repeating: 0, count: 0xF8)
+    /// Where the synthetic make-key "click" lands: far outside every display. NaN (the old value)
+    /// is cleaned to (0, 0) by some apps, which then click whatever is there; a point just outside
+    /// the window lands on its resize edge and macOS 27 resizes it.
+    static let makeKeyEventLocation = CGPoint(x: 300_000, y: 300_000)
+
+    /// A mouse-down record only: the down already makes the window key, and a down/up pair is a
+    /// full click that a control under the point would act on
+    static func makeKeyWindowEventBytes(windowId: UInt32) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: eventBufferSize)
         bytes[0x04] = 0xF8
-        bytes[0x08] = phase // 0x01 down, 0x02 up
+        bytes[0x08] = 0x01 // mouse down
         bytes[0x3A] = 0x10
-        for i in 0x20 ..< 0x30 { bytes[i] = 0xFF }
+        writeFloat64(&bytes, at: 0x20, Double(makeKeyEventLocation.x))
+        writeFloat64(&bytes, at: 0x28, Double(makeKeyEventLocation.y))
         writeWindowId(&bytes, windowId)
         return bytes
+    }
+
+    private static func writeFloat64(_ bytes: inout [UInt8], at offset: Int, _ value: Double) {
+        unsafe withUnsafeBytes(of: value.bitPattern.littleEndian) { raw in
+            for i in 0 ..< 8 { bytes[offset + i] = raw[i] }
+        }
     }
 
     struct ProcessSerialNumberBits: Equatable {
@@ -112,8 +130,7 @@ enum PrivateFocus {
     }
 
     private static func makeKeyWindow(_ windowId: UInt32, _ psn: ProcessSerialNumberBits, _ impl: Impl) {
-        post(makeKeyWindowEventBytes(windowId: windowId, phase: 0x01), psn, impl)
-        post(makeKeyWindowEventBytes(windowId: windowId, phase: 0x02), psn, impl)
+        post(makeKeyWindowEventBytes(windowId: windowId), psn, impl)
     }
 
     private static func writeWindowId(_ bytes: inout [UInt8], _ windowId: UInt32) {
