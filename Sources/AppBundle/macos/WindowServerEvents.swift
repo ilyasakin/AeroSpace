@@ -2,7 +2,7 @@ import AppKit
 import Common
 import CoreGraphics
 
-/// WindowServer move/resize events for managed windows (SkyLight notify 806/807), plus the display
+/// WindowServer events for managed windows (move/resize, shown/hidden, destroyed), plus the display
 /// facts the side UI needs. The one place these private calls happen.
 @MainActor
 enum WindowServerEvents {
@@ -33,12 +33,36 @@ enum WindowServerEvents {
 /// WindowServer move/resize callback (runs on the thread that registered it - the main thread).
 /// `data` points to the moved window's CGWindowID. SkyLight hands over a datagram buffer that is
 /// not always 4-byte aligned, and `load(as:)` traps on a misaligned pointer, so read it unaligned.
-private let windowServerEventProc: SkyLight.NotifyProc = { _, data, _, _ in
+private let windowServerEventProc: SkyLight.NotifyProc = { event, data, _, _ in
     guard let data else { return }
     let windowId = data.loadUnaligned(as: UInt32.self)
     if Thread.isMainThread {
-        MainActor.assumeIsolated { WindowBordersManager.shared.handleWindowMoved(windowId: windowId) }
+        MainActor.assumeIsolated { WindowServerEvents.handle(event: event, windowId: windowId) }
     } else {
-        DispatchQueue.main.async { WindowBordersManager.shared.handleWindowMoved(windowId: windowId) }
+        DispatchQueue.main.async { WindowServerEvents.handle(event: event, windowId: windowId) }
+    }
+}
+
+extension WindowServerEvents {
+    enum Reaction: Equatable { case repaintBorder, refresh, ignore }
+
+    /// Move/resize repaint the border. Shown/hidden/destroyed of a tracked window re-run discovery:
+    /// a backup for AX notifications an app posts late or never (a busy app, a crashed helper).
+    static func reaction(event: UInt32, isTracked: Bool) -> Reaction {
+        switch SkyLight.WindowEvent(rawValue: event) {
+            case .move, .resize: .repaintBorder
+            case .destroyed, .shown, .hidden: isTracked ? .refresh : .ignore
+            case nil: .ignore
+        }
+    }
+
+    static func handle(event: UInt32, windowId: UInt32) {
+        switch reaction(event: event, isTracked: Window.get(byId: windowId) != nil) {
+            case .repaintBorder: WindowBordersManager.shared.handleWindowMoved(windowId: windowId)
+            case .refresh:
+                let name = SkyLight.WindowEvent(rawValue: event).map { "\($0)" } ?? "\(event)"
+                onAxWindowListChanged(notif: "ws-\(name)")
+            case .ignore: break
+        }
     }
 }

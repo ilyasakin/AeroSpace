@@ -58,7 +58,10 @@ enum SkyLight {
     }()
 
     /// WindowServer event ids (from JankyBorders' reverse-engineered set)
-    enum WindowEvent: UInt32 { case move = 806, resize = 807 }
+    /// Delivered for other processes' windows too once requested (verified on macOS 27.2 with a
+    /// two-process probe). 815/816 also fire for minimize, app hide and close; 804 when the window
+    /// is gone for good, even if its app never posts the AX notification.
+    enum WindowEvent: UInt32, CaseIterable { case destroyed = 804, move = 806, resize = 807, shown = 815, hidden = 816 }
 
     @unsafe private struct Impl {
         let connection: Int32
@@ -225,7 +228,7 @@ enum SkyLight {
     @MainActor static func registerWindowEvents(_ proc: @escaping NotifyProc) {
         guard Headless.permits(.windowServerNotifications) else { return }
         guard let impl = unsafe impl, let register = unsafe impl.registerNotifyProc else { return }
-        for event in [WindowEvent.move, .resize] {
+        for event in WindowEvent.allCases {
             _ = unsafe register(proc, event.rawValue, nil)
         }
     }
