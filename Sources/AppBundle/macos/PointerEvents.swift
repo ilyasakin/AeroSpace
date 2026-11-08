@@ -10,7 +10,32 @@ enum PointerEvents {
     private static var fallbackMonitor: Any?
     private static var onMove: (@MainActor (HoverSample) -> Void)?
 
+    private static var healthTimer: Timer?
+
     static var isObserving: Bool { tap != nil || fallbackMonitor != nil }
+
+    enum TapHealth: Equatable { case ok, reenable, recreate }
+
+    /// macOS can disable a tap without the disabled-event callback ever arriving (it is delivered
+    /// through the same tap), or invalidate its port; hover focus then silently stops
+    static func tapHealth(portIsValid: Bool, isEnabled: Bool) -> TapHealth {
+        if !portIsValid { return .recreate }
+        return isEnabled ? .ok : .reenable
+    }
+
+    private static func checkTapHealth() {
+        guard let port = tap, let handler = onMove else { return }
+        switch tapHealth(portIsValid: CFMachPortIsValid(port), isEnabled: CGEvent.tapIsEnabled(tap: port)) {
+            case .ok: return
+            case .reenable:
+                FrameTrace.log("event-tap was disabled; re-enabled")
+                CGEvent.tapEnable(tap: port, enable: true)
+            case .recreate:
+                FrameTrace.log("event-tap port invalidated; recreated")
+                stopObserving()
+                startObserving(handler)
+        }
+    }
 
     /// Deliver every pointer move to `handler`. Listen-only: events are never altered or swallowed.
     static func startObserving(_ handler: @escaping @MainActor (HoverSample) -> Void) {
@@ -30,6 +55,12 @@ enum PointerEvents {
             tapSource = source
             CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
             CGEvent.tapEnable(tap: port, enable: true)
+            let timer = Timer(timeInterval: 5, repeats: true) { _ in
+                Task { @MainActor in checkTapHealth() }
+            }
+            timer.tolerance = 1
+            RunLoop.main.add(timer, forMode: .common)
+            healthTimer = timer
         } else {
             fallbackMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { _ in
                 MainActor.assumeIsolated {
@@ -41,6 +72,8 @@ enum PointerEvents {
     }
 
     static func stopObserving() {
+        healthTimer?.invalidate()
+        healthTimer = nil
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
             CFMachPortInvalidate(tap)
