@@ -55,8 +55,6 @@ func applyMouseWarping(_ focus: LiveFocus, focusedMonitorChanged: Bool) {
         focusedMonitorChanged: focusedMonitorChanged,
     ) else { return }
     // A warp posts no mouse event, so it can't feed back into hover focus
-    if Headless.permits(.synthesizeInput) {
-        CGWarpMouseCursorPosition(target)
-    }
+    PointerEvents.warpCursor(to: target)
     HoverFocusPolicy.reanchor(&HoverFocus.state, windowUnderPointer: window?.windowId)
 }

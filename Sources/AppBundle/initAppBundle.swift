@@ -9,6 +9,7 @@ import Foundation
         initServerArgs()
         await waitForAccessibilityPermission_nonCancellable()
         SystemServices.configureAccessibilityClient()
+        SystemServices.configureInputLatency()
         if isDebug {
             await toggleReleaseServerIfDebug(.off)
         }

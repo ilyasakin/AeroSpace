@@ -12,6 +12,30 @@ enum SystemServices {
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2.0)
     }
 
+    /// Process-wide input and scheduling settings for a latency-bound window manager.
+    /// - After a cursor warp macOS mutes local mouse events for 0.25 s, so the pointer freezes after
+    ///   every `move-mouse`/mouse-warping warp. Interval 0 on the session source drops that freeze
+    ///   (see also `PointerEvents.warpCursor`).
+    /// - App Nap throttles timers of a background-only app; a window manager is never "idle".
+    /// Returns which settings were applied, for tests.
+    @discardableResult
+    static func configureInputLatency() -> [String] {
+        var applied: [String] = []
+        if Headless.permits(.synthesizeInput) {
+            CGEventSource(stateID: .combinedSessionState)?.localEventsSuppressionInterval = 0
+            applied.append("eventSuppression")
+        }
+        if Headless.permits(.systemSettings) {
+            appNapActivity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .latencyCritical],
+                reason: "Window manager reacts to input and window events",
+            )
+            applied.append("appNap")
+        }
+        return applied
+    }
+    private static var appNapActivity: (any NSObjectProtocol)?
+
     /// The `skylight-reads` config flag: whether frame reads may use WindowServer instead of AX
     static func setWindowServerReadsEnabled(_ enabled: Bool) {
         unsafe SkyLight.readsEnabled = enabled

@@ -81,4 +81,10 @@ final class HeadlessSandboxTest: XCTestCase {
         }
         XCTAssertTrue(WindowServerReads.current.onScreenSnapshot().normalStack.isEmpty)
     }
+
+    func testInputLatencySettingsAreRefused() {
+        XCTAssertEqual(SystemServices.configureInputLatency(), [])
+        XCTAssertEqual(Headless.blockedAttempts[.synthesizeInput], 1)
+        XCTAssertEqual(Headless.blockedAttempts[.systemSettings], 1)
+    }
 }

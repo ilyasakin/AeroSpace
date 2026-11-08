@@ -108,6 +108,8 @@ final class MacApp: AbstractApp {
             }
         }
         thread.name = "AxAppThread \(nsApp.idForDebug)"
+        // AX replies gate every layout pass: run app threads at the main thread's priority
+        thread.qualityOfService = .userInteractive
         thread.start()
 
         try await wip.await()

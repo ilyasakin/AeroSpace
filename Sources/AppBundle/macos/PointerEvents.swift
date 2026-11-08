@@ -59,6 +59,14 @@ enum PointerEvents {
 
     fileprivate static func deliver(_ sample: HoverSample) { onMove?(sample) }
 
+    /// Move the cursor without posting an event. Re-associating right after keeps the pointer
+    /// responsive: a bare warp mutes the user's mouse for a moment.
+    static func warpCursor(to point: CGPoint) {
+        guard Headless.permits(.synthesizeInput) else { return }
+        CGWarpMouseCursorPosition(point)
+        CGAssociateMouseAndMouseCursorPosition(1)
+    }
+
     /// Move the cursor, tagged so hover focus can tell AeroSpace's own motion from the user's.
     /// False = the event could not be created.
     static func warp(to point: CGPoint) -> Bool {
@@ -69,6 +77,8 @@ enum PointerEvents {
             mouseButton: CGMouseButton.left,
         ) else { return false }
         event.setIntegerValueField(.eventSourceUserData, value: HoverFocus.syntheticEventTag)
+        // Don't carry the modifiers the user holds for the hotkey into the synthetic event
+        event.flags = []
         if Headless.permits(.synthesizeInput) {
             event.post(tap: CGEventTapLocation.cghidEventTap)
         }
