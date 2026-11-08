@@ -73,6 +73,8 @@ private struct AppServerTerminationHandler: TerminationHandler {
         // Menu + willTerminate + signals can all fire; only restore once.
         if Self.didRun { return }
         Self.didRun = true
+        // We restore below; the crash watchdog must not move anything after we exit
+        CrashWatchdog.stop()
 
         // Persist tiling before we start moving windows for quit.
         SessionLayoutStore.saveNow()

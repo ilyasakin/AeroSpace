@@ -10,6 +10,7 @@ struct AeroSpaceApp: App {
     @Environment(\.openWindow) var openWindow: OpenWindowAction
 
     init() {
+        CrashWatchdog.runIfRequested() // watchdog mode never returns
         initAppBundle()
     }
 

@@ -10,6 +10,7 @@ import Foundation
         await waitForAccessibilityPermission_nonCancellable()
         SystemServices.configureAccessibilityClient()
         SystemServices.configureInputLatency()
+        CrashWatchdog.start()
         if isDebug {
             await toggleReleaseServerIfDebug(.off)
         }
