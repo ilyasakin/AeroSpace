@@ -17,6 +17,13 @@ protocol WindowServerReadPort: AnyObject {
     /// Session on-screen list (levels + layer-0 stack). Production scans at most once per
     /// invalidate; test doubles return a fixed snapshot.
     func onScreenSnapshot() -> OnScreenWindowSnapshot
+
+    /// The corner radius WindowServer draws the window with (nil = unknown)
+    func cornerRadius(windowId: UInt32) -> Double?
+}
+
+extension WindowServerReadPort {
+    func cornerRadius(windowId _: UInt32) -> Double? { nil }
 }
 
 /// Process-wide install point. Default is production. Tests call `install` / `install(nil)` to reset.
@@ -60,6 +67,8 @@ final class ProductionWindowServerReads: WindowServerReadPort {
     func onScreenSnapshot() -> OnScreenWindowSnapshot {
         productionOnScreenWindowSnapshot()
     }
+
+    func cornerRadius(windowId: UInt32) -> Double? { SkyLight.windowInfo(windowId)?.cornerRadius }
 }
 
 /// Merge a partial frame write into the last applied rect.

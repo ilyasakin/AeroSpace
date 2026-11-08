@@ -28,6 +28,8 @@ final class WindowBordersManager {
     private var rects: [UInt32: Rect] = [:]
     /// Per-window chrome class for corner-radius probes (plain vs toolbar). Filled async once.
     private var chromeCache: [UInt32: WindowCornerRadius.Chrome] = [:]
+    /// The radius WindowServer reports per window (read once; see `SkyLight.WindowInfo.cornerRadius`)
+    private var windowServerRadius: [UInt32: Int] = [:]
     /// Session-persistent chrome per app bundle id. Seeds a new window's *first* paint with the
     /// app's known chrome so it doesn't flash the .plain radius before the async probe corrects it
     /// — the flicker that hit every new window and every workspace return (per-window cache is
@@ -97,6 +99,7 @@ final class WindowBordersManager {
         // Chrome is a property of the window, not of being visible: kept until the window is gone
         // (dropping it on every workspace switch re-probed every window on every return)
         for id in chromeCache.keys where Window.get(byId: id) == nil { chromeCache.removeValue(forKey: id) }
+        for id in windowServerRadius.keys where Window.get(byId: id) == nil { windowServerRadius.removeValue(forKey: id) }
         for id in lastStackNeighbor.keys where !seen.contains(id) { lastStackNeighbor.removeValue(forKey: id) }
         requestWindowServerNotifications()
     }
@@ -207,6 +210,15 @@ final class WindowBordersManager {
             return
         }
         let appId = window.app.rawAppBundleId
+        // WindowServer knows the radius it draws the window with: no chrome probe, no deferred
+        // first paint. The AX chrome probe below stays as the fallback
+        if cfg.detectCornerRadius, !cfg.hasCornerRadiusOverride(forAppId: appId), let radius = resolvedWindowServerRadius(id) {
+            ensureEntry(id)
+            guard let entry = entries[id] else { return }
+            rects[id] = rect
+            commitPaint(id: id, window: window, entry: entry, rect: rect, cfg: cfg, radius: radius, reorder: reorder)
+            return
+        }
         // This window's probed chrome, else the app's known chrome from a prior probe.
         let knownChrome = chromeCache[id] ?? appId.flatMap { chromeByApp[$0] }
         // Radius depends on chrome (plain vs toolbar). If detection is on and the chrome is not yet
@@ -225,12 +237,24 @@ final class WindowBordersManager {
         ensureEntry(id)
         guard let entry = entries[id] else { return }
         rects[id] = rect
+        commitPaint(id: id, window: window, entry: entry, rect: rect, cfg: cfg,
+                    radius: cfg.cornerRadius(forAppId: appId, chrome: knownChrome ?? .plain), reorder: reorder)
+    }
+
+    private func resolvedWindowServerRadius(_ id: UInt32) -> Int? {
+        if let cached = windowServerRadius[id] { return cached }
+        guard let radius = WindowServerReads.current.cornerRadius(windowId: id) else { return nil }
+        let rounded = Int(radius.rounded())
+        windowServerRadius[id] = rounded
+        return rounded
+    }
+
+    private func commitPaint(id: UInt32, window: Window, entry: BorderWindow, rect: Rect, cfg: WindowBorders, radius: Int, reorder: Bool) {
         // Read from the model at paint time (the manager used to keep its own copy of focus): the
         // focused window, or every window of the focused container after `focus parent`
         let isActive = id == focus.windowOrNil?.windowId
             || focus.focusedNode?.allLeafWindowsRecursive.contains { $0.windowId == id } == true
         let style = isActive ? cfg.resolvedActiveStyle() : cfg.resolvedInactiveStyle()
-        let radius = cfg.cornerRadius(forAppId: appId, chrome: knownChrome ?? .plain)
         // Reorder policy: floats reorder on request (they restack on raise). Tiles reorder only
         // when their WindowServer stack POSITION actually changed since the last refresh
         // (accordion cycle, cmd-tab raise) — reordering every tile on every refresh flashed on

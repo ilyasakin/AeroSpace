@@ -131,3 +131,14 @@ final class SkyLightTest: XCTestCase {
         XCTAssertLessThan(total, 16667, "a full snapshot must at least fit inside one frame")
     }
 }
+
+final class SkyLightWindowInfoTest: XCTestCase {
+    func testAnUnknownWindowHasNoInfo() {
+        XCTAssertNil(SkyLight.windowInfo(0xFFFF_FFF0))
+    }
+
+    func testTheMinimizedTagIsBit60() {
+        XCTAssertTrue(SkyLight.WindowInfo(parentId: 0, tags: 0x1300_0001_0048_0001, attributes: 1).isMinimized) // minimized alacritty, macOS 27.2
+        XCTAssertFalse(SkyLight.WindowInfo(parentId: 0, tags: 0x0300_0401_0008_2401, attributes: 3).isMinimized)
+    }
+}

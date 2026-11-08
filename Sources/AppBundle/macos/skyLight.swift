@@ -115,6 +115,10 @@ enum SkyLight {
         let parentId: UInt32
         let tags: UInt64
         let attributes: UInt64
+        /// The corner radius WindowServer draws the window with (nil = unavailable). For our own
+        /// windows it equals NSThemeFrame's `_cornerRadius` (16 for plain and toolbar windows on
+        /// macOS 27.2), so it is the real value for any app's window, no chrome guessing needed
+        var cornerRadius: Double? = nil
         /// Tag bit 60: minimized (verified on macOS 27.2)
         var isMinimized: Bool { tags & (1 << 60) != 0 }
     }
@@ -124,6 +128,8 @@ enum SkyLight {
     private typealias IteratorAdvanceFun = @convention(c) (CFTypeRef) -> Bool
     private typealias IteratorU32Fun = @convention(c) (CFTypeRef) -> UInt32
     private typealias IteratorU64Fun = @convention(c) (CFTypeRef) -> UInt64
+    /// Returns the radii in the first two doubles (a 4-double HFA in d0–d3; CGRect matches it)
+    private typealias IteratorRadiiFun = @convention(c) (CFTypeRef) -> CGRect
 
     @unsafe private struct QueryImpl {
         let query: QueryWindowsFun
@@ -133,6 +139,7 @@ enum SkyLight {
         let parentId: IteratorU32Fun
         let tags: IteratorU64Fun
         let attributes: IteratorU64Fun
+        let cornerRadii: IteratorRadiiFun?
     }
 
     private static let queryImpl: QueryImpl? = {
@@ -153,6 +160,7 @@ enum SkyLight {
             parentId: unsafeBitCast(p, to: IteratorU32Fun.self),
             tags: unsafeBitCast(t, to: IteratorU64Fun.self),
             attributes: unsafeBitCast(at, to: IteratorU64Fun.self),
+            cornerRadii: dlsym(handle, "SLSWindowIteratorGetResolvedCornerRadii").map { unsafe unsafeBitCast($0, to: IteratorRadiiFun.self) },
         )
     }()
 
@@ -165,7 +173,13 @@ enum SkyLight {
         else { return nil }
         while unsafe q.advance(iterator) {
             guard unsafe q.windowId(iterator) == windowId else { continue }
-            return unsafe WindowInfo(parentId: q.parentId(iterator), tags: q.tags(iterator), attributes: q.attributes(iterator))
+            let radius = unsafe q.cornerRadii.map { unsafe $0(iterator).origin.x }
+            return unsafe WindowInfo(
+                parentId: q.parentId(iterator),
+                tags: q.tags(iterator),
+                attributes: q.attributes(iterator),
+                cornerRadius: radius.flatMap { $0.isFinite && $0 >= 0 && $0 <= 64 ? $0 : nil },
+            )
         }
         return nil
     }
