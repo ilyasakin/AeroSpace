@@ -35,6 +35,7 @@ final class SimulatedMacOS: MacOSPort {
         frameWrites = []
         windowTypes = [:]
         maxSize = [:]
+        minSize = [:]
         answersBeforeResizing = []
         aspectRatio = [:]
     }
@@ -53,6 +54,8 @@ final class SimulatedMacOS: MacOSPort {
 
     /// Apps that won't go beyond a size (terminal/video style): the write lands clamped
     var maxSize: [UInt32: CGSize] = [:]
+    /// Apps with a minimum window size: they refuse to shrink below it
+    var minSize: [UInt32: CGSize] = [:]
     /// Apps that resize asynchronously (Electron): they answer with the OLD frame, then get there
     var answersBeforeResizing: Set<UInt32> = []
     /// Apps that keep an aspect ratio (video): height follows width
@@ -68,6 +71,10 @@ final class SimulatedMacOS: MacOSPort {
         if let max = maxSize[windowId] {
             width = min(width, max.width)
             height = min(height, max.height)
+        }
+        if let min = minSize[windowId] {
+            width = max(width, min.width)
+            height = max(height, min.height)
         }
         if let ratio = aspectRatio[windowId] { height = min(height, width / ratio) }
         let landed = Rect(topLeftX: topLeft?.x ?? old.topLeftX, topLeftY: topLeft?.y ?? old.topLeftY, width: width, height: height)

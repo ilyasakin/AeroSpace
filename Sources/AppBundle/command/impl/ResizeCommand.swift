@@ -83,6 +83,7 @@ struct ResizeCommand: Command {
         // can't keep the window pinned; it re-learns if it still refuses to grow.
         for window in node.allLeafWindowsRecursive {
             window.learnedMaxSize = nil
+            window.learnedMinSize = nil
         }
         return .succ
     }

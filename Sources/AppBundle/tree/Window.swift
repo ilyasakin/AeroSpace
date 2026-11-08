@@ -51,6 +51,10 @@ open class Window: TreeNode, Hashable {
     /// DIFFERENT request: an aspect-locked video's height follows its width, a terminal rounds each
     /// size to its cell grid — neither is a maximum, and a one-off answer latched them as caps
     var capCandidate: (target: Rect, actual: Rect)? = nil
+    /// Learned minimum size: the window refused, twice, to shrink below it (macOS has no
+    /// min-size AX attribute either). Its tile gets at least this; siblings give up the space
+    var learnedMinSize: CGSize? = nil
+    var floorCandidate: (target: Rect, actual: Rect)? = nil
     /// True only when the USER explicitly floated this window via `layout floating` (alt-shift-space).
     /// Auto-classified floats (dialogs, OAuth popups, panels bound to the floating container by
     /// window detection) are NOT user floats. The i3-style float quirks — click-without-raise

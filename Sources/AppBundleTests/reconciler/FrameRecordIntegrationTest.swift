@@ -33,6 +33,27 @@ final class FrameRecordIntegrationTest: XCTestCase {
         XCTAssertEqual(SimulatedMacOS.shared.frameWrites.filter { $0.windowId == 1 }.count, writesToCapped, "no re-asking")
     }
 
+    /// An app with a minimum width overflowed into its sibling: twice refused, it becomes a floor
+    func testAnAppThatWontShrinkGetsItsMinimumAndSiblingsGiveWay() async throws {
+        WindowServerReads.install(SimulatedWindowServer())
+        FrameRecord.appSizeSettleSeconds = 0
+        let root = focus.workspace.rootTilingContainer
+        let wide = TestWindow.new(id: 1, parent: root)
+        let second = TestWindow.new(id: 2, parent: root)
+        SimulatedMacOS.shared.minSize[1] = CGSize(width: 900, height: 0)
+        TestWindow.new(id: 3, parent: root)
+        try await HeadlessHarness.run(["balance-sizes", "balance-sizes"])
+        XCTAssertNil(wide.learnedMinSize, "one answer is not a floor")
+        let fourth = TestWindow.new(id: 4, parent: root)
+        try await HeadlessHarness.run(["balance-sizes", "balance-sizes"])
+        XCTAssertEqual(wide.learnedMinSize?.width, 900)
+        let wideRect = try XCTUnwrap(wide.laidOutRect)
+        let secondRect = try XCTUnwrap(second.laidOutRect)
+        XCTAssertGreaterThanOrEqual(wideRect.width, 900)
+        XCTAssertGreaterThanOrEqual(secondRect.topLeftX, wideRect.topLeftX + wideRect.width - 1, "no overlap")
+        XCTAssertGreaterThan(fourth.laidOutRect?.width ?? 0, 100)
+    }
+
     /// A learned cap must be able to relax: the capped tile is never asked for more, so it is never
     /// seen larger. A changed slot asks again; a still-capped app re-confirms on its first answer
     func testALearnedCapIsAskedAgainWhenItsSlotChanges() async throws {

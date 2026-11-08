@@ -58,4 +58,30 @@ final class TilesConstraintsTest: XCTestCase {
         XCTAssertFalse(tileCapsAreActive([nil, nil]))
         XCTAssertTrue(tileCapsAreActive([nil, 200]))
     }
+
+    func testAFloorTakesFromItsSiblings() {
+        let spans = waterfillTileSpans(weights: [1, 1, 1], caps: [nil, nil, nil], floors: [600, nil, nil], span: 1200)
+        XCTAssertEqual(spans[0], 600, accuracy: 0.01)
+        XCTAssertEqual(spans[1], 300, accuracy: 0.01)
+        XCTAssertEqual(spans[2], 300, accuracy: 0.01)
+    }
+
+    func testAFloorBelowTheShareIsInert() {
+        let spans = waterfillTileSpans(weights: [1, 1], caps: [nil, nil], floors: [300, nil], span: 1200)
+        XCTAssertEqual(spans, [600, 600])
+    }
+
+    func testFloorsThatCannotFitAreIgnored() {
+        let spans = waterfillTileSpans(weights: [1, 1], caps: [nil, nil], floors: [900, 900], span: 1200)
+        XCTAssertEqual(spans, [600, 600])
+    }
+
+    func testFloorsAndCapsTogether() {
+        // 0 needs 500, 1 can't exceed 200: 2 gets the rest
+        let spans = waterfillTileSpans(weights: [1, 1, 1], caps: [nil, 200, nil], floors: [500, nil, nil], span: 1200)
+        XCTAssertEqual(spans[0], 500, accuracy: 0.01)
+        XCTAssertEqual(spans[1], 200, accuracy: 0.01)
+        XCTAssertEqual(spans[2], 500, accuracy: 0.01)
+        XCTAssertEqual(spans.reduce(0, +), 1200, accuracy: 0.01)
+    }
 }

@@ -333,6 +333,43 @@ extension Window {
     }
 }
 
+@MainActor
+extension Window {
+    /// The mirror of `confirmLearnedCap`: a tile whose app answered LARGER than asked — and still
+    /// is, per WindowServer — overlaps its sibling. Confirmed by a second, different request
+    /// answered with the same size, it becomes a floor the render honors.
+    func confirmLearnedFloor() {
+        guard parent is TilingContainer, currentlyManipulatedWithMouseWindowId == nil,
+              let (target, actual) = frame.settledAppSize(now: ProcessInfo.processInfo.systemUptime),
+              let live = WindowServerReads.current.windowBounds(windowId: windowId, forOverlay: true),
+              FrameRecord.near(live, actual),
+              let observed = learnedFloor(target: target, actual: actual)
+        else { return }
+        let tol: CGFloat = 2
+        let confirmedWidth = observed.width > 0 && floorCandidate.map {
+            abs($0.target.width - target.width) > 24 && abs($0.actual.width - actual.width) <= tol
+        } == true
+        let confirmedHeight = observed.height > 0 && floorCandidate.map {
+            abs($0.target.height - target.height) > 24 && abs($0.actual.height - actual.height) <= tol
+        } == true
+        guard confirmedWidth || confirmedHeight else {
+            if floorCandidate.map({ !FrameRecord.near($0.target, target) }) ?? true { floorCandidate = (target, actual) }
+            return
+        }
+        let floor = CGSize(width: confirmedWidth ? observed.width : 0, height: confirmedHeight ? observed.height : 0)
+        guard floor != learnedMinSize else { return }
+        learnedMinSize = floor
+        FrameTrace.log("learned-floor \(windowId) floor=\(fmt(floor.width))x\(fmt(floor.height)) target=\(fmt(target)) actual=\(fmt(actual))")
+    }
+}
+
+/// A dimension the app answered meaningfully LARGER than asked has a floor; 0 = none there
+func learnedFloor(target: Rect, actual: Rect, tolerance: CGFloat = 24) -> CGSize? {
+    let w: CGFloat = actual.width > target.width + tolerance ? actual.width : 0
+    let h: CGFloat = actual.height > target.height + tolerance ? actual.height : 0
+    return w > 0 || h > 0 ? CGSize(width: w, height: h) : nil
+}
+
 /// A dimension the app answered meaningfully smaller than asked is capped; `.infinity` = no cap
 /// there. Small differences (terminal cell rounding) are not caps.
 func learnedCap(target: Rect, actual: Rect, tolerance: CGFloat = 24) -> CGSize? {

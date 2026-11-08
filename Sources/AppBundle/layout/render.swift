@@ -38,6 +38,7 @@ func render(_ workspace: Workspace, spine: PersistentTilingNode, ignoringCaps: B
         accordionMode: config.accordionMode,
         accordionPadding: CGFloat(config.accordionPadding),
         maxSize: { ignoringCaps ? nil : Window.get(byId: $0)?.learnedMaxSize },
+        minSize: { Window.get(byId: $0)?.learnedMinSize },
     )
     renderer.node(spine, physical: physical, virtual: rect)
     return WorkspaceRender(physical: physical, virtual: rect, tiles: renderer.tiles)
@@ -50,6 +51,7 @@ private struct TilingRenderer {
     let accordionMode: AccordionMode
     let accordionPadding: CGFloat
     let maxSize: (UInt32) -> CGSize?
+    let minSize: (UInt32) -> CGSize?
     var tiles: [TileRender] = []
 
     mutating func node(_ node: PersistentTilingNode, physical: Rect, virtual: Rect) {
@@ -104,8 +106,14 @@ private struct TilingRenderer {
             let dim = orientation == .h ? max.width : max.height
             return dim.isFinite ? dim + rawGap : nil
         }
-        let slotSpans = tileCapsAreActive(caps)
-            ? waterfillTileSpans(weights: flooredSpans, caps: caps, span: span)
+        // A window with a learned min size gets at least that (+ a gap): it would overlap otherwise
+        let floors: [CGFloat?] = children.map { child in
+            guard case .window(let id, _) = child, let min = minSize(id) else { return nil }
+            let dim = orientation == .h ? min.width : min.height
+            return dim > 0 ? dim + rawGap : nil
+        }
+        let slotSpans = tileCapsAreActive(caps) || tileCapsAreActive(floors)
+            ? waterfillTileSpans(weights: flooredSpans, caps: caps, floors: floors, span: span)
             : flooredSpans
 
         // Capped windows that can't fill the span with no growable sibling: centre the row so the

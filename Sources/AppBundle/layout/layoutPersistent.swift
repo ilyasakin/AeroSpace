@@ -20,7 +20,10 @@ extension Workspace {
     func layoutWorkspace(skipFloating: Bool = false) async throws {
         if isEffectivelyEmpty { return }
         let windows = rootTilingContainer.allLeafWindowsRecursive
-        for window in windows { window.confirmLearnedCap() }
+        for window in windows {
+            window.confirmLearnedCap()
+            window.confirmLearnedFloor()
+        }
         let spine = currentTilingSpine()
         if windows.contains(where: { $0.learnedMaxSize != nil }) {
             for tile in render(self, spine: spine, ignoringCaps: true).tiles {
@@ -85,6 +88,17 @@ extension Rect? {
         let maxX = max(self.topLeftX + self.width, other.topLeftX + other.width)
         let maxY = max(self.topLeftY + self.height, other.topLeftY + other.height)
         return Rect(topLeftX: minX, topLeftY: minY, width: maxX - minX, height: maxY - minY)
+    }
+}
+
+/// A learned min size is dropped once the window is seen meaningfully SMALLER than it
+@MainActor
+func unlearnMinSizeIfUndercut(_ window: Window) {
+    let tol: CGFloat = 24
+    guard let learned = window.learnedMinSize, let known = window.knownFrame else { return }
+    if (learned.width > 0 && known.width < learned.width - tol) || (learned.height > 0 && known.height < learned.height - tol) {
+        window.learnedMinSize = nil
+        window.floorCandidate = nil
     }
 }
 

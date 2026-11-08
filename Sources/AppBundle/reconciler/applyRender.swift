@@ -18,7 +18,10 @@ extension Workspace {
                 continue
             }
             let mouseTarget = window.windowId == currentlyManipulatedWithMouseWindowId
-            if !mouseTarget { unlearnMaxSizeIfExceeded(window) }
+            if !mouseTarget {
+                unlearnMaxSizeIfExceeded(window)
+                unlearnMinSizeIfUndercut(window)
+            }
             let previous = window.desiredRect
             window.desiredRect = tile.physical
             if !mouseTarget, previous != tile.physical {
