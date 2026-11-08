@@ -368,6 +368,7 @@ final class MacApp: AbstractApp {
 
     /// How long discovery waits for one app's window list before keeping its last known windows
     static let discoveryPerAppDeadline: Double = 0.3
+    @MainActor private static let discoveryFlights = SingleFlightDeadline<pid_t>()
 
     @MainActor
     static func refreshAllAndGetAliveWindowIds(frontmostAppBundleId: String?) async throws -> [MacApp: [UInt32]] {
@@ -387,7 +388,8 @@ final class MacApp: AbstractApp {
                     // Past the deadline this heavy uses the known windows, but the app's refresh keeps
                     // running so the next heavy sees its result (cancelling it threw the work away
                     // and an always-slow app never completed discovery — ghost tiles)
-                    let ids = await withDeadlineLettingWorkFinish(seconds: discoveryPerAppDeadline, fallback: known) {
+                    // An app still busy with the previous discovery is stuck: skip it without waiting
+                    let ids = await discoveryFlights.run(nsApp.processIdentifier, seconds: discoveryPerAppDeadline, fallback: known) {
                         try await app.refreshAndGetAliveWindowIds(frontmostAppBundleId: frontmostAppBundleId)
                     }
                     return (nsApp.processIdentifier, ids)

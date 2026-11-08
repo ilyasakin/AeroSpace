@@ -55,3 +55,27 @@ func withDeadlineLettingWorkFinish<T: Sendable>(
     }
     return result ?? fallback
 }
+
+/// `withDeadlineLettingWorkFinish`, at most one run per key at a time. A key whose previous run is
+/// still going (an app that hasn't answered the last discovery yet) gets `fallback` at once: no
+/// new deadline wait, and no second request queued behind the stuck one.
+@MainActor
+final class SingleFlightDeadline<Key: Hashable> {
+    private var inFlight: Set<Key> = []
+
+    func isInFlight(_ key: Key) -> Bool { inFlight.contains(key) }
+
+    func run<T: Sendable>(
+        _ key: Key,
+        seconds: Double,
+        fallback: T,
+        _ op: @escaping @MainActor @Sendable () async throws -> T,
+    ) async -> T {
+        if inFlight.contains(key) { return fallback }
+        inFlight.insert(key)
+        return await withDeadlineLettingWorkFinish(seconds: seconds, fallback: fallback) { [weak self] in
+            defer { self?.inFlight.remove(key) }
+            return try await op()
+        }
+    }
+}
