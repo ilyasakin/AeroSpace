@@ -23,6 +23,10 @@ import Foundation
         } catch {
             FrameTrace.log("startup failed: \(error)")
         }
+        // The startup session skips borders while apps animate into the layout, and later light
+        // sessions only restyle borders that exist: with no other event, none appeared at all
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        await Kernel.exclusive("borders after startup") { WindowBordersManager.shared.refresh() }
     }
 }
 
