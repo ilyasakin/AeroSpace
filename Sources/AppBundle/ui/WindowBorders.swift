@@ -58,9 +58,11 @@ final class WindowBordersManager {
         defer { Kernel.exitProjection() }
         let cfg = config.windowBorders
         guard cfg.enabled, ServerState.isEnabled, WindowServerEvents.canDrawBorders else {
+            MissionControl.stopWatching()
             teardownAll()
             return
         }
+        MissionControl.startWatching { WindowBordersManager.shared.refresh() }
         // During startup, apps animate their windows into AeroSpace's layout over ~seconds and a
         // border faithfully tracks that motion — a visible slide/jump on every launch. Skip border
         // work until startup settles; the first post-startup refresh creates them in place.
@@ -70,7 +72,8 @@ final class WindowBordersManager {
         computeStackNeighbors()
 
         var seen = Set<UInt32>(minimumCapacity: entries.count)
-        for workspace in Workspace.allUnsorted where workspace.isVisible {
+        // Mission Control shrinks the windows but not their borders: hide them all meanwhile
+        for workspace in Workspace.allUnsorted where workspace.isVisible && !MissionControl.isShowing {
             // Borders must not paint over a native-fullscreen app on this display.
             if workspaceDisplayIsFullscreen(workspace) { continue }
             for window in workspace.allLeafWindowsRecursive {
