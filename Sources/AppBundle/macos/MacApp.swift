@@ -96,6 +96,16 @@ final class MacApp: AbstractApp {
                     allAppsMap[pid] = app
                     wipPids[pid] = nil
                     await wip.signalToAll()
+                    if isGood {
+                        RegistrationRetry.succeeded(pid)
+                    } else if !nsApp.isTerminated, let delay = RegistrationRetry.failed(pid) {
+                        // A launching app often isn't ready for AX observers yet, and no later
+                        // event may come to try again: its windows stayed unmanaged
+                        FrameTrace.log("register-failed \(nsApp.idForDebug) retry in \(delay)s")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            onAxWindowListChanged(notif: "register-retry")
+                        }
+                    }
                 }
                 if isGood {
                     CFRunLoopRun()
@@ -627,4 +637,23 @@ private final class PendingFrameWrite: Sendable {
     nonisolated(unsafe) private var _done: Int32 = 0
     var isDone: Bool { unsafe _done == 1 }
     func markDone() { unsafe OSAtomicCompareAndSwapInt(0, 1, &_done) }
+}
+
+/// Backoff for apps whose AX registration failed (still launching): 0.5, 1, 2, 4, 8 s, then give up
+@MainActor
+enum RegistrationRetry {
+    private static var attempts: [pid_t: Int] = [:]
+    static let delays: [Double] = [0.5, 1, 2, 4, 8]
+
+    /// The delay before the next try, or nil when out of tries
+    static func failed(_ pid: pid_t) -> Double? {
+        let attempt = attempts[pid, default: 0]
+        guard attempt < delays.count else { return nil }
+        attempts[pid] = attempt + 1
+        return delays[attempt]
+    }
+
+    static func succeeded(_ pid: pid_t) { attempts[pid] = nil }
+
+    static func resetForTests() { attempts = [:] }
 }
