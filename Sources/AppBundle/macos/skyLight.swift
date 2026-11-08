@@ -106,6 +106,67 @@ enum SkyLight {
         )
     }()
 
+    /// WindowServer's own view of a window: the window it is attached to (0 = top level), its
+    /// tag mask and attribute bits. One SLSWindowQuery round trip.
+    struct WindowInfo: Equatable {
+        let parentId: UInt32
+        let tags: UInt64
+        let attributes: UInt64
+        /// Tag bit 60: minimized (verified on macOS 27.2)
+        var isMinimized: Bool { tags & (1 << 60) != 0 }
+    }
+
+    private typealias QueryWindowsFun = @convention(c) (Int32, CFArray, Int32) -> Unmanaged<CFTypeRef>?
+    private typealias QueryResultCopyWindowsFun = @convention(c) (CFTypeRef) -> Unmanaged<CFTypeRef>?
+    private typealias IteratorAdvanceFun = @convention(c) (CFTypeRef) -> Bool
+    private typealias IteratorU32Fun = @convention(c) (CFTypeRef) -> UInt32
+    private typealias IteratorU64Fun = @convention(c) (CFTypeRef) -> UInt64
+
+    @unsafe private struct QueryImpl {
+        let query: QueryWindowsFun
+        let copyWindows: QueryResultCopyWindowsFun
+        let advance: IteratorAdvanceFun
+        let windowId: IteratorU32Fun
+        let parentId: IteratorU32Fun
+        let tags: IteratorU64Fun
+        let attributes: IteratorU64Fun
+    }
+
+    private static let queryImpl: QueryImpl? = {
+        guard let handle = unsafe dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY),
+              let q = unsafe dlsym(handle, "SLSWindowQueryWindows"),
+              let c = unsafe dlsym(handle, "SLSWindowQueryResultCopyWindows"),
+              let a = unsafe dlsym(handle, "SLSWindowIteratorAdvance"),
+              let w = unsafe dlsym(handle, "SLSWindowIteratorGetWindowID"),
+              let p = unsafe dlsym(handle, "SLSWindowIteratorGetParentID"),
+              let t = unsafe dlsym(handle, "SLSWindowIteratorGetTags"),
+              let at = unsafe dlsym(handle, "SLSWindowIteratorGetAttributes")
+        else { return nil }
+        return unsafe QueryImpl(
+            query: unsafeBitCast(q, to: QueryWindowsFun.self),
+            copyWindows: unsafeBitCast(c, to: QueryResultCopyWindowsFun.self),
+            advance: unsafeBitCast(a, to: IteratorAdvanceFun.self),
+            windowId: unsafeBitCast(w, to: IteratorU32Fun.self),
+            parentId: unsafeBitCast(p, to: IteratorU32Fun.self),
+            tags: unsafeBitCast(t, to: IteratorU64Fun.self),
+            attributes: unsafeBitCast(at, to: IteratorU64Fun.self),
+        )
+    }()
+
+    /// nil = SkyLight unavailable or no such window. Thread-safe (a WindowServer read)
+    static func windowInfo(_ windowId: UInt32) -> WindowInfo? {
+        guard let impl = unsafe impl, let q = unsafe queryImpl else { return nil }
+        let ids = [NSNumber(value: windowId)] as CFArray
+        guard let query = unsafe q.query(impl.connection, ids, 1)?.takeRetainedValue(),
+              let iterator = unsafe q.copyWindows(query)?.takeRetainedValue()
+        else { return nil }
+        while unsafe q.advance(iterator) {
+            guard unsafe q.windowId(iterator) == windowId else { continue }
+            return unsafe WindowInfo(parentId: q.parentId(iterator), tags: q.tags(iterator), attributes: q.attributes(iterator))
+        }
+        return nil
+    }
+
     /// WindowServer's event-routing hit test: the window that would receive a click at `point`
     /// (Quartz global coords, y-down). Unlike CGWindowList reconstruction, this honors
     /// ignores-mouse-events overlays, elevated window levels (menus, panels), and true z-order —

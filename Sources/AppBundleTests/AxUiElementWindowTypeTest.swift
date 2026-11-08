@@ -27,6 +27,7 @@ func checkAxDumpsRecursive(_ dir: URL) throws {
                 activationPolicy,
                 windowLevel,
                 coversFullDisplay: rawJson["Aero.coversFullDisplay"] as? Bool ?? false,
+                windowServerParentId: (rawJson["Aero.windowServerParentId"] as? NSNumber)?.uint32Value ?? 0,
             ),
             AxUiElementWindowType(rawValue: rawJson["Aero.AxUiElementWindowType"] as? String ?? dieT()),
             additionalMsg: "\(file.path()):0:0: AxUiElementWindowType doesn't match",
@@ -77,5 +78,27 @@ extension NSApplication.ActivationPolicy {
 extension URL {
     var isDirectory: Bool {
         (try? resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+    }
+}
+
+final class WindowServerParentClassificationTest: XCTestCase {
+    private func classify(_ dump: String, parent: UInt32) throws -> AxUiElementWindowType {
+        let file = projectRoot.appending(path: "./axDumps/\(dump).json5")
+        let rawJson = try JSONSerialization.jsonObject(with: Data(contentsOf: file), options: [.json5Allowed]) as! [String: Any]
+        let json = Json.newOrDieRecursive(rawJson).asDictOrDie
+        return json.getWindowType(
+            axApp: json["Aero.AXApp"]!.asDictOrDie,
+            .from(string: rawJson["Aero.App.nsApp.activationPolicy"] as! String),
+            json["Aero.windowLevel"].map { MacOsWindowLevel.fromJson($0) ?? dieT() },
+            windowServerParentId: parent,
+        )
+    }
+
+    /// A child window moves with its parent: never a tile
+    func testAChildWindowIsNeverTiled() throws {
+        assertEquals(try classify("apple_calendar", parent: 0), .window)
+        assertEquals(try classify("apple_calendar", parent: 4242), .dialog)
+        assertEquals(try classify("alacritty_decorations_buttonless", parent: 0), .window)
+        XCTAssertNotEqual(try classify("alacritty_decorations_buttonless", parent: 4242), .window)
     }
 }

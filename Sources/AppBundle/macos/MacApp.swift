@@ -259,6 +259,7 @@ final class MacApp: AbstractApp {
                 nsApp.activationPolicy,
                 windowLevel,
                 coversFullDisplay: frame.map(rectCoversAnyDisplay) ?? false,
+                windowServerParentId: SkyLight.windowInfo(windowId)?.parentId ?? 0,
             )
         } ?? .window
     }

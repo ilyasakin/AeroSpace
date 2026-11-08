@@ -22,6 +22,7 @@ enum AxUiElementWindowType: String {
 // - AXSubrole                 ~ _NET_WM_WINDOW_TYPE
 // - AXSize settability        ~ fixed-size windows (min size == max size WM_NORMAL_HINTS)
 // - activation policy         ~ dock/panel window types
+// - WindowServer parent id    ~ WM_TRANSIENT_FOR (child windows move with their parent)
 /// True when `rect` (global top-left coords, same space as AX frames) covers an entire display —
 /// including the menu-bar strip, which tiled/zoomed windows never occupy. Thread-safe (pure CG),
 /// so callable from AX threads.
@@ -47,6 +48,7 @@ extension AxUiElementMock {
         _ activationPolicy: NSApplication.ActivationPolicy,
         _ windowLevel: MacOsWindowLevel?,
         coversFullDisplay: Bool = false,
+        windowServerParentId: UInt32 = 0,
     ) -> AxUiElementWindowType {
         // Note: a lot of windows don't have title on startup, so please don't rely on the title
         lazy var closeButton = get(Ax.closeButtonAttr)
@@ -73,6 +75,12 @@ extension AxUiElementMock {
         // empty tile next to the parent (Electron file pickers open NSOpenPanel as a sheet)
         if get(Ax.roleAttr) == kAXSheetRole {
             return .dialog
+        }
+
+        // Attached to another window in WindowServer (~ WM_TRANSIENT_FOR): it moves with its
+        // parent, so it is never a tile. Chrome floats as a dialog; without chrome it is a popup
+        if windowServerParentId != 0 {
+            return anyButton ? .dialog : .popup
         }
 
         // Accessory apps (no Dock icon) provide panel-like windows:
