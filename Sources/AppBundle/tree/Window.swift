@@ -33,6 +33,9 @@ open class Window: TreeNode, Hashable {
     }
     var scratchpadWasShown = false
     var layoutReason: LayoutReason = .standard
+    /// In the hidden-apps container as a background native tab, not because its app is hidden.
+    /// The two share the container; only a tab may stay parked while its workspace is invisible.
+    var isParkedAsNativeTab = false
     /// Emulated: the window is re-raised on every focus change. See always-on-top command
     var isAlwaysOnTop: Bool = false
     /// The window follows the active workspace of its monitor. See sticky command

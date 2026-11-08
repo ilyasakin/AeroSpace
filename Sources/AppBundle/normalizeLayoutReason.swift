@@ -93,12 +93,14 @@ private func _normalizeLayoutReason(workspace: Workspace, windows: [Window], det
                     case isMacosWindowOfHiddenApp:
                         if focus.windowOrNil === window { FocusReconciler.noteFocusHandoff() }
                         window.layoutReason = .macos(prevParentKind: parent.kind)
+                        window.isParkedAsNativeTab = false
                         window.bind(to: workspace.macOsNativeHiddenAppsWindowsContainer, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
                     case isParkedTab:
                         // Non-representative native tab: same app + frame as a lower-id sibling that
                         // holds the group's tile. Park it out of tiling so the group keeps ONE stable
                         // tile — no empty pane, and switching/creating tabs never repositions it.
                         window.layoutReason = .macos(prevParentKind: parent.kind)
+                        window.isParkedAsNativeTab = true
                         window.bind(to: workspace.macOsNativeHiddenAppsWindowsContainer, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
                     default: break
                 }
@@ -110,8 +112,10 @@ private func _normalizeLayoutReason(workspace: Workspace, windows: [Window], det
                 // heavy after switching back parked it again — a structural round trip on the
                 // workspace the user had just left. It is re-evaluated by the first heavy after
                 // the workspace is shown, which runs before layout.
+                // Only for a window parked AS A TAB: one parked because its app was hidden shares
+                // the container, and after unhide it stayed stuck there until its workspace was shown
                 let tabStateUnknown = detectNativeTabs && !workspace.isVisible
-                if tabStateUnknown, window.parent is MacosHiddenAppsWindowsContainer,
+                if tabStateUnknown, window.isParkedAsNativeTab, window.parent is MacosHiddenAppsWindowsContainer,
                    !isMacosFullscreen, !isMacosMinimized, !isMacosWindowOfHiddenApp
                 {
                     continue
@@ -128,7 +132,9 @@ private func _normalizeLayoutReason(workspace: Workspace, windows: [Window], det
                 // The representative is never in parkedTabs, so it stays tiled even while it's a
                 // background tab. A parked sibling re-tiles only when it becomes the representative
                 // (its lower-id siblings closed).
+                if isParkedTab { window.isParkedAsNativeTab = true }
                 if !isMacosFullscreen && !isMacosMinimized && !isMacosWindowOfHiddenApp && !isParkedTab {
+                    window.isParkedAsNativeTab = false
                     try await exitMacOsNativeUnconventionalState(window: window, prevParentKind: prevParentKind, workspace: workspace, .cancellable)
                 }
         }

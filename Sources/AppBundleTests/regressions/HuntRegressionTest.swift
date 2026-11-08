@@ -107,6 +107,39 @@ final class HuntRegressionTest: XCTestCase {
         XCTAssertTrue(tv.isOwnedByMacos, "so hideInCorner leaves it alone")
     }
 
+    /// cmd-H then unhide of an app whose window is on an invisible workspace: it must go back to
+    /// its tile. The parked-tab rule (tab state unknown while invisible) kept it parked as hidden
+    func testAnUnhiddenAppsWindowOnAnInvisibleWorkspaceReturnsToItsTile() async throws {
+        defer { TestApp.shared.isHidden = false }
+        let away = Workspace.get(byName: "away")
+        TestWindow.new(id: 1, parent: away.rootTilingContainer)
+        let w = TestWindow.new(id: 2, parent: away.rootTilingContainer)
+        seedMacosNativeWindowStateCacheForTests(windowId: 2, MacosNativeWindowState(isFullscreen: false, isMinimized: false))
+        XCTAssertFalse(away.isVisible)
+
+        TestApp.shared.isHidden = true
+        try await normalizeLayoutReason()
+        XCTAssertTrue(w.parent is MacosHiddenAppsWindowsContainer)
+
+        TestApp.shared.isHidden = false
+        try await normalizeLayoutReason()
+        XCTAssertTrue(w.parent is TilingContainer, "unhidden: back in tiling though its workspace is invisible")
+    }
+
+    /// A background native tab on an invisible workspace stays parked: its tab state is unknown there
+    func testAParkedTabOnAnInvisibleWorkspaceStaysParked() async throws {
+        let away = Workspace.get(byName: "away")
+        TestWindow.new(id: 1, parent: away.rootTilingContainer)
+        let tab = TestWindow.new(id: 2, parent: away.rootTilingContainer)
+        seedMacosNativeWindowStateCacheForTests(windowId: 2, MacosNativeWindowState(isFullscreen: false, isMinimized: false))
+        tab.layoutReason = .macos(prevParentKind: .tilingContainer)
+        tab.isParkedAsNativeTab = true
+        tab.bind(to: away.macOsNativeHiddenAppsWindowsContainer, adaptiveWeight: WEIGHT_DOESNT_MATTER, index: INDEX_BIND_LAST)
+
+        try await normalizeLayoutReason()
+        XCTAssertTrue(tab.parent is MacosHiddenAppsWindowsContainer)
+    }
+
     /// The same window, when no frame notification came: macOS refusing our write gives it away
     func testARefusedWriteRereadsNativeState() async throws {
         let ws = focus.workspace
