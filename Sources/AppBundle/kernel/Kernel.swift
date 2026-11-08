@@ -109,8 +109,17 @@ enum Kernel {
             if violations.count >= 64 { violations.removeFirst() }
             violations.append(violation)
             FrameTrace.log("kernel-violation \(violation)")
+            // Debug builds: the first violation of a process says who did it
+            if isDebug, !loggedViolationStack {
+                loggedViolationStack = true
+                FrameTrace.log("kernel-violation stack: " + Thread.callStackSymbols.dropFirst(2).prefix(14)
+                    .map { $0.split(separator: " ", omittingEmptySubsequences: true).dropFirst(3).prefix(1).joined() }
+                    .joined(separator: " <- "))
+            }
         }
     }
+
+    private static var loggedViolationStack = false
 
     static func resetViolationsForTests() { violations.removeAll() }
 }

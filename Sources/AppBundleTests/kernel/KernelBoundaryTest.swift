@@ -113,4 +113,16 @@ final class KernelBoundaryTest: XCTestCase {
 
         XCTAssertEqual(Kernel.violations, [])
     }
+
+    /// The quit path saves the session outside any job: the snapshot must read the tree without
+    /// creating the lazily made per-workspace containers (39 "bind" violations on every quit)
+    func testSessionSnapshotIsARead() {
+        let ws = Workspace.get(byName: "snapshot-read")
+        TestWindow.new(id: 1, parent: ws.rootTilingContainer)
+        Kernel.resetViolationsForTests()
+        _ = PersistentWorldSnapshot.captureLive()
+        XCTAssertEqual(Kernel.violations, [])
+        XCTAssertNil(ws.singleChild(of: MacosHiddenAppsWindowsContainer.self))
+        XCTAssertNil(ws.singleChild(of: MacosFullscreenWindowsContainer.self))
+    }
 }

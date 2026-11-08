@@ -127,16 +127,20 @@ extension PersistentWorldSnapshot {
     static func captureLive() -> PersistentWorldSnapshot {
         let allWs = Workspace.all
         let workspaces: [PersistentWorkspaceSnapshot] = allWs.map { ws in
-            let floating = ws.floatingWindows.map(\.windowId)
-            let unconventional =
-                ws.macOsNativeHiddenAppsWindowsContainer.children.compactMap { ($0 as? Window)?.windowId } +
-                ws.macOsNativeFullscreenWindowsContainer.children.compactMap { ($0 as? Window)?.windowId }
+            // A read: the containers' getters create missing ones (a tree mutation, and outside a
+            // job on the quit path), so look them up without creating
+            let floating = (ws.singleChild(of: FloatingWindowsContainer.self)?.children ?? [])
+                .compactMap { ($0 as? Window)?.windowId }
+            let hiddenApps = ws.singleChild(of: MacosHiddenAppsWindowsContainer.self)?.children ?? []
+            let fullscreen = ws.singleChild(of: MacosFullscreenWindowsContainer.self)?.children ?? []
+            let unconventional = (hiddenApps + fullscreen).compactMap { ($0 as? Window)?.windowId }
             return PersistentWorkspaceSnapshot(
                 name: ws.name,
                 monitorKey: ws.workspaceMonitor.persistentKey,
                 monitorTopLeft: ws.workspaceMonitor.rect.topLeftCorner,
                 visibleWorkspaceName: ws.isVisible ? ws.name : nil,
-                rootTiling: PersistentTilingNode.capture(ws.rootTilingContainer),
+                rootTiling: ws.singleChild(of: TilingContainer.self).map(PersistentTilingNode.capture)
+                    ?? .container(orientation: ws.newRootOrientation, layout: config.defaultRootContainerLayout, weight: 1, children: []),
                 floatingWindowIds: floating,
                 unconventionalWindowIds: unconventional,
             )

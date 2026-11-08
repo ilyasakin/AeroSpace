@@ -4,7 +4,7 @@ extension TreeNode {
     /// Finds the single child of the given type without allocating an intermediate array
     /// (unlike `children.filterIsInstance(of:)`). Dies if there is more than one
     @MainActor
-    fileprivate func singleChild<T>(of _: T.Type) -> T? {
+    func singleChild<T>(of _: T.Type) -> T? {
         var found: T? = nil
         for child in children {
             if let typed = child as? T {
@@ -19,12 +19,16 @@ extension TreeNode {
 extension Workspace {
     @MainActor var rootTilingContainer: TilingContainer {
         if let existing = singleChild(of: TilingContainer.self) { return existing }
-        let orientation: Orientation = switch config.defaultRootContainerOrientation {
+        return TilingContainer(parent: self, adaptiveWeight: 1, newRootOrientation, config.defaultRootContainerLayout, index: INDEX_BIND_LAST)
+    }
+
+    /// The orientation a root container created now would get
+    @MainActor var newRootOrientation: Orientation {
+        switch config.defaultRootContainerOrientation {
             case .horizontal: .h
             case .vertical: .v
             case .auto: workspaceMonitor.then { $0.width >= $0.height } ? .h : .v
         }
-        return TilingContainer(parent: self, adaptiveWeight: 1, orientation, config.defaultRootContainerLayout, index: INDEX_BIND_LAST)
     }
 
     @MainActor
