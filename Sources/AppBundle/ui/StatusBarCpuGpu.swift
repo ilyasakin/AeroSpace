@@ -305,3 +305,45 @@ func sparklinePercentTrailingWidth(fontSize: CGFloat = 11) -> CGFloat {
     // Digits + % ; slightly generous so 100% doesn't clip.
     max(28, fontSize * 2.6)
 }
+
+// MARK: - GPU detail (panel)
+
+/// Everything the GPU reports about itself, for the detail panel. Percentages 0...1.
+struct GpuDetails: Equatable, Sendable {
+    var name: String?
+    var device: Double?
+    var renderer: Double?
+    var tiler: Double?
+    var memoryInUseBytes: UInt64?
+    var memoryAllocatedBytes: UInt64?
+}
+
+func readGpuDetails() -> GpuDetails? {
+    var iterator: io_iterator_t = 0
+    guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS else {
+        return nil
+    }
+    defer { IOObjectRelease(iterator) }
+    var service = IOIteratorNext(iterator)
+    while service != 0 {
+        defer {
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+        func property(_ key: String) -> Any? {
+            IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue()
+        }
+        guard let stats = property("PerformanceStatistics") as? [String: Any] else { continue }
+        func percent(_ key: String) -> Double? { (stats[key] as? NSNumber).map { min(1, max(0, $0.doubleValue / 100)) } }
+        func bytes(_ key: String) -> UInt64? { (stats[key] as? NSNumber)?.uint64Value }
+        return GpuDetails(
+            name: property("model") as? String,
+            device: percent("Device Utilization %"),
+            renderer: percent("Renderer Utilization %"),
+            tiler: percent("Tiler Utilization %"),
+            memoryInUseBytes: bytes("In use system memory"),
+            memoryAllocatedBytes: bytes("Alloc system memory"),
+        )
+    }
+    return nil
+}

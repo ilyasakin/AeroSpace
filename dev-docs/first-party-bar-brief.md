@@ -41,6 +41,27 @@ state (`TrayMenuModel.updateTrayText` already computes it for the tray).
   (`host_statistics`/`sysctl`), network (SystemConfiguration/`getifaddrs`), volume (CoreAudio). These
   cover ~90% of what people put on a bar, so external status tools become *optional*.
 
+## Detail panels (click a module)
+
+Clicking `cpu`, `gpu`, `memory`, `network` or `clock` opens a live panel under it (1 Hz while open;
+nothing extra is sampled while closed). A click outside, Esc, or the same module closes it.
+
+- **cpu**: per-core load labeled E1…/P1… (Apple Silicon numbers the efficiency cores first), chip
+  temperatures from the HID sensor service (no root; Apple publishes die sensors, not per-core ones),
+  SSD and battery temperature, top processes by CPU.
+- **gpu**: device/renderer/tiler utilization and GPU memory from the IOAccelerator statistics.
+- **memory**: used, app, wired, compressed, swap; top processes by footprint.
+- **network**: total rates and the processes with the most traffic (ntstat flows tagged by owner pid).
+- **clock**: world clocks from `bar.world-clocks` — a time zone id or `'Name=Zone/Id'`:
+
+```toml
+[bar]
+world-clocks = ['Istanbul=Europe/Istanbul', 'New York=America/New_York', 'San Francisco=America/Los_Angeles', 'Tokyo=Asia/Tokyo']
+```
+
+Process rows show the app responsible for a helper ("via Safari") when it is a different process.
+Processes of other users (root daemons) are not readable without privileges and are not listed.
+
 ## i3bar protocol input (the extension contract)
 
 - Parse the i3bar protocol from a module's stdout: a header object

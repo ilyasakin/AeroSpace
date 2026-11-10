@@ -28,6 +28,12 @@ final class NetworkFlowStats: @unchecked Sendable {
     private var closedTx: UInt64 = 0
     private var liveCounts: [OpaquePointer: (rx: UInt64, tx: UInt64)] = [:]
     private var destroyManager: ManagerVoidFun?
+    /// Per-process accounting, filled only while someone asks for it (the network detail panel):
+    /// the owning pid of each flow comes from its description, which costs a query per poll
+    private var pidOf: [OpaquePointer: pid_t] = [:]
+    private var closedByPid: [pid_t: (rx: UInt64, tx: UInt64)] = [:]
+    private var queryDescriptions: ManagerQueryFun?
+    private var descriptionQueryInFlight = false
 
     private init() {}
 
@@ -50,6 +56,10 @@ final class NetworkFlowStats: @unchecked Sendable {
             closedRx = 0
             closedTx = 0
             liveCounts.removeAll()
+            pidOf.removeAll()
+            closedByPid.removeAll()
+            queryDescriptions = nil
+            descriptionQueryInFlight = false
         }
     }
 
@@ -76,6 +86,31 @@ final class NetworkFlowStats: @unchecked Sendable {
         }
     }
 
+    /// Cumulative (rx, tx) per process, flows that ended included. Kicks a description query so
+    /// flows opened since the last call get their owner; like `poll`, one interval stale.
+    func pollPerProcess() -> [pid_t: (rx: UInt64, tx: UInt64)] {
+        queue.sync {
+            startLocked()
+            guard let manager, let queryDescriptions else { return [:] }
+            var out = closedByPid
+            for (source, counts) in liveCounts {
+                guard let pid = pidOf[source] else { continue }
+                let old = out[pid] ?? (0, 0)
+                out[pid] = (old.rx &+ counts.rx, old.tx &+ counts.tx)
+            }
+            if !descriptionQueryInFlight {
+                descriptionQueryInFlight = true
+                let done: @convention(block) () -> Void = { self.descriptionQueryInFlight = false }
+                queryDescriptions(manager, done as AnyObject)
+            }
+            // Exited processes: their closed totals are no longer shown
+            if closedByPid.count > 512 {
+                for pid in closedByPid.keys where kill(pid, 0) != 0 && errno == ESRCH { closedByPid.removeValue(forKey: pid) }
+            }
+            return out
+        }
+    }
+
     /// Must run on `queue`. One-shot: resolve symbols, create the manager, subscribe to all flows.
     private func startLocked() {
         guard !started else { return }
@@ -97,6 +132,8 @@ final class NetworkFlowStats: @unchecked Sendable {
         let setCounts = unsafe unsafeBitCast(setCountsSym, to: SourceSetBlockFun.self)
         let setRemoved = unsafe unsafeBitCast(setRemovedSym, to: SourceSetBlockFun.self)
         queryAll = unsafe unsafeBitCast(queryAllSym, to: ManagerQueryFun.self)
+        let setDescription = unsafe dlsym(handle, "NStatSourceSetDescriptionBlock").map { unsafe unsafeBitCast($0, to: SourceSetBlockFun.self) }
+        queryDescriptions = unsafe dlsym(handle, "NStatManagerQueryAllSourcesDescriptions").map { unsafe unsafeBitCast($0, to: ManagerQueryFun.self) }
 
         // All blocks below fire on `queue` (the queue given to NStatManagerCreate), so they
         // mutate state directly. Blocks pass as AnyObject: @convention(c) params treat block
@@ -125,13 +162,26 @@ final class NetworkFlowStats: @unchecked Sendable {
             let removed: @convention(block) () -> Void = {
                 guard !retired else { return } // a second removal must not double-fold
                 retired = true
+                let pid = self.pidOf.removeValue(forKey: source)
                 if let last = self.liveCounts.removeValue(forKey: source) {
                     self.closedRx &+= last.rx
                     self.closedTx &+= last.tx
+                    if let pid {
+                        let old = self.closedByPid[pid] ?? (0, 0)
+                        self.closedByPid[pid] = (old.rx &+ last.rx, old.tx &+ last.tx)
+                    }
                 }
+            }
+            // The owner: `epid` is the app a daemon (nsurlsessiond…) carries the flow for
+            let description: @convention(block) (CFDictionary?) -> Void = { dict in
+                guard !retired, let dict = dict as? [String: Any] else { return }
+                let epid = (dict["epid"] as? NSNumber)?.int32Value ?? 0
+                let pid = epid > 0 ? epid : (dict["processID"] as? NSNumber)?.int32Value ?? 0
+                if pid > 0 { self.pidOf[source] = pid }
             }
             setCounts(source, counts as AnyObject)
             setRemoved(source, removed as AnyObject)
+            setDescription?(source, description as AnyObject)
         }
         guard let created = create(kCFAllocatorDefault, queue, sourceAdded as AnyObject) else { return }
         manager = created

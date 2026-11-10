@@ -241,7 +241,7 @@ final class StatusBarManager {
 // MARK: - Panel
 
 @MainActor
-private final class StatusBarPanel: NSPanelHud {
+private final class StatusBarPanel: NSPanelHud, StatusBarPanelMarker {
     private let content = StatusBarContentView()
     private var monitorName: String = ""
     private var lastRenderFingerprint: StatusBarRenderFingerprint? = nil
@@ -347,6 +347,18 @@ private final class StatusBarPanel: NSPanelHud {
 @MainActor
 private final class StatusBarContentView: NSView {
     private var buttons: [NSView] = []
+
+    /// A transparent click target over a module that has a detail panel
+    fileprivate func addDetailHotspot(module: String, frame: NSRect) {
+        guard let kind = StatusBarDetailKind(module: module) else { return }
+        let hotspot = StatusBarDetailHotspot(frame: frame) { [weak self] in
+            guard let self, let window = self.window else { return }
+            let onScreen = window.convertToScreen(self.convert(frame, to: nil))
+            StatusBarDetailPanel.shared.toggle(kind, anchor: onScreen, screen: window.screen)
+        }
+        addSubview(hotspot)
+        buttons.append(hotspot)
+    }
 
     /// Must be nonisolated: AX hit-tests can invoke this off MainActor (Swift 6 traps otherwise).
     nonisolated override func hitTest(_ point: NSPoint) -> NSView? {
@@ -523,7 +535,16 @@ private final class StatusBarContentView: NSView {
             }
         }
 
-        func items(for modules: [String]) -> [Placeable] {
+        /// Each item with the module it came from (a click on cpu/gpu/memory/network/clock opens its detail)
+        func items(for modules: [String]) -> [(item: Placeable, module: String)] {
+            var tagged: [(item: Placeable, module: String)] = []
+            for mod in modules {
+                for item in untaggedItems(for: [mod]) { tagged.append((item, mod)) }
+            }
+            return tagged
+        }
+
+        func untaggedItems(for modules: [String]) -> [Placeable] {
             var out: [Placeable] = []
             let focus = focus
             for mod in modules {
@@ -599,10 +620,11 @@ private final class StatusBarContentView: NSView {
 
         // Left cluster — on a notched display occupying the top strip, stop before the notch
         // band (menu-bar semantics: overflow truncates rather than hiding under the housing).
-        for item in items(for: config.modulesLeft) {
+        for (item, module) in items(for: config.modulesLeft) {
             let w = width(of: item)
             if let gap = notchGap, leftX + w > gap.lowerBound { break }
             place(item, x: leftX)
+            addDetailHotspot(module: module, frame: NSRect(x: leftX, y: 0, width: w, height: height))
             leftX += w + 4
         }
 
@@ -638,11 +660,12 @@ private final class StatusBarContentView: NSView {
             rightX = CGFloat(monitor.width) - 8
             setFrameSize(NSSize(width: CGFloat(monitor.width), height: height))
         }
-        for item in right.reversed() {
+        for (item, module) in right.reversed() {
             let w = width(of: item)
             rightX -= w
             if let gap = notchGap, rightX < gap.upperBound { break }
             place(item, x: rightX)
+            addDetailHotspot(module: module, frame: NSRect(x: rightX, y: 0, width: w, height: height))
             rightX -= 4
         }
     }
@@ -1287,4 +1310,31 @@ func statusBarRenderFingerprint(config: StatusBarConfig, monitor: Monitor, exter
 /// Built-in module ids the bar is configured with (what the background sampler must read)
 func statusBarConfiguredModules(_ cfg: StatusBarConfig) -> Set<String> {
     Set(cfg.modulesLeft + cfg.modulesRight)
+}
+
+/// Catches the click over a module; drawing stays with the module's own view underneath
+@MainActor
+private final class StatusBarDetailHotspot: NSView {
+    private let onClick: () -> Void
+
+    init(frame: NSRect, onClick: @escaping () -> Void) {
+        self.onClick = onClick
+        super.init(frame: frame)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    nonisolated override func hitTest(_ point: NSPoint) -> NSView? {
+        guard Thread.isMainThread else { return nil }
+        return MainActor.assumeIsolated {
+            frame.contains(point) ? self : nil
+        }
+    }
+
+    nonisolated override func accessibilityHitTest(_ point: NSPoint) -> Any? { nil }
+    nonisolated override func isAccessibilityElement() -> Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { onClick() }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }

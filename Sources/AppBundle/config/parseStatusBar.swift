@@ -25,6 +25,13 @@ struct StatusBarConfig: ConvenienceMutable, Equatable, Sendable {
     var fontSize: Int = 12
     /// `strftime`-style clock format (e.g. `%H:%M`, `%d/%m %H:%M`). Sketchybar-compatible subset.
     var clockFormat: String = "%H:%M"
+    /// Clicking the clock lists these: a time zone id, or `"Name=Zone/Id"` to name it
+    var worldClocks: [String] = [
+        "Istanbul=Europe/Istanbul",
+        "New York=America/New_York",
+        "San Francisco=America/Los_Angeles",
+        "Tokyo=Asia/Tokyo",
+    ]
 
     static let disabled = StatusBarConfig()
 }
@@ -44,6 +51,7 @@ private let statusBarParser: [String: any ParserProtocol<StatusBarConfig>] = [
     "focused-foreground": Parser(\.focusedForeground, parseString),
     "font-size": Parser(\.fontSize, parseInt),
     "clock-format": Parser(\.clockFormat, parseString),
+    "world-clocks": Parser(\.worldClocks, parseArrayOfStrings),
 ]
 
 func parseStatusBar(_ raw: OrderedJson, _ backtrace: ConfigBacktrace, _ c: inout ConfigParserContext) -> StatusBarConfig {
