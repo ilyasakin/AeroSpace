@@ -52,23 +52,54 @@ private let windowServerEventProc: SkyLight.NotifyProc = { event, data, _, _ in
 extension WindowServerEvents {
     enum Reaction: Equatable { case repaintBorder, refresh, ignore }
 
-    /// Move/resize repaint the border. Shown/hidden/destroyed of a tracked window re-run discovery:
-    /// a backup for AX notifications an app posts late or never (a busy app, a crashed helper).
-    static func reaction(event: UInt32, isTracked: Bool) -> Reaction {
+    /// What the model believes about a window, as far as shown/hidden events go
+    enum Belief: Equatable {
+        case untracked
+        /// Tiled or floating on a visible workspace
+        case visible
+        /// Minimized or its app hidden: macOS took it off screen
+        case hiddenByMacos
+        /// Anything else: parked on an invisible workspace, a background native tab, fullscreen
+        case other
+    }
+
+    /// Move/resize repaint the border. Shown/hidden/destroyed re-run discovery only when they
+    /// contradict the model: a backup for AX notifications an app posts late or never. Shown and
+    /// hidden fire far more often than the model changes (native tab switches order windows in and
+    /// out): refreshing on every one ran ~750 full discoveries in a few hours, 66 in one minute.
+    static func reaction(event: UInt32, belief: Belief) -> Reaction {
         switch SkyLight.WindowEvent(rawValue: event) {
             case .move, .resize: .repaintBorder
-            case .destroyed, .shown, .hidden: isTracked ? .refresh : .ignore
+            case .destroyed: belief == .untracked ? .ignore : .refresh
+            case .shown: belief == .hiddenByMacos ? .refresh : .ignore
+            case .hidden: belief == .visible ? .refresh : .ignore
             case nil: .ignore
         }
     }
 
+    /// At most one event-triggered discovery per window per this many seconds (a flickering window)
+    static let refreshCooldownSeconds: Double = 2
+    private static var lastRefreshAt: [UInt32: TimeInterval] = [:]
+
     static func handle(event: UInt32, windowId: UInt32) {
-        switch reaction(event: event, isTracked: Window.get(byId: windowId) != nil) {
+        switch reaction(event: event, belief: belief(windowId)) {
             case .repaintBorder: WindowBordersManager.shared.handleWindowMoved(windowId: windowId)
             case .refresh:
+                let now = ProcessInfo.processInfo.systemUptime
+                if let last = lastRefreshAt[windowId], now - last < refreshCooldownSeconds { return }
+                lastRefreshAt[windowId] = now
+                if lastRefreshAt.count > 256 { lastRefreshAt = lastRefreshAt.filter { now - $0.value < refreshCooldownSeconds } }
                 let name = SkyLight.WindowEvent(rawValue: event).map { "\($0)" } ?? "\(event)"
                 onAxWindowListChanged(notif: "ws-\(name)")
             case .ignore: break
         }
+    }
+
+    private static func belief(_ windowId: UInt32) -> Belief {
+        guard let window = Window.get(byId: windowId) else { return .untracked }
+        if window.isOwnedByMacos {
+            return window.isParkedAsNativeTab || window.parent is MacosFullscreenWindowsContainer ? .other : .hiddenByMacos
+        }
+        return window.nodeWorkspace?.isVisible == true ? .visible : .other
     }
 }
