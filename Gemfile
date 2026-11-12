@@ -1,5 +1,5 @@
 # frozen_string_literal: true
-ruby '~> 3.0' # >= 3.0 and < 4.0
+ruby '>= 3.0' # Asciidoctor 2.0 also runs on Ruby 4
 
 source "https://rubygems.org"
 
