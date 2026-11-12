@@ -45,6 +45,16 @@ enum SystemServices {
     static var trackedApps: [any AbstractApp] { Array(MacApp.allAppsMap.values) }
 
     nonisolated static func open(_ url: URL) { NSWorkspace.shared.open(url) }
+
+    /// The app in front now, to give focus back after AeroSpace's own panel took it
+    static func frontmostAppPid() -> pid_t? {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier
+    }
+
+    static func activateApp(pid: pid_t) {
+        guard Headless.permits(.activateApp) else { return }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+    }
     nonisolated static func revealInFinder(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
     nonisolated static func applicationToOpen(_ file: URL) -> URL? { NSWorkspace.shared.urlForApplication(toOpen: file) }
 

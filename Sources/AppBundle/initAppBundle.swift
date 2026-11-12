@@ -36,6 +36,7 @@ import Foundation
     await offerForeignConfigImportIfNeeded()
 
     startUnixSocketServer()
+    AskpassServer.start()
     startI3IpcServer()
     GlobalObserver.initObserver()
     Workspace.garbageCollectUnusedWorkspaces() // init workspaces

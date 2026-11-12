@@ -1,0 +1,18 @@
+#!/bin/sh
+# pkexec for macOS: run a command as another user (root by default) without a terminal.
+# sudo does the elevation; AeroSpace shows the password panel (aerospace askpass, sudo -A).
+# Usage: pkexec [--user NAME] COMMAND [ARGS...]
+#
+# Like Omarchy's rule: in a terminal, use sudo; with no terminal to type in (an agent, a GUI
+# action, a background job), use pkexec.
+set -e
+user=root
+if [ "$1" = "--user" ] || [ "$1" = "-u" ]; then
+    [ -n "$2" ] || { echo "pkexec: --user needs a name" >&2; exit 127; }
+    user=$2
+    shift 2
+fi
+[ $# -gt 0 ] || { echo "usage: pkexec [--user NAME] COMMAND [ARGS...]" >&2; exit 127; }
+askpass=${AEROSPACE_ASKPASS:-$(command -v aerospace-askpass || true)}
+[ -x "$askpass" ] || { echo "pkexec: aerospace-askpass not found (link it to the aerospace CLI)" >&2; exit 127; }
+SUDO_ASKPASS=$askpass exec sudo -A -u "$user" -- "$@"

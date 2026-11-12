@@ -17,6 +17,14 @@ struct Main {
         // Global -j/--json (M5): aerospace -j list-windows == list-windows --json.
         // Only injects for JSON-capable subcommands; -j is never rewritten as a flag value.
         let rawArgs = Array(CommandLine.arguments.dropFirst())
+        // sudo -A askpass: invoked as `aerospace askpass <prompt>`, or through a symlink named
+        // aerospace-askpass so SUDO_ASKPASS can point straight at it
+        if (CommandLine.arguments.first.map { ($0 as NSString).lastPathComponent } == "aerospace-askpass") {
+            runAskpass(prompt: rawArgs.joined(separator: " "))
+        }
+        if rawArgs.first == "askpass" {
+            runAskpass(prompt: rawArgs.dropFirst().joined(separator: " "))
+        }
         // i3 IPC client surface (separate from AeroSpace server protocol)
         if let first = rawArgs.first,
            first == "i3-msg" || first == "i3-socket-path" || first == "i3-get-socketpath"
