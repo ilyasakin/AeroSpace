@@ -49,7 +49,10 @@ cd -
 git checkout .
 
 cp -r "xcode/.xcode-build/Build/Products/$xcode_configuration/AeroSpace.app" .release
-cp -r .build/apple/Products/Release/aerospace .release
+# Universal SwiftPM builds land in .build/apple/... with older toolchains, .build/out/... with newer ones
+cli_binary=.build/apple/Products/Release/aerospace
+test -f "$cli_binary" || cli_binary=.build/out/Products/Release/aerospace
+cp -r "$cli_binary" .release
 
 ################
 ### SIGN CLI ###
