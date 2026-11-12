@@ -131,6 +131,8 @@ enum SessionPipeline {
         SessionStats.noteHeavy(event)
 
         phaseBegin()
+        var clock = SessionClock("heavy \(event.statsCause)")
+        defer { clock.log() }
 
         let res = await Result {
             try await $refreshSessionEvent.withValue(event) {
@@ -140,11 +142,12 @@ enum SessionPipeline {
                 // it there before the close/minimize/hide that makes it a hand-off was even known.
                 // The optimistic pre-layout (app activation) needs the user's focus up front.
                 let reportFocusEarly = plan.optimisticLayout || !plan.discoverWindows && !plan.normalizeNativeState
-                if reportFocusEarly { try await phaseSyncFocusFromNative() }
-                if plan.optimisticLayout { try await phaseLayout(visibleOnly: false) }
+                if reportFocusEarly { try await phaseSyncFocusFromNative(); clock.mark("focus") }
+                if plan.optimisticLayout { try await phaseLayout(visibleOnly: false); clock.mark("prelayout") }
 
                 await phaseModelHygiene()
-                if plan.discoverWindows { try await phaseDiscoverWindows() }
+                clock.mark("hygiene")
+                if plan.discoverWindows { try await phaseDiscoverWindows(); clock.mark("discover") }
                 gcMonitors()
 
                 // Tray can update early (focus/workspace names); borders wait until after layout
@@ -154,6 +157,7 @@ enum SessionPipeline {
 
                 if plan.normalizeNativeState {
                     try await phaseNormalizeNativeState()
+                    clock.mark("native-state")
                     // Discovery GC (app-initiated close) and native-state reparenting (minimize,
                     // fullscreen, hide) both ran AFTER hygiene; without this, layout would place
                     // empty containers and single-child wrappers, and the layout would jump again
@@ -162,15 +166,16 @@ enum SessionPipeline {
                 }
                 // A startup restore that found no windows (apps slower than AeroSpace at login)
                 // retries here now that discovery has run — before layout cements placements.
-                if !reportFocusEarly { try await phaseSyncFocusFromNative() }
+                if !reportFocusEarly { try await phaseSyncFocusFromNative(); clock.mark("focus") }
                 SessionLayoutStore.retryRestoreIfPending()
-                if plan.layout { try await phaseLayout(visibleOnly: false) }
+                if plan.layout { try await phaseLayout(visibleOnly: false); clock.mark("layout") }
                 // Discovery can change the model's focus (a closed window, a fullscreen rule)
                 FocusReconciler.reconcile()
                 SessionLayoutStore.scheduleSave()
                 if plan.sideUiBorders {
                     try await refreshStaleTabTitles()
                     phaseSideUiBorders()
+                    clock.mark("side-ui")
                 }
                 if plan.layout { HoverFocus.reanchorToPointer() }
             }
@@ -208,6 +213,8 @@ enum SessionPipeline {
         }
 
         phaseBegin(invalidateSessionCaches: plan.invalidateSessionCaches)
+        var clock = SessionClock("light \(event.statsCause)")
+        defer { clock.log() }
 
         return try await $refreshSessionEvent.withValue(event) {
             // Hover/drag: skip native-focus AX + hygiene thrash; body owns the mutation.
@@ -221,6 +228,7 @@ enum SessionPipeline {
                     // Timed out: reconcile focus once the app answers
                     scheduleCancellableCompleteRefreshSession(event)
                 }
+                clock.mark("focus")
             }
             let focusBefore = focus.windowOrNil
 
@@ -228,6 +236,7 @@ enum SessionPipeline {
                 await phaseModelHygiene()
             }
             let result = try await body()
+            clock.mark("command")
             if !plan.skipFocusAndHygiene {
                 await phaseModelHygiene()
             }
@@ -239,6 +248,7 @@ enum SessionPipeline {
             }
             if plan.layout {
                 try await phaseLayout(visibleOnly: plan.layoutVisibleOnly)
+                clock.mark("layout")
                 // Drag skips sideUiBorders refresh; each moved window's own WindowServer event
                 // repaints its border (borders never paint layout geometry)
                 // Not on the high-frequency mouse-drag path (mouse-up's heavy saves)
@@ -251,11 +261,13 @@ enum SessionPipeline {
             // Sent BEFORE side UI: the raise is what the user waits for; borders/bar redraw after.
             if !plan.skipFocusAndHygiene {
                 FocusReconciler.reconcile()
+                clock.mark("focus-send")
             }
 
             if plan.sideUiBorders {
                 try await refreshStaleTabTitles()
                 phaseSideUiBorders()
+                clock.mark("side-ui")
             }
             // Whatever is under a resting pointer after a keyboard/command focus change or a
             // layout change is "already entered" — hovering must not steal focus back
@@ -359,3 +371,31 @@ private enum NativeFocusRead: Sendable {
 
 @MainActor
 var activeRefreshTask: Task<(), any Error>? = nil
+
+/// Per-session phase timing for frame-trace.log: `session <kind> <cause> 12.3ms focus=0.4 layout=8.1 …`
+/// Only sessions that took at least `threshold` are logged, so idle traffic stays out of the log.
+struct SessionClock {
+    static let thresholdMs: Double = 4
+    private let label: String
+    private let start = ProcessInfo.processInfo.systemUptime
+    private var last: TimeInterval
+    private var phases: [(String, Double)] = []
+
+    init(_ label: String) {
+        self.label = label
+        last = start
+    }
+
+    mutating func mark(_ phase: String) {
+        let now = ProcessInfo.processInfo.systemUptime
+        phases.append((phase, (now - last) * 1000))
+        last = now
+    }
+
+    func log() {
+        let total = (ProcessInfo.processInfo.systemUptime - start) * 1000
+        guard total >= Self.thresholdMs else { return }
+        let parts = phases.filter { $0.1 >= 0.5 }.map { "\($0.0)=\(String(format: "%.1f", $0.1))" }
+        FrameTrace.log("session \(label) \(String(format: "%.1f", total))ms " + parts.joined(separator: " "))
+    }
+}
