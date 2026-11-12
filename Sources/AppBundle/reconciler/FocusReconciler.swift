@@ -51,6 +51,15 @@ enum FocusReconciler {
         noteNative(nativeFocused)
     }
 
+    /// The window we asked macOS to focus, if the request is still fresh and that window belongs
+    /// to the app with `pid`
+    static func pendingRequest(forAppPid pid: pid_t) -> UInt32? {
+        guard let requested = record.requested, now - requested.at < FocusRecord.requestExpirySeconds,
+              let window = Window.get(byId: requested.windowId), window.app.pid == pid
+        else { return nil }
+        return requested.windowId
+    }
+
     private static func noteNative(_ nativeFocused: Window?) {
         if let nativeFocused { MacOS.current.noteObservedNativeFocus(nativeFocused.windowId) }
     }

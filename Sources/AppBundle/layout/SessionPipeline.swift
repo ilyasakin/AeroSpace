@@ -29,6 +29,12 @@ import Common
 ///   AX, no hygiene, no heavy-cancel, no session-cache thrash — sibling frames stay smooth.
 @MainActor
 enum SessionPipeline {
+    /// The window macOS just told us is focused (the window of a kAXFocusedWindowChanged, or the
+    /// one we asked for when its app's activation arrives). The session then skips asking the app
+    /// again: two AX round trips, 20-30 ms each on a busy machine, for an answer already in hand.
+    /// Task-local, so it reaches exactly the session started under it.
+    @TaskLocal static var nativeFocusHint: UInt32? = nil
+
     /// Policy knobs for one session. Built from the event; not free-form at call sites.
     struct Plan: Equatable {
         /// Optional optimistic layout before discover (app activation path)
@@ -224,7 +230,9 @@ enum SessionPipeline {
                 // seconds, and the hotkey pressed to get away queued behind it. On timeout the
                 // read is retried by a heavy (which a light session can pre-empt).
                 let deadline: Double = event.isCommand ? lightSessionFocusReadDeadline : 0.5
-                if try await !phaseSyncFocusFromNative(deadline: deadline) {
+                if let hint = Self.nativeFocusHint, let hinted = Window.get(byId: hint) {
+                    FocusReconciler.macosReported(hinted)
+                } else if try await !phaseSyncFocusFromNative(deadline: deadline) {
                     // Timed out: reconcile focus once the app answers
                     scheduleCancellableCompleteRefreshSession(event)
                 }
@@ -352,10 +360,15 @@ enum SessionPipeline {
 
     /// Phase 8b — borders (must run after layout when layout ran this session)
     private static func phaseSideUiBorders() {
+        var clock = SessionClock("side-ui")
+        defer { clock.log() }
         WindowBordersManager.shared.refresh()
+        clock.mark("borders")
         WindowDimming.shared.refresh()
         GroupTabBarManager.shared.refresh()
+        clock.mark("tab-bar")
         StatusBarManager.shared.refresh()
+        clock.mark("status-bar")
     }
 }
 

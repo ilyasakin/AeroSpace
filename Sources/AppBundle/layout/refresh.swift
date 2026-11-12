@@ -180,7 +180,10 @@ func onAxFocusedWindowChanged(windowId: UInt32?, notif: String) {
     Task.startUnstructured { @MainActor in
         guard let token: RunSessionGuard = .isServerEnabled else { return }
         if let windowId, Window.get(byId: windowId) != nil {
-            try? await runLightSession(.ax(notif), token) {}
+            // The notification names the focused window: no need to ask the app again
+            try? await SessionPipeline.$nativeFocusHint.withValue(windowId) {
+                try await runLightSession(.ax(notif), token) {}
+            }
         } else {
             scheduleCancellableCompleteRefreshSession(.ax(notif))
         }

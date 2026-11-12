@@ -19,7 +19,12 @@ enum GlobalObserver {
                 // registered yet (their first activation) or windows we haven't seen
                 if let pid, let app = MacApp.allAppsMap[pid], app.knowsItsFocusedWindow {
                     guard let token: RunSessionGuard = .isServerEnabled else { return }
-                    try? await runLightSession(.globalObserver(notifName), token) {}
+                    // Our own focus request activating its app: the window is the one we asked for.
+                    // If the app picks another, its kAXFocusedWindowChanged follows and corrects it
+                    let hint = FocusReconciler.pendingRequest(forAppPid: pid)
+                    try? await SessionPipeline.$nativeFocusHint.withValue(hint) {
+                        try await runLightSession(.globalObserver(notifName), token) {}
+                    }
                 } else {
                     scheduleCancellableCompleteRefreshSession(.globalObserver(notifName), optimisticallyPreLayoutWorkspaces: true)
                 }
@@ -89,7 +94,9 @@ enum GlobalObserver {
                         // Do NOT re-raise floats here. macOS raises the clicked tile; forcing floats
                         // back on top after every click steals key focus and blocks interacting with
                         // tiles (the old band-aid). Keyboard/FFM keep floats via focus-without-raise.
-                        scheduleCancellableCompleteRefreshSession(.globalObserverLeftMouseUp)
+                        if mouseUpNeedsDiscovery() {
+                            scheduleCancellableCompleteRefreshSession(.globalObserverLeftMouseUp)
+                        }
                 }
             }
         }
@@ -106,4 +113,21 @@ enum GlobalObserver {
     if ServerState.isEnabled {
         scheduleCancellableCompleteRefreshSession(.globalObserver(NSApplication.didChangeScreenParametersNotification.rawValue))
     }
+}
+
+/// Whether a click needs a complete discovery. It used to run one after every click (~280 ms of AX
+/// on a busy machine, ahead of the next hotkey): AX's destroyed notification is unreliable for a
+/// window closed by its close button while unfocused, and clicking a native tab changes which tab
+/// holds the group's tile. WindowServer answers the first in microseconds, without asking any app;
+/// the second only matters while a tab group is parked on a visible workspace. New windows are
+/// announced by kAXWindowCreated and focus changes by their own notifications.
+@MainActor
+func mouseUpNeedsDiscovery() -> Bool {
+    let windowServer = WindowServerReads.current
+    for window in Window.all {
+        // A window WindowServer no longer has was closed without AX telling us
+        if windowServer.windowBounds(windowId: window.windowId, forOverlay: true) == nil { return true }
+        if window.isParkedAsNativeTab, window.nodeWorkspace?.isVisible == true { return true }
+    }
+    return false
 }
