@@ -16,5 +16,6 @@ rm -rf .shell-completion && mkdir -p \
 
 # Check basic syntax
 zsh -c 'autoload -Uz compinit; compinit; source ./.shell-completion/zsh/_aerospace'
-fish -c 'source ./.shell-completion/fish/aerospace.fish'
-bash -c 'source ./.shell-completion/bash/aerospace'
+# fish and bash are optional dependencies (see script/setup.sh): check only where installed
+if command -v fish > /dev/null; then fish -c 'source ./.shell-completion/fish/aerospace.fish'; else echo "fish not installed: skipping its syntax check"; fi
+if command -v bash > /dev/null; then bash -c 'source ./.shell-completion/bash/aerospace'; else echo "bash not installed: skipping its syntax check"; fi
