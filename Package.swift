@@ -74,6 +74,9 @@ let package = Package(
             dependencies: [
                 .target(name: "AppBundle"),
             ],
+            // Read from disk by path (ImportI3Test), not bundled: undeclared files warn, and the
+            // release build treats warnings as errors
+            exclude: ["config/importFixtures"],
             swiftSettings: swiftSettings,
         ),
     ],

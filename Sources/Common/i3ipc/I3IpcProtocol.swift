@@ -96,8 +96,8 @@ public func i3IpcEncodeFrame(_ frame: I3IpcFrame) -> Data {
     data.append(i3IpcMagic)
     var len = UInt32(frame.payload.count).littleEndian
     var typ = frame.type.littleEndian
-    withUnsafeBytes(of: &len) { data.append(contentsOf: $0) }
-    withUnsafeBytes(of: &typ) { data.append(contentsOf: $0) }
+    withUnsafeBytes(of: &len) { unsafe data.append(contentsOf: $0) }
+    withUnsafeBytes(of: &typ) { unsafe data.append(contentsOf: $0) }
     data.append(frame.payload)
     return data
 }
@@ -125,11 +125,11 @@ public func i3IpcDecodeFrame(from buffer: inout Data) -> Result<I3IpcFrame, I3Ip
     if magic != i3IpcMagic {
         return .failure(.badMagic)
     }
-    let len: UInt32 = buffer.withUnsafeBytes { raw in
-        raw.loadUnaligned(fromByteOffset: 6, as: UInt32.self).littleEndian
+    let len: UInt32 = unsafe buffer.withUnsafeBytes { raw in
+        unsafe raw.loadUnaligned(fromByteOffset: 6, as: UInt32.self).littleEndian
     }
-    let typ: UInt32 = buffer.withUnsafeBytes { raw in
-        raw.loadUnaligned(fromByteOffset: 10, as: UInt32.self).littleEndian
+    let typ: UInt32 = unsafe buffer.withUnsafeBytes { raw in
+        unsafe raw.loadUnaligned(fromByteOffset: 10, as: UInt32.self).littleEndian
     }
     // Cap payload at 16 MiB to avoid runaway allocations from a bad client.
     if len > 16 * 1024 * 1024 {

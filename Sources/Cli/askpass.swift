@@ -11,18 +11,18 @@ func runAskpass(prompt: String) -> Never {
     addr.sun_family = sa_family_t(AF_UNIX)
     let path = Array(askpassSocketPath.utf8CString)
     withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-        for (i, c) in path.prefix(raw.count).enumerated() { raw[i] = UInt8(bitPattern: c) }
+        for (i, c) in path.prefix(raw.count).enumerated() { unsafe raw[i] = UInt8(bitPattern: c) }
     }
     let connected = withUnsafePointer(to: &addr) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        unsafe $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { unsafe connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
     }
     guard connected == 0 else { exit(1, err: "aerospace askpass: AeroSpace is not running (\(askpassSocketPath))") }
     let request = askpassEncodeRequest(prompt: prompt)
-    _ = request.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+    _ = unsafe request.withUnsafeBytes { unsafe write(fd, $0.baseAddress, $0.count) }
     var reply = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
     while true {
-        let n = read(fd, &buffer, buffer.count)
+        let n = unsafe read(fd, &buffer, buffer.count)
         if n <= 0 { break }
         reply.append(contentsOf: buffer[0 ..< n])
     }
