@@ -1,13 +1,15 @@
 import Foundation
 
-/// Debug builds only: a line per frame-write event, to diagnose windows that don't end up where
-/// layout put them. `~/Library/Application Support/<debug app id>/frame-trace.log`, capped.
+/// A line per frame-write and session event, to diagnose windows that don't end up where layout put
+/// them and slow sessions. `~/Library/Application Support/<app id>/frame-trace.log`, capped at 20k
+/// lines. Release builds log too: the build in daily use is the one worth watching. Writing happens
+/// on a utility queue; only formatting the line runs on the caller.
 enum FrameTrace {
     private static let queue = DispatchQueue(label: "bobko.aerospace.frame-trace", qos: .utility)
     nonisolated(unsafe) private static var lines = 0
 
     static func log(_ message: @autoclosure () -> String) {
-        guard isDebug, !Headless.isActive else { return }
+        guard !Headless.isActive else { return }
         let line = String(format: "%.3f ", ProcessInfo.processInfo.systemUptime) + message() + "\n"
         queue.async {
             unsafe lines += 1
