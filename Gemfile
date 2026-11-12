@@ -5,6 +5,8 @@ source "https://rubygems.org"
 
 # https://github.com/asciidoctor/asciidoctor/releases
 gem 'asciidoctor', '2.0.23'
+# Ruby 4 no longer bundles logger by default; asciidoctor requires it
+gem 'logger'
 
 # https://github.com/pygments/pygments.rb/releases
 # https://github.com/pygments/pygments/releases
